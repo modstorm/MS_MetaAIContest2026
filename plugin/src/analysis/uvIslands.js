@@ -174,7 +174,7 @@ export function computeUvCoverage(sources, resolution = 256) {
   };
 }
 
-function islandIdPerTriangle(src, epsilon = 1e-5) {
+export function islandIdPerTriangle(src, epsilon = 1e-5) {
   const triCount = triangleCount(src);
   const vertexCount = src.uvs.length / 2;
   const uf = new UnionFind(vertexCount);

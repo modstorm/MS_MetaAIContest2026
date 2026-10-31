@@ -67,8 +67,21 @@ plugin.onUpdate((e) => {
       break;
     case 'timing':
       log(
-        `⏱ ${e.data.step}${e.data.slotName ? ` (${e.data.slotName})` : ''}: ${(e.data.ms / 1000).toFixed(1)}s${e.data.ok ? '' : ' (failed)'}`,
+        `⏱ ${e.data.step}${e.data.slotName ? ` (${e.data.slotName})` : ''}: ${(e.data.ms / 1000).toFixed(1)}s${e.data.ok ? '' : ` (failed: ${e.data.error})`}`,
+        e.data.ok ? '' : 'err',
       );
+      break;
+    case 'request':
+      if ($('opt-debug').checked) {
+        console.log('[Muse request]', e.data.url, e.data.status, e.data.request, e.data.error ?? '');
+        log(
+          `→ ${e.data.url.split('/v1')[1] ?? e.data.url} ${e.data.status}: ${JSON.stringify(e.data.request).slice(0, 1500)}`,
+          e.data.error ? 'err' : '',
+        );
+      }
+      break;
+    case 'probe':
+      addProbeResult(e.data);
       break;
     case 'warning':
       log(e.data.message, 'warn');
@@ -159,7 +172,17 @@ function renderLayout(layout) {
     const thumbs = document.createElement('div');
     thumbs.className = 'thumbs';
     const prev = plugin.slotPreview(slot.id, 256);
-    thumbs.append(figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs'), figure(prev.uvGuide, 'island mask'));
+    thumbs.append(
+      figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs'),
+      figure(prev.partMap, 'parts (arrow = top of part)'),
+    );
+    const o = prev.orientation;
+    if (o && (o.rot || o.flipX)) {
+      const note = document.createElement('div');
+      note.className = 'stats warn-text';
+      note.textContent = `"${o.reason}" is stored ${o.rot ? `rotated ${o.rot}°` : ''}${o.flipX ? ' mirrored' : ''}: it will be painted upright and turned back.`;
+      thumbs.after(note);
+    }
     div.append(thumbs);
     const stats = document.createElement('div');
     stats.className = 'stats';
@@ -253,6 +276,7 @@ function openPrompt() {
   $('prompt-progress').hidden = true;
   $('suggest-row').hidden = !plugin.canSuggest;
   clearSuggestion();
+  hideError();
   setPromptBusy(false);
   if (!dialog.open) dialog.showModal();
   promptText.focus();
@@ -314,7 +338,50 @@ function showSuggestion(s) {
 promptText.addEventListener('input', () => pending && clearSuggestion());
 $('opt-suggest').addEventListener('change', updateGoLabel);
 
+let retryAction = null;
+
+function hideError() {
+  $('prompt-error').hidden = true;
+  retryAction = null;
+}
+
+/** Shows a failure in the popup with Retry / Edit prompt (and Skip suggestion for the suggest step). */
+function showError(err, retry, { canSkip = false } = {}) {
+  const filtered =
+    err.code === 'content_policy_violation' ||
+    /content (management |moderation )?polic|filtered due to/i.test(err.message);
+  $('err-title').textContent = filtered ? "Muse's safety filter rejected this request" : 'Muse request failed';
+  const step = err.step ? ` (step: ${err.step})` : '';
+  $('err-text').textContent = filtered
+    ? `${err.message}${step}. Tip: describe dark themes with gentler words ("spooky", "eerie", "Halloween") and avoid blood, gore, injuries and weapons.`
+    : `${err.message}${step}`;
+  $('err-skip').hidden = !canSkip;
+  $('err-probe').hidden = !filtered;
+  $('prompt-error').hidden = false;
+  $('prompt-stage').textContent = '';
+  retryAction = retry;
+}
+
+$('err-retry').onclick = () => {
+  const r = retryAction;
+  hideError();
+  r?.();
+};
+$('err-edit').onclick = () => {
+  hideError();
+  const field = pending ? $('sugg-prompt') : promptText;
+  field.focus();
+  field.select();
+};
+$('err-skip').onclick = () => {
+  hideError();
+  $('opt-suggest').checked = false;
+  clearSuggestion();
+  runReskin(promptText.value.trim());
+};
+
 async function runReskin(text, suggestion) {
+  hideError();
   $('prompt-progress').hidden = false;
   $('prompt-bar').style.width = '0%';
   setPromptBusy(true);
@@ -324,6 +391,7 @@ async function runReskin(text, suggestion) {
       detailPreserve: Number($('opt-detail').value),
       useVisionPlanning: $('opt-plan').checked,
       fast: $('opt-fast').checked,
+      orientation: $('opt-orient').value,
       normalMaps: $('opt-normal').checked,
       roughnessMaps: $('opt-rough').checked,
       maxTextureSize: Number($('opt-size').value),
@@ -336,7 +404,8 @@ async function runReskin(text, suggestion) {
       `Reskinned "${res.prompt}": ${res.slots.length} texture(s), ${res.recoloredMaterials} recolored, ${(res.durationMs / 1000).toFixed(1)}s`,
     );
   } catch (err) {
-    $('prompt-stage').textContent = `Failed: ${err.message}`;
+    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
+    else showError(err, () => runReskin(text, suggestion));
   } finally {
     setPromptBusy(false);
   }
@@ -350,21 +419,61 @@ $('prompt-form').addEventListener('submit', async (e) => {
   if (!suggestEnabled()) return runReskin(prompt);
 
   // Step 1: Muse studies six views + the atlases and recommends a prompt. Nothing is painted yet.
+  runSuggest(prompt);
+});
+
+async function runSuggest(prompt) {
+  hideError();
   $('prompt-progress').hidden = false;
   $('prompt-bar').style.width = '0%';
   setPromptBusy(true);
   try {
-    showSuggestion(await plugin.postSuggest(prompt, { fast: $('opt-fast').checked }));
+    showSuggestion(
+      await plugin.postSuggest(prompt, { fast: $('opt-fast').checked, orientation: $('opt-orient').value }),
+    );
     $('prompt-stage').textContent = 'Review the suggestion, edit it if you like, then paint.';
   } catch (err) {
-    $('prompt-stage').textContent =
-      `Suggestion failed: ${err.message}. You can untick the suggestion box and reskin directly.`;
+    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
+    else showError(err, () => runSuggest(prompt), { canSkip: true });
   } finally {
     setPromptBusy(false);
   }
-});
+}
 
 $('prompt-original').onclick = () => runReskin(promptText.value.trim(), pending);
+
+// ------------------------------------------------------------------ filter probe
+function addProbeResult(r) {
+  const ul = $('probe-results');
+  ul.hidden = false;
+  const li = document.createElement('li');
+  li.innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓ passed' : r.filtered ? '✗ filtered' : '✗ failed'}</span> <b>${escapeHtml(r.name)}</b>: ${escapeHtml(r.description)} <span class="muted">(${(r.ms / 1000).toFixed(1)}s)</span>${r.ok ? '' : `<br><span class="muted">${escapeHtml(r.error ?? '')}</span>`}`;
+  ul.append(li);
+  log(`Probe ${r.ok ? 'passed' : 'FAILED'}: ${r.name}${r.ok ? '' : ` (${r.error})`}`, r.ok ? '' : 'err');
+}
+
+async function runProbe() {
+  const theme = promptText.value.trim();
+  if (!theme) return promptText.focus();
+  if (typeof plugin.getProvider().probeFilter !== 'function')
+    return log('The filter probe needs the Meta Muse backend.', 'warn');
+  hideError();
+  $('probe-results').innerHTML = '';
+  $('probe-results').hidden = false;
+  $('probe-results').closest('details')?.setAttribute('open', '');
+  setPromptBusy(true);
+  try {
+    const results = await plugin.postProbe(theme);
+    const failed = results.filter((r) => !r.ok).map((r) => r.name);
+    $('prompt-stage').textContent = failed.length ? `Blocked: ${failed.join(', ')}` : 'Every probe passed.';
+  } catch (err) {
+    $('prompt-stage').textContent = `Probe failed: ${err.message}`;
+  } finally {
+    setPromptBusy(false);
+  }
+}
+$('btn-probe').onclick = runProbe;
+$('err-probe').onclick = runProbe;
 
 // ------------------------------------------------------------------ compare + export
 let showingOriginal = false;

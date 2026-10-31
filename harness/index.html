@@ -85,11 +85,35 @@
             <label><input id="opt-plan" type="checkbox" checked /> Read the atlas layout first (Muse Spark vision)</label>
             <label><input id="opt-normal" type="checkbox" checked /> Regenerate normal maps</label>
             <label><input id="opt-rough" type="checkbox" checked /> Regenerate roughness maps</label>
+            <label><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images shortened)</label>
+            <div class="row"><button type="button" id="btn-probe">Run filter probe</button><span class="muted">5 small Muse calls (~$0.05) to find what the safety filter rejects</span></div>
+            <ul id="probe-results" class="probe" hidden></ul>
+            <label>Atlas orientation
+              <select id="opt-orient">
+                <option value="auto" selected>Auto (from the 3D model)</option>
+                <option value="none">As stored</option>
+                <option value="flipV">Flip vertically</option>
+                <option value="flipH">Flip horizontally</option>
+                <option value="rot180">Rotate 180°</option>
+                <option value="rot90">Rotate 90°</option>
+                <option value="rot270">Rotate 270°</option>
+              </select>
+            </label>
             <label>Max texture size
               <select id="opt-size"><option>512</option><option selected>1024</option><option>2048</option></select>
             </label>
           </div>
         </details>
+        <div class="error-box" id="prompt-error" hidden>
+          <strong id="err-title">Something went wrong</strong>
+          <p id="err-text"></p>
+          <div class="row">
+            <button type="button" id="err-retry">Retry</button>
+            <button type="button" id="err-edit">Edit prompt</button>
+            <button type="button" id="err-skip" hidden>Skip suggestion and paint</button>
+            <button type="button" id="err-probe">Run filter probe</button>
+          </div>
+        </div>
         <div class="progress" id="prompt-progress" hidden>
           <div class="bar"><span id="prompt-bar"></span></div>
           <div id="prompt-stage" class="muted"></div>

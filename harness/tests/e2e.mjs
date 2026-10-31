@@ -82,15 +82,16 @@ async function exportAndCheck(page, file) {
 }
 
 // A small valid PNG (64x64 gradient) used as the mocked Muse image.
-function makePng(w = 64, h = 64) {
+function makePng(w = 64, h = 64, color = null) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (w * 3 + 1)] = 0;
     for (let x = 0; x < w; x++) {
       const o = y * (w * 3 + 1) + 1 + x * 3;
-      raw[o] = 200;
-      raw[o + 1] = (x * 4) & 255;
-      raw[o + 2] = (y * 4) & 255;
+      const c = color ? color(x, y, w, h) : [200, (x * 4) & 255, (y * 4) & 255];
+      raw[o] = c[0];
+      raw[o + 1] = c[1];
+      raw[o + 2] = c[2];
     }
   }
   const crcTable = Array.from({ length: 256 }, (_, n) => {
@@ -298,7 +299,7 @@ try {
     await page.fill('#prompt-text', 'gold armor');
     await page.click('#prompt-go');
     await page.waitForFunction(
-      () => /Invalid API key/.test(document.querySelector('#prompt-stage')?.textContent ?? ''),
+      () => /Invalid API key/.test(document.querySelector('#err-text')?.textContent ?? ''),
       null,
       { timeout: 30_000 },
     );
@@ -343,6 +344,130 @@ try {
     await reskinViaPopup(page, 'gold armor', { suggest: false });
     assert.equal(bodies.length, 2);
     assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
+    await page.context().close();
+  });
+
+  await step('safety filter: plain retry with a softened theme, then a clear error with Retry', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    let alwaysReject = false;
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions'))
+        return ok({ choices: [{ message: { content: '{"subject":"robot","regions":[]}' } }] });
+      edits.push(body);
+      if (alwaysReject || edits.length === 1) {
+        return route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              code: 'content_policy_violation',
+              message: 'The response was filtered due to the prompt triggering our content management policy.',
+            },
+          }),
+        });
+      }
+      return ok({ data: [{ b64_json: png }] });
+    });
+    await page.click('#btn-sample');
+    await reskinViaPopup(page, 'scary clown');
+    assert.equal(edits.length, 2);
+    assert.match(
+      edits[1].prompt,
+      /^Recolor this game texture image in a "spooky clown, playful Halloween style" style/,
+    );
+    assert.equal(edits[1].images.length, 1);
+    assert.match(await page.textContent('#log'), /safety filter rejected/);
+
+    // Now the filter rejects everything: the popup shows the error with Retry.
+    alwaysReject = true;
+    await page.click('#btn-reskin');
+    await page.waitForSelector('#prompt-dialog[open]');
+    await page.uncheck('#opt-suggest');
+    await page.fill('#prompt-text', 'scary clown');
+    await page.click('#prompt-go');
+    await page.waitForSelector('#prompt-error:not([hidden])', { timeout: 30_000 });
+    assert.match(await page.textContent('#err-title'), /safety filter/);
+    assert.match(await page.textContent('#err-text'), /step: paint atlas/);
+    await page.screenshot({ path: `${outDir}06-filter-error.png` });
+    const before = edits.length;
+    await page.click('#err-retry');
+    await page.waitForFunction((n) => window.__x !== n, before); // let the click start
+    await page.waitForSelector('#prompt-error:not([hidden])', { timeout: 30_000 });
+    assert.ok(edits.length > before, 'retry sent new requests');
+    await page.context().close();
+  });
+
+  console.log('UV orientation');
+  await step('an upside-down head island is painted upright and turned back', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Muse mock returns: top half red, bottom half blue.
+    const png = makePng(64, 64, (x, y, w, h) => (y < h / 2 ? [255, 0, 0] : [0, 0, 255])).toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions'))
+        return ok({ choices: [{ message: { content: '{"subject":"doll","regions":[]}' } }] });
+      edits.push(body);
+      return ok({ data: [{ b64_json: png }] });
+    });
+    // Build a model in the page: "Head" plane stored upside down in the atlas (top half),
+    // "Body" plane stored upright (bottom half), sharing one texture.
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    await page.evaluate(async (bytes) => {
+      await window.reskin.plugin.postModel(new Uint8Array(bytes).buffer, { name: 'orient-test' });
+    }, glb);
+    const prev = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      const s = p.layout.slots.find((x) => x.texture);
+      const v = p.slotPreview(s.id, 128);
+      return { orientation: v.orientation, parts: v.parts };
+    });
+    assert.deepEqual(prev.orientation, { rot: 180, flipX: true, reason: 'Head' }, JSON.stringify(prev)); // vertical mirror
+    const result = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const r = await p.postPrompt('happy clown', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+      const c = r.slots[0].canvas;
+      const g = c.getContext('2d');
+      return {
+        top: Array.from(g.getImageData(c.width / 2, 2, 1, 1).data),
+        bottom: Array.from(g.getImageData(c.width / 2, c.height - 3, 1, 1).data),
+      };
+    });
+    // Muse's red-top image was turned 180° back: blue is now at the top of the atlas.
+    assert.ok(result.top[2] > 200 && result.top[0] < 60, `top ${result.top}`);
+    assert.ok(result.bottom[0] > 200 && result.bottom[2] < 60, `bottom ${result.bottom}`);
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].prompt, /Head = \w+ area/);
+    assert.match(edits[0].prompt, /Body = \w+ area/);
+    assert.match(await page.textContent('#log'), /"Head" is stored rotated 180° and mirrored/);
     await page.context().close();
   });
 

@@ -58,7 +58,11 @@ export function renderAxisViews(object, opts = {}) {
       cam.up.set(...v.up);
       cam.lookAt(center);
       // Frame tightly: half of the larger box extent across this view, plus a margin.
-      const across = [Math.abs(v.dir[0]) ? 0 : size3.x, Math.abs(v.dir[1]) ? 0 : size3.y, Math.abs(v.dir[2]) ? 0 : size3.z];
+      const across = [
+        Math.abs(v.dir[0]) ? 0 : size3.x,
+        Math.abs(v.dir[1]) ? 0 : size3.y,
+        Math.abs(v.dir[2]) ? 0 : size3.z,
+      ];
       const half = Math.max(1e-6, Math.max(...across) / 2) * 1.08;
       cam.left = -half;
       cam.right = half;

@@ -413,3 +413,39 @@ summary {
 [hidden] {
   display: none !important;
 }
+
+.error-box {
+  margin-top: 12px;
+  border: 1px solid var(--err);
+  background: rgba(255, 93, 115, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.error-box strong {
+  color: var(--err);
+}
+.error-box p {
+  margin: 6px 0 0;
+}
+.error-box .row {
+  margin-top: 10px;
+}
+
+.warn-text {
+  color: var(--warn);
+}
+.probe {
+  font-size: 12px;
+  padding-left: 0;
+  list-style: none;
+}
+.probe li {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+.probe .ok {
+  color: #5ee08f;
+}
+.probe .bad {
+  color: var(--err);
+}

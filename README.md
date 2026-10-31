@@ -49,6 +49,10 @@ GLB ──► load (GLTFLoader, Draco + meshopt)
 
 Edge cases handled:
 
+- **Which patch is which part**: each mesh's UV area is drawn in its own color and named (Hair, Head, Body…) in a part map sent to Muse, so details land on the right part.
+- **Upside-down, sideways or mirrored islands**: the plugin works out from the 3D data which way "up" points in the texture. It turns the atlas upright before painting (head/face first) and turns the result back. The texture's own `flipY` and `KHR_texture_transform` are applied first, and the popup has a manual orientation override.
+- **Safety filter rejections**: a plainer retry runs automatically, the popup shows a clear error with Retry, and a **filter probe** shows which input was rejected.
+
 - **Meshes with no UVs** get box-projected UVs and a seamless texture.
 - **Materials with no texture** get a generated seamless texture.
 - **Stacked or mirrored UVs** and **tiled UVs** (outside 0..1) are detected and reported.

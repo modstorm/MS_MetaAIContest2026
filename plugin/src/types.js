@@ -87,6 +87,9 @@
  * @property {boolean} [fast] Provider speed mode (Muse: no web/image search, low reasoning, smaller uploads). Default: provider's setting (on).
  * @property {boolean} [localSmallParts] Tint small untextured parts from the new palette instead of a model call. Default true.
  * @property {number} [smallPartRatio] "Small" = bounding radius below this fraction of the model's. Default 0.2.
+ * @property {'auto' | 'none' | 'flipV' | 'flipH' | 'rot90' | 'rot180' | 'rot270' | { rot: number, flipX: boolean }} [orientation]
+ *   How to turn the atlas before sending it to the model (and back after). 'auto' (default) uses the 3D data so the
+ *   head/face (or the largest part) is upright.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.
  * @property {AbortSignal} [signal]
  */

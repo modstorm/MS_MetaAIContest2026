@@ -2,18 +2,24 @@ import * as THREE from 'three';
 import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { renderAxisViews } from './analysis/renderViews.js';
+import { chooseOrientation, isIdentity, resolveOrientation, slotParts, transformParts } from './analysis/parts.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
+import { isContentPolicyError } from './muse/MuseClient.js';
 import {
   applyDetailPreserve,
   accentColor,
   averageColor,
   blobToCanvas,
   drawAtlasWithUvs,
+  drawPartLabels,
+  drawPartMap,
   drawUvGuide,
   fitSize,
   resizeCanvas,
   textureToCanvas,
+  transformCanvas,
+  untransformCanvas,
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 
@@ -31,6 +37,8 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
  *   exported        { glb: ArrayBuffer, filename }
  *   views           { views: [{ name, axis, canvas }], sheet }       six axis renders sent to Muse
  *   suggestion      Suggestion   Muse's recommended prompt + per-region plan (from postSuggest)
+ *   request         { url, method, request, status, ms, error? }   every raw Muse call (images shortened)
+ *   probe           { name, description, ok, ms, error? }      one per filter-probe test (postProbe)
  *   timing          { step, slotId, slotName, ms, ok, provider }   one per model call
  *   warning         { message }
  *   error           { error: Error, stage }
@@ -79,7 +87,7 @@ export class ReskinPlugin {
 
   /** @param {ReskinPluginOptions} [opts] */
   constructor(opts = {}) {
-    this.provider = opts.provider ?? new MuseProvider(opts.muse ?? {});
+    this.setProvider(opts.provider ?? new MuseProvider(opts.muse ?? {}));
   }
 
   // ---------------------------------------------------------------- listeners
@@ -111,6 +119,10 @@ export class ReskinPlugin {
 
   setProvider(provider) {
     this.provider = provider;
+    // Surface every raw model request (images shortened) as a `request` event, for debugging.
+    if (provider?.client && 'onExchange' in provider.client) {
+      provider.client.onExchange = (info) => this.emit('request', info);
+    }
   }
 
   getProvider() {
@@ -179,11 +191,68 @@ export class ReskinPlugin {
     const slot = this.requireSlot(slotId);
     const { width, height } = fitSize(slot.width || 512, slot.height || 512, maxSize);
     const atlas = slot.texture ? textureToCanvas(slot.texture, maxSize) : null;
+    const parts = slotParts(slot);
+    const w = atlas?.width ?? width;
+    const h = atlas?.height ?? height;
     return {
       atlas,
       atlasWithUvs: atlas ? drawAtlasWithUvs(atlas, slot) : drawUvGuide(slot, width, height, { fill: false }),
       uvGuide: drawUvGuide(slot, width, height),
+      // Each part (mesh name) tinted, labelled, with an arrow toward the part's top on the model.
+      partMap: drawPartMap(slot, parts, w, h, { atlas, alpha: atlas ? 0.45 : 1, labels: true }),
+      parts: parts.map(({ meshes, ...p }) => p),
+      orientation: chooseOrientation(parts),
     };
+  }
+
+  // ---------------------------------------------------------------- post: probe
+
+  /**
+   * Debug helper for content-filter rejections: sends a few small, separate requests
+   * (theme only, full prompt without images, prompt + atlas, prompt + UV mask, neutral
+   * prompt + atlas) and reports which ones pass, to find what triggers the filter.
+   * Each image call is billed by the provider (Muse: about $0.01 each).
+   * @param {string} theme
+   * @param {{ signal?: AbortSignal, slotId?: string }} [opts]
+   */
+  async postProbe(theme, opts = {}) {
+    this.guard();
+    if (!this.model || !this.layout) throw new Error('Post a model first');
+    if (typeof this.provider.probeFilter !== 'function') throw new Error(`${this.provider.name} has no filter probe`);
+    const slot =
+      (opts.slotId && this.layout.slots.find((s) => s.id === opts.slotId)) ||
+      this.layout.slots.find((s) => s.texture && !s.tiled) ||
+      this.layout.slots.find((s) => s.texture);
+    if (!slot) throw new Error('The model has no textures to probe with');
+    this.busy = true;
+    this.abort = new AbortController();
+    const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
+    try {
+      this.restoreSnapshots();
+      this.status('reskinning', `Probing the content filter with "${theme}"…`);
+      const atlas = textureToCanvas(slot.texture, 512);
+      const uvGuide = drawUvGuide(slot, atlas.width, atlas.height);
+      const results = await this.provider.probeFilter({
+        theme: theme.trim(),
+        atlas,
+        uvGuide,
+        plan: this.planCache.get(`${this.provider.name}:${slot.texture.uuid}`) ?? null,
+        signal,
+        onResult: (r) => this.emit('probe', r),
+      });
+      const failed = results.filter((r) => !r.ok).map((r) => r.name);
+      this.status(
+        'idle',
+        failed.length ? `Filter probe: blocked → ${failed.join(', ')}` : 'Filter probe: everything passed',
+      );
+      return results;
+    } catch (err) {
+      this.fail(err, 'probe');
+      throw err;
+    } finally {
+      this.busy = false;
+      this.abort = null;
+    }
   }
 
   // ---------------------------------------------------------------- post: prompt
@@ -209,7 +278,7 @@ export class ReskinPlugin {
     if (!this.canSuggest) throw new Error(`${this.provider.name} cannot suggest prompts`);
     theme = theme.trim();
     if (!theme) throw new Error('Prompt is empty');
-    const cached = this.suggestionCache.get(theme);
+    const cached = this.suggestionCache.get(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`);
     if (cached) {
       this.emit('suggestion', cached);
       return cached;
@@ -228,12 +297,28 @@ export class ReskinPlugin {
 
       const atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
       const atlases = atlasSlots.map((slot) => {
-        const atlas = textureToCanvas(slot.texture, 1024);
+        const original = textureToCanvas(slot.texture, 1024);
+        const rawParts = slotParts(slot);
+        // Same upright transform as the paint step, so region boxes line up.
+        const orient = resolveOrientation(opts.orientation, rawParts);
+        const parts = transformParts(rawParts, orient);
+        const atlas = transformCanvas(original, orient);
         return {
           slotId: slot.id,
           name: slot.name,
           meshNames: slot.meshes.map((m) => m.name),
-          atlasWithUvs: drawAtlasWithUvs(atlas, slot),
+          parts,
+          // Atlas with each part tinted + labelled (name and an arrow to the part's top).
+          atlasWithUvs:
+            parts.length > 1
+              ? drawPartLabels(
+                  transformCanvas(
+                    drawPartMap(slot, rawParts, original.width, original.height, { atlas: original, alpha: 0.35 }),
+                    orient,
+                  ),
+                  parts,
+                )
+              : transformCanvas(drawAtlasWithUvs(original, slot), orient),
         };
       });
 
@@ -256,8 +341,12 @@ export class ReskinPlugin {
           regions: a.regions.map((r) => ({ name: r.name, bbox: r.bbox, description: r.paint })),
         };
       }
-      const suggestion = { ...raw, theme, prompt: raw.prompt || theme, plans, sheet, views };
-      this.suggestionCache.set(theme, suggestion);
+      // Model-written text is cleaned of common safety-filter triggers before it is shown or painted.
+      for (const plan of Object.values(plans)) {
+        for (const r of plan.regions) r.description = r.description && sanitizePrompt(r.description);
+      }
+      const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, views };
+      this.suggestionCache.set(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`, suggestion);
       this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
       this.emit('suggestion', suggestion);
       this.status('idle', `Muse sees: ${suggestion.subject || 'unknown object'}`);
@@ -345,6 +434,9 @@ export class ReskinPlugin {
         }
       });
 
+      // If every texture failed, report that error (not a follow-up one).
+      if (firstError && !results.length && remote.length) throw firstError;
+
       if (local.length) {
         // Pick an accent color from the largest new texture so small parts match the theme.
         const biggest = [...results].sort(
@@ -422,15 +514,34 @@ export class ReskinPlugin {
 
     let raw;
     let plan = null;
+    let orient = null;
+    let parts = null;
     let usedPrompt = theme;
     let original = null;
 
     if (atlasMode) {
       original = textureToCanvas(slot.texture, maxSize);
-      const uvGuide = drawUvGuide(slot, original.width, original.height, {
-        lineWidth: Math.max(1, original.width / 1024),
-      });
-      const planKey = `${this.provider.name}:${slot.texture.uuid}`;
+      // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
+      const rawParts = slotParts(slot);
+      // If the key part (head/face, else the largest) is stored upside down, sideways or
+      // mirrored, turn the whole atlas upright before painting and turn the result back.
+      orient = resolveOrientation(opts.orientation, rawParts);
+      if (orient && !isIdentity(orient)) {
+        this.emit('warning', {
+          message:
+            orient.reason === 'manual'
+              ? `"${slot.name}": using the manual orientation (${orient.rot}°${orient.flipX ? ', mirrored' : ''}).`
+              : `"${slot.name}": "${orient.reason}" is stored ${orient.rot ? `rotated ${orient.rot}°` : ''}${orient.rot && orient.flipX ? ' and ' : ''}${orient.flipX ? 'mirrored' : ''} in the atlas; painting it upright and turning it back.`,
+        });
+      }
+      parts = transformParts(rawParts, orient);
+      const guide =
+        rawParts.length > 1
+          ? drawPartMap(slot, rawParts, original.width, original.height)
+          : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
+      const uvGuide = transformCanvas(guide, orient);
+      const sendAtlas = transformCanvas(original, orient);
+      const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
       const suggested = opts.suggestion?.plans?.[slot.id];
       if (suggested) {
         // The art-director step already mapped this atlas's regions.
@@ -445,8 +556,8 @@ export class ReskinPlugin {
             this.provider.planLayout({
               slotName: slot.name,
               meshNames: slot.meshes.map((m) => m.name),
-              atlas: original,
-              atlasWithUvs: drawAtlasWithUvs(original, slot),
+              atlas: sendAtlas,
+              atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
               signal,
             }),
           );
@@ -459,16 +570,18 @@ export class ReskinPlugin {
       }
       report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
       raw = await this.toCanvas(
-        await this.timed('paint atlas', slot.id, () =>
+        await this.withFilterRetry('paint atlas', slot, theme, (plain, t) =>
           this.provider.reskinAtlas({
-            theme,
+            theme: t,
             slotName: slot.name,
-            atlas: original,
+            atlas: sendAtlas,
             uvGuide,
-            width,
-            height,
-            plan,
-            extraInstructions: opts.extraInstructions,
+            parts: plain ? undefined : parts,
+            width: sendAtlas.width,
+            height: sendAtlas.height,
+            plan: plain ? null : plan,
+            extraInstructions: plain ? undefined : opts.extraInstructions,
+            plain,
             signal,
           }),
         ),
@@ -476,19 +589,22 @@ export class ReskinPlugin {
     } else {
       report(0.2, 'generate', `Generating seamless texture for "${slot.name}"`);
       raw = await this.toCanvas(
-        await this.timed('generate texture', slot.id, () =>
+        await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
           this.provider.generateTexture({
-            theme,
+            theme: t,
             materialName: slot.name,
             width,
             height,
-            extraInstructions: opts.extraInstructions,
+            extraInstructions: plain ? undefined : opts.extraInstructions,
+            plain,
             signal,
           }),
         ),
       );
     }
     signal.throwIfAborted();
+    // Undo the upright transform so the texture matches the model's UVs again.
+    if (orient && !isIdentity(orient)) raw = untransformCanvas(raw, orient);
 
     report(0.7, 'postprocess', `Post-processing "${slot.name}"`);
     let baseColor = raw.width === width && raw.height === height ? raw : resizeCanvas(raw, width, height);
@@ -653,14 +769,48 @@ export class ReskinPlugin {
 
   // ---------------------------------------------------------------- helpers
 
+  /**
+   * Runs a paint call; if the model's safety filter rejects it, retries once with a
+   * plain prompt (no generated region text) and a toned-down theme.
+   */
+  async withFilterRetry(step, slot, theme, call) {
+    try {
+      return await this.timed(step, slot.id, () => call(false, theme));
+    } catch (err) {
+      if (!isContentPolicyError(err)) throw err;
+      const softer = softenTheme(theme);
+      this.emit('warning', {
+        message: `Muse's safety filter rejected the "${step}" request for "${slot.name}". Retrying with a plainer prompt: "${softer}".`,
+      });
+      try {
+        return await this.timed(`${step} (plain retry)`, slot.id, () => call(true, softer));
+      } catch (err2) {
+        if (isContentPolicyError(err2)) {
+          const e = new Error(
+            `Muse's safety filter rejected the theme "${theme}" (${step}, also after a plainer retry). Try rewording it: gentler words usually pass (e.g. "spooky" instead of "scary", no blood or weapons).`,
+          );
+          e.code = 'content_policy_violation';
+          e.step = step;
+          throw e;
+        }
+        throw err2;
+      }
+    }
+  }
+
   /** Runs one provider call and emits a `timing` event with how long it took. */
   async timed(step, slotId, fn) {
     const t0 = performance.now();
     let ok = false;
+    let error = null;
     try {
       const out = await fn();
       ok = true;
       return out;
+    } catch (err) {
+      if (err && typeof err === 'object' && !err.step) err.step = step;
+      error = err;
+      throw err;
     } finally {
       const slot = slotId ? this.layout?.slots.find((s) => s.id === slotId) : null;
       this.emit('timing', {
@@ -669,6 +819,7 @@ export class ReskinPlugin {
         slotName: slot?.name,
         ms: performance.now() - t0,
         ok,
+        error: error ? String(error.message ?? error) : undefined,
         provider: this.provider.name,
       });
     }
@@ -778,4 +929,43 @@ function boundingRadius(objs) {
   const box = new THREE.Box3();
   for (const o of Array.isArray(objs) ? objs : [objs]) box.expandByObject(o);
   return box.isEmpty() ? 0 : box.getSize(new THREE.Vector3()).length() / 2;
+}
+
+/** Word swaps that keep the look but avoid phrases image safety filters commonly reject. */
+const SAFE_WORDING = [
+  [/\bblood[- ]red\b/gi, 'crimson'],
+  [/\bblood[- ]?(stained|soaked|spattered|splattered)\b/gi, 'paint-splattered'],
+  [/\bdripping blood\b/gi, 'dripping red paint'],
+  [/\bblood\b/gi, 'red paint'],
+  [/\bbloody\b/gi, 'crimson'],
+  [/\b(gore|gory|guts|entrails)\b/gi, 'messy paint'],
+  [/\b(wounds?|gashes|gash|injur(y|ies))\b/gi, 'cracks'],
+  [/\beye sockets\b/gi, 'eye makeup'],
+  [/\b(corpse|cadaver)\b/gi, 'ghost'],
+  [/\b(severed|mutilated|decapitated)\b/gi, 'patchwork'],
+];
+
+/** Rewrites generated prompt text to avoid common safety-filter triggers. */
+export function sanitizePrompt(text) {
+  let t = String(text ?? '');
+  for (const [re, word] of SAFE_WORDING) t = t.replace(re, word);
+  return t;
+}
+
+const SOFTEN = [
+  [
+    /\b(scary|creepy|horror|horrifying|terrifying|frightening|evil|sinister|menacing|demonic|nightmare\w*)\b/gi,
+    'spooky',
+  ],
+  [/\b(blood\w*|gor(e|y)|guts)\b/gi, 'red paint'],
+  [/\b(dead|death|zombie|corpse|undead|skull\w*)\b/gi, 'ghostly'],
+  [/\b(kill\w*|murder\w*|weapon\w*|gun\w*|knife|knives|violent|violence)\b/gi, 'bold'],
+];
+
+/** Tones a theme down for a retry after a content-filter rejection ("scary clown" -> "spooky clown, playful Halloween style"). */
+export function softenTheme(theme) {
+  let t = theme;
+  for (const [re, word] of SOFTEN) t = t.replace(re, word);
+  t = t.replace(/\b(\w+)( \1\b)+/gi, '$1').trim();
+  return t === theme ? `${theme}, playful cartoon style` : `${t}, playful Halloween style`;
 }

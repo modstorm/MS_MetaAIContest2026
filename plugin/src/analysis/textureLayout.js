@@ -18,12 +18,47 @@ export function uvAttributeName(channel) {
 }
 
 /** Extracts the UV triangle source for a mesh / channel, or null if it has no UVs. */
-export function uvSourceOf(mesh, channel = 0) {
+/**
+ * True if a texture's own settings change where UVs land in the image:
+ * flipY (three.js upload flag) or a KHR_texture_transform offset/repeat/rotation.
+ */
+export function hasTextureTransform(tex) {
+  if (!tex) return false;
+  return (
+    tex.flipY === true ||
+    tex.rotation !== 0 ||
+    tex.offset.x !== 0 ||
+    tex.offset.y !== 0 ||
+    tex.repeat.x !== 1 ||
+    tex.repeat.y !== 1
+  );
+}
+
+/**
+ * UVs of a mesh in IMAGE space (x right, y down, 0..1 over the image) for the given
+ * texture: applies the texture's KHR_texture_transform (offset / repeat / rotation, as
+ * three.js stores it on the texture) and its flipY flag, exactly like the shader does.
+ * Without a texture (or with an identity transform) the raw glTF UVs are returned.
+ */
+export function uvSourceOf(mesh, channel = 0, texture = null) {
   const geom = mesh.geometry;
   const uv = geom.getAttribute(uvAttributeName(channel));
   if (!uv) return null;
   let uvs;
-  if (uv.isInterleavedBufferAttribute || uv.normalized || uv.itemSize !== 2) {
+  if (hasTextureTransform(texture)) {
+    if (texture.matrixAutoUpdate) texture.updateMatrix();
+    const e = texture.matrix.elements; // column-major 3x3
+    const flip = texture.flipY === true;
+    uvs = new Float32Array(uv.count * 2);
+    for (let i = 0; i < uv.count; i++) {
+      const u = uv.getX(i),
+        v = uv.getY(i);
+      const s = e[0] * u + e[3] * v + e[6];
+      const t = e[1] * u + e[4] * v + e[7];
+      uvs[i * 2] = s;
+      uvs[i * 2 + 1] = flip ? 1 - t : t;
+    }
+  } else if (uv.isInterleavedBufferAttribute || uv.normalized || uv.itemSize !== 2) {
     const flat = new Float32Array(uv.count * 2);
     for (let i = 0; i < uv.count; i++) {
       flat[i * 2] = uv.getX(i);
@@ -111,7 +146,7 @@ export function analyzeTextureLayout(root) {
       }
       if (!slot.meshes.includes(mesh)) {
         slot.meshes.push(mesh);
-        const src = uvSourceOf(mesh, channel);
+        const src = uvSourceOf(mesh, channel, tex);
         if (src) sources.get(key).push(src);
         else slot.missingUvs = true;
       }
@@ -143,9 +178,9 @@ export function analyzeTextureLayout(root) {
       warnings.push(
         `"${slot.name}": ${(slot.coverage.overlap * 100).toFixed(0)}% of UV area overlaps (mirrored or stacked islands).`,
       );
-    if (slot.texture && slot.texture.offset && (slot.texture.repeat.x !== 1 || slot.texture.repeat.y !== 1))
+    if (hasTextureTransform(slot.texture))
       warnings.push(
-        `"${slot.name}": texture uses KHR_texture_transform repeat; the layout is analyzed in raw UV space.`,
+        `"${slot.name}": the texture carries its own orientation (${slot.texture.flipY ? 'flipY' : ''}${slot.texture.flipY && slot.texture.rotation ? ', ' : ''}${slot.texture.rotation ? `rotation ${Math.round((slot.texture.rotation * 180) / Math.PI)}°` : ''}${slot.texture.repeat.x !== 1 || slot.texture.repeat.y !== 1 || slot.texture.offset.x || slot.texture.offset.y ? ' KHR_texture_transform offset/scale' : ''}); it is applied before analysis.`,
       );
   }
 

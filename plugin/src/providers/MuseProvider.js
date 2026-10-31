@@ -1,10 +1,12 @@
-import { MuseApiError, MuseClient } from '../muse/MuseClient.js';
+import { MuseApiError, MuseClient, isContentPolicyError } from '../muse/MuseClient.js';
 import {
   normalMapPrompt,
   parseLayoutPlan,
   reskinAtlasPrompt,
   roughnessMapPrompt,
   parseSuggestion,
+  plainReskinAtlasPrompt,
+  plainSeamlessTexturePrompt,
   seamlessTexturePrompt,
   suggestPrompt as suggestPromptText,
   visionPlanPrompt,
@@ -148,6 +150,69 @@ export class MuseProvider {
     return s;
   }
 
+  /**
+   * Content-filter probe: small separate requests to isolate what Muse rejects.
+   * Runs one after another so each result is independent. Returns
+   * [{ name, description, ok, ms, error? }].
+   */
+  async probeFilter({ theme, atlas, uvGuide, plan, signal, onResult }) {
+    const small = (c, kind) =>
+      kind === 'guide' ? canvasToDataUrl(resizeCanvas(c, 512, 512), 'image/png') : this.toUploadSized(c, 512);
+    const fullPrompt = reskinAtlasPrompt(theme, plan);
+    const neutral = 'Recolor this texture image in calm shades of blue. Keep every shape in exactly the same place.';
+    const tests = [
+      {
+        name: 'theme only',
+        description: `text→image with just "${theme}"`,
+        run: () => this.paint('generateImage', { prompt: theme, size: '1024x1024', signal }),
+      },
+      {
+        name: 'full prompt, no images',
+        description: 'text→image with the complete paint prompt',
+        run: () => this.paint('generateImage', { prompt: fullPrompt, size: '1024x1024', signal }),
+      },
+      {
+        name: 'prompt + atlas',
+        description: 'edit: paint prompt + the texture atlas only',
+        run: () => this.paint('editImage', { prompt: fullPrompt, images: [small(atlas)], size: '1024x1024', signal }),
+      },
+      {
+        name: 'prompt + UV mask',
+        description: 'edit: paint prompt + the UV mask only',
+        run: () =>
+          this.paint('editImage', { prompt: fullPrompt, images: [small(uvGuide, 'guide')], size: '1024x1024', signal }),
+      },
+      {
+        name: 'neutral + atlas',
+        description: 'edit: harmless "recolor blue" prompt + the texture atlas',
+        run: () => this.paint('editImage', { prompt: neutral, images: [small(atlas)], size: '1024x1024', signal }),
+      },
+    ];
+    const results = [];
+    for (const t of tests) {
+      signal?.throwIfAborted();
+      const t0 = performance.now();
+      let r;
+      try {
+        await t.run();
+        r = { name: t.name, description: t.description, ok: true, ms: performance.now() - t0 };
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        r = {
+          name: t.name,
+          description: t.description,
+          ok: false,
+          ms: performance.now() - t0,
+          error: String(err?.message ?? err),
+          filtered: isContentPolicyError(err),
+        };
+      }
+      results.push(r);
+      onResult?.(r);
+    }
+    return results;
+  }
+
   toUploadSized(c, max) {
     const { width, height } = fitSize(c.width, c.height, max);
     return canvasToDataUrl(resizeCanvas(c, width, height), 'image/jpeg', 0.9);
@@ -155,8 +220,11 @@ export class MuseProvider {
 
   reskinAtlas(req) {
     return this.paint('editImage', {
-      prompt: reskinAtlasPrompt(req.theme, req.plan, req.extraInstructions),
-      images: [this.toUpload(req.atlas), this.toUpload(req.uvGuide, 'guide')],
+      prompt: req.plain
+        ? plainReskinAtlasPrompt(req.theme)
+        : reskinAtlasPrompt(req.theme, req.plan, req.extraInstructions, req.parts),
+      // The plain retry sends only the atlas (no wireframe guide image).
+      images: req.plain ? [this.toUpload(req.atlas)] : [this.toUpload(req.atlas), this.toUpload(req.uvGuide, 'guide')],
       size: museSizeFor(req.width, req.height),
       signal: req.signal,
     });
@@ -164,7 +232,9 @@ export class MuseProvider {
 
   generateTexture(req) {
     return this.paint('generateImage', {
-      prompt: seamlessTexturePrompt(req.theme, req.materialName, req.extraInstructions),
+      prompt: req.plain
+        ? plainSeamlessTexturePrompt(req.theme)
+        : seamlessTexturePrompt(req.theme, req.materialName, req.extraInstructions),
       size: museSizeFor(req.width, req.height),
       signal: req.signal,
     });

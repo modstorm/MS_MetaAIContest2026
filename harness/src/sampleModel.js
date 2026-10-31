@@ -116,3 +116,37 @@ function paintAtlas() {
     }
   return c;
 }
+
+/**
+ * Test asset for UV orientation: two planes sharing one atlas. "Head" (top half of the
+ * atlas) is stored upside down, "Body" (bottom half) is stored upright.
+ */
+export async function buildOrientationTestGlb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#888';
+  g.fillRect(0, 0, 256, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'doll' });
+  const root = new THREE.Group();
+  const make = (name, y, upsideDown, [v0, v1]) => {
+    const geom = new THREE.PlaneGeometry(1, 1);
+    const uv = geom.getAttribute('uv');
+    for (let i = 0; i < uv.count; i++) {
+      // glTF v grows downward: upright means top of plane -> small v.
+      const t = 1 - uv.getY(i); // 0 at top of plane
+      const v = upsideDown ? 1 - t : t;
+      uv.setXY(i, uv.getX(i), v0 + v * (v1 - v0));
+    }
+    const m = new THREE.Mesh(geom, mat);
+    m.name = name;
+    m.position.y = y;
+    root.add(m);
+  };
+  make('Head', 1.2, true, [0, 0.5]);
+  make('Body', 0, false, [0.5, 1]);
+  return exportGLB(root);
+}

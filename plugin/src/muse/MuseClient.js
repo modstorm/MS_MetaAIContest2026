@@ -25,9 +25,25 @@ export class MuseApiError extends Error {
     this.param = body && typeof body === 'object' ? body.error?.param : undefined;
     this.name = 'MuseApiError';
   }
+
+  /** True when Muse's safety filter rejected the prompt or the output. */
+  get isContentPolicy() {
+    return isContentPolicyError(this);
+  }
+}
+
+/** True for content-filter rejections (from Muse or any error with a matching message). */
+export function isContentPolicyError(err) {
+  if (!err) return false;
+  if (err.code === 'content_policy_violation') return true;
+  return /content (management |moderation )?polic|filtered due to|safety (system|filter)/i.test(
+    String(err.message ?? ''),
+  );
 }
 
 export class MuseClient {
+  /** Optional hook called after every request: { url, method, request, status, ms, error }. Images are shortened. */
+  onExchange = null;
   options;
   fetchImpl;
 
@@ -123,6 +139,16 @@ export class MuseClient {
     }
 
     let attempt = 0;
+    const t0 = performance.now();
+    const report = (status, error) =>
+      this.onExchange?.({
+        url: `${base}${path}`,
+        method: 'POST',
+        request: redactImages(body),
+        status,
+        ms: performance.now() - t0,
+        error,
+      });
     for (;;) {
       const timeout = AbortSignal.timeout(this.options.timeoutMs);
       const combined = signal ? anySignal([signal, timeout]) : timeout;
@@ -139,7 +165,10 @@ export class MuseClient {
       } catch {
         /* non-JSON body */
       }
-      if (res.ok) return json;
+      if (res.ok) {
+        report(res.status);
+        return json;
+      }
 
       const retryable = res.status === 503 || res.status === 500 || res.status === 429;
       if (retryable && attempt < this.options.maxRetries) {
@@ -152,6 +181,7 @@ export class MuseClient {
         continue;
       }
       const e = json?.error ?? {};
+      report(res.status, e.message ?? text.slice(0, 300));
       throw new MuseApiError(
         e.message ?? `Muse request failed: ${res.status} ${res.statusText} ${text.slice(0, 200)}`,
         res.status,
@@ -161,6 +191,21 @@ export class MuseClient {
       );
     }
   }
+}
+
+/** Deep copy of a request body with data-URL images replaced by a short placeholder. */
+export function redactImages(value) {
+  if (typeof value === 'string') {
+    const m = /^data:([^;,]+)[;,]/.exec(value);
+    return m ? `[${m[1]} image, ${Math.round((value.length * 0.75) / 1024)} KB]` : value;
+  }
+  if (Array.isArray(value)) return value.map(redactImages);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactImages(v);
+    return out;
+  }
+  return value;
 }
 
 export function base64ToBlob(b64, mime) {

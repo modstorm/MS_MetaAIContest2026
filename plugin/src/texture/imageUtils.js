@@ -98,8 +98,8 @@ export function drawUvGuide(slot, width, height, opts = {}) {
   }
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
-  for (const mesh of slot.meshes) {
-    const src = uvSourceOf(mesh, slot.uvChannel);
+  for (const mesh of opts.meshes ?? slot.meshes) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
     if (!src) continue;
     const tris = Math.floor((src.index ? src.index.length : src.uvs.length / 2) / 3);
     const path = new Path2D();
@@ -129,6 +129,80 @@ export function drawUvGuide(slot, width, height, opts = {}) {
     }
   }
   return c;
+}
+
+/**
+ * Part map: each part's UV area filled with its own flat color (see analysis/parts.js).
+ * With `atlas`, the colors are drawn semi-transparent over it. With `labels`, each part's
+ * name and an arrow showing which way is "up" on the model are drawn in its box.
+ */
+export function drawPartMap(slot, parts, width, height, { atlas = null, labels = false, alpha = 1 } = {}) {
+  const c = createCanvas(width, height);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, c.width, c.height);
+  if (atlas) ctx.drawImage(atlas, 0, 0, c.width, c.height);
+  ctx.globalAlpha = alpha;
+  for (const p of parts) {
+    const layer = drawUvGuide(slot, c.width, c.height, {
+      meshes: p.meshes,
+      fillColor: p.hex,
+      wireframe: false,
+      background: null,
+    });
+    ctx.drawImage(layer, 0, 0);
+  }
+  ctx.globalAlpha = 1;
+  if (labels) drawPartLabels(c, parts);
+  return c;
+}
+
+/** Draws each part's name and an arrow toward the part's top at the center of its bbox. */
+export function drawPartLabels(c, parts) {
+  const ctx = ctx2d(c);
+  {
+    const fs = Math.max(12, Math.round(c.width / 40));
+    ctx.font = `bold ${fs}px system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    for (const p of parts) {
+      const [x0, y0, x1, y1] = p.bbox.map((n, i) => (n / 1000) * (i % 2 ? c.height : c.width));
+      const cx = (x0 + x1) / 2,
+        cy = (y0 + y1) / 2;
+      const arrow = { up: ' ↑', down: ' ↓', left: ' ←', right: ' →' }[p.up] ?? '';
+      const label = `${p.name}${arrow}`;
+      const w = ctx.measureText(label).width + fs;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillRect(cx - w / 2, cy - fs * 0.75, w, fs * 1.5);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, cx, cy);
+    }
+  }
+  return c;
+}
+
+/** Applies T = rotate `rot`° clockwise, then optional horizontal mirror. */
+export function transformCanvas(src, t) {
+  if (!t || (t.rot % 360 === 0 && !t.flipX)) return src;
+  const rot = ((t.rot % 360) + 360) % 360;
+  const swap = rot === 90 || rot === 270;
+  const c = createCanvas(swap ? src.height : src.width, swap ? src.width : src.height);
+  const ctx = ctx2d(c);
+  if (t.flipX) {
+    ctx.translate(c.width, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate((rot * Math.PI) / 180);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  return c;
+}
+
+/** Undoes transformCanvas(…, t). */
+export function untransformCanvas(src, t) {
+  if (!t || (t.rot % 360 === 0 && !t.flipX)) return src;
+  let c = t.flipX ? transformCanvas(src, { rot: 0, flipX: true }) : src;
+  return transformCanvas(c, { rot: (360 - (t.rot % 360)) % 360, flipX: false });
 }
 
 /** The atlas with the UV wireframe drawn over it (for display and as a model hint). */
