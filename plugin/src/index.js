@@ -22,5 +22,14 @@ export { computeUvIslands, computeUvCoverage, computeUvBounds, isTiled } from '.
 export { generateBoxUvs } from './analysis/uvGenerate.js';
 export { renderAxisViews, AXIS_VIEWS } from './analysis/renderViews.js';
 export { slotParts, chooseOrientation, resolveOrientation, transformParts } from './analysis/parts.js';
-export { drawUvGuide, drawAtlasWithUvs, drawPartMap, transformCanvas, untransformCanvas, textureToCanvas, canvasToBlob, canvasToDataUrl } from './texture/imageUtils.js';
+export {
+  drawUvGuide,
+  drawAtlasWithUvs,
+  drawPartMap,
+  transformCanvas,
+  untransformCanvas,
+  textureToCanvas,
+  canvasToBlob,
+  canvasToDataUrl,
+} from './texture/imageUtils.js';
 export { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';

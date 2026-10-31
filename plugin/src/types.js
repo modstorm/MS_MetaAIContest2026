@@ -90,6 +90,9 @@
  * @property {'auto' | 'none' | 'flipV' | 'flipH' | 'rot90' | 'rot180' | 'rot270' | { rot: number, flipX: boolean }} [orientation]
  *   How to turn the atlas before sending it to the model (and back after). 'auto' (default) uses the 3D data so the
  *   head/face (or the largest part) is upright.
+ * @property {boolean} [cleanTinyIslands] Fill each tiny island (fingers, buttons) with one solid color. Default true.
+ * @property {number} [tinyIslandFraction] "Tiny" = fewer texels than this fraction of the image. Default 0.002.
+ * @property {number} [edgePadding] Pixels (at 1024px) to grow island colors into gaps, against seams. Default 12; 0 = off.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.
  * @property {AbortSignal} [signal]
  */

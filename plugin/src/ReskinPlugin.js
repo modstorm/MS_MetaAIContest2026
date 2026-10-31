@@ -22,6 +22,7 @@ import {
   untransformCanvas,
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
+import { flattenTinyIslands, islandIdMap, padIslands } from './texture/islandPost.js';
 
 /**
  * Events the plugin emits. Subscribe to one with `plugin.on(type, cb)` or to
@@ -607,9 +608,19 @@ export class ReskinPlugin {
     if (orient && !isIdentity(orient)) raw = untransformCanvas(raw, orient);
 
     report(0.7, 'postprocess', `Post-processing "${slot.name}"`);
-    let baseColor = raw.width === width && raw.height === height ? raw : resizeCanvas(raw, width, height);
+    let baseColor = resizeCanvas(raw, width, height); // always a fresh copy; `raw` stays as returned
+    const islandMap = atlasMode ? islandIdMap(slot, width, height) : null;
+    if (islandMap && (opts.cleanTinyIslands ?? true)) {
+      // Fingers, buttons and other tiny packed islands: one solid color each, no stray patterns.
+      const n = flattenTinyIslands(baseColor, islandMap, opts.tinyIslandFraction ?? 0.002);
+      if (n) this.emit('warning', { message: `"${slot.name}": cleaned up ${n} tiny island(s) to solid colors.` });
+    }
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
+    if (islandMap && (opts.edgePadding ?? 12) > 0) {
+      // Edge padding: grow island colors into the gaps so seams never sample dark pixels.
+      padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
+    }
 
     report(0.8, 'apply', `Applying "${slot.name}"`);
     const baseTex = this.makeTexture(baseColor, slot.texture, THREE.SRGBColorSpace, slot.uvChannel, !atlasMode);

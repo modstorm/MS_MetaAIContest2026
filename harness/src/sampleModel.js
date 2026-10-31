@@ -150,3 +150,32 @@ export async function buildOrientationTestGlb() {
   make('Body', 0, false, [0.5, 1]);
   return exportGLB(root);
 }
+
+/**
+ * Test asset for post-processing: one large "Arm" island (u 0.1–0.4, v 0.1–0.9)
+ * and ten tiny "Finger" islands in a row (v 0.45–0.48), sharing a 1024² atlas.
+ */
+export async function buildPaddingTestGlb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const g = c.getContext('2d');
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, 1024, 1024);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'skin' });
+  const root = new THREE.Group();
+  const quad = (name, [u0, v0, u1, v1], x) => {
+    const geom = new THREE.PlaneGeometry(0.2, 0.2);
+    const uv = geom.getAttribute('uv');
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * (u1 - u0), v0 + (1 - uv.getY(i)) * (v1 - v0));
+    const m = new THREE.Mesh(geom, mat);
+    m.name = name;
+    m.position.x = x;
+    root.add(m);
+  };
+  quad('Arm', [0.1, 0.1, 0.4, 0.9], 0);
+  for (let i = 0; i < 10; i++) quad('Finger', [0.5 + i * 0.045, 0.45, 0.53 + i * 0.045, 0.48], 0.3 + i * 0.25);
+  return exportGLB(root);
+}

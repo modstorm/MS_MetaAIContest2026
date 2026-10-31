@@ -392,6 +392,8 @@ async function runReskin(text, suggestion) {
       useVisionPlanning: $('opt-plan').checked,
       fast: $('opt-fast').checked,
       orientation: $('opt-orient').value,
+      cleanTinyIslands: $('opt-tiny').checked,
+      edgePadding: $('opt-pad').checked ? 12 : 0,
       normalMaps: $('opt-normal').checked,
       roughnessMaps: $('opt-rough').checked,
       maxTextureSize: Number($('opt-size').value),

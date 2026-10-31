@@ -471,6 +471,61 @@ try {
     await page.context().close();
   });
 
+  await step('edge padding removes dark gaps; tiny islands become one solid color', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Mock paint: black background, red over the arm area, 1-texel red/yellow stripes elsewhere (64px -> 16px stripes).
+    const png = makePng(64, 64, (x, y) => {
+      const u = (x + 0.5) / 64,
+        v = (y + 0.5) / 64;
+      if (u > 0.1 && u < 0.4 && v > 0.1 && v < 0.9) return [255, 0, 0];
+      if (v > 0.4 && v < 0.55) return x % 2 ? [255, 255, 0] : [255, 0, 0];
+      return [0, 0, 0];
+    }).toString('base64');
+    await page.route('https://api.meta.ai/v1/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(
+          route.request().url().endsWith('/chat/completions')
+            ? { choices: [{ message: { content: '{}' } }] }
+            : { data: [{ b64_json: png }] },
+        ),
+      }),
+    );
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildPaddingTestGlb()));
+    });
+    const px = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'pad-test' });
+      const r = await p.postPrompt('clown', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        detailPreserve: 0,
+      });
+      const c = r.slots[0].canvas;
+      const g = c.getContext('2d');
+      const at = (u, v) =>
+        Array.from(g.getImageData(Math.round(u * c.width), Math.round(v * c.height), 1, 1).data).slice(0, 3);
+      return {
+        size: c.width,
+        outsideArm: at(0.4 + 6 / 1024, 0.5), // 6px right of the arm island: inside the padding
+        farAway: at(0.95, 0.05),
+        fingerA: at(0.505, 0.465),
+        fingerB: at(0.525, 0.465),
+      };
+    }, glb);
+    assert.equal(px.size, 1024);
+    assert.ok(px.outsideArm[0] > 200 && px.outsideArm[1] < 60, `padding should be red, got ${px.outsideArm}`);
+    assert.deepEqual(px.farAway, [0, 0, 0]); // far from any island: untouched
+    assert.deepEqual(px.fingerA, px.fingerB, 'tiny island is one solid color');
+    assert.match(await page.textContent('#log'), /cleaned up 10 tiny island/);
+    await page.context().close();
+  });
+
   console.log('Drag and drop');
   await step('dropping a .glb loads it and opens the prompt', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
