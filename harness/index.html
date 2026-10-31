@@ -64,6 +64,19 @@
         <label for="prompt-text">Theme</label>
         <textarea id="prompt-text" rows="3" required placeholder="e.g. haunted Halloween pumpkin armor with glowing orange cracks"></textarea>
         <div class="chips" id="prompt-chips"></div>
+        <label class="inline" id="suggest-row"><input id="opt-suggest" type="checkbox" checked /> Let Muse study the model first (6 views + texture layout) and suggest a better prompt</label>
+        <section id="suggestion" class="suggestion" hidden>
+          <div id="sugg-sheet" class="sheet"></div>
+          <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
+          <div id="sugg-parts" class="chips static"></div>
+          <label for="sugg-prompt">Recommended prompt (edit freely)</label>
+          <textarea id="sugg-prompt" rows="5"></textarea>
+          <p class="muted" id="sugg-tips"></p>
+          <details>
+            <summary>Paint plan per texture region</summary>
+            <ul id="sugg-regions" class="regions"></ul>
+          </details>
+        </section>
         <details>
           <summary>Options</summary>
           <div class="opts">
@@ -85,6 +98,7 @@
           <span class="muted" id="provider-label"></span>
           <span class="spacer"></span>
           <button type="button" id="prompt-cancel">Cancel</button>
+          <button type="button" id="prompt-original" hidden>Use my prompt</button>
           <button type="submit" id="prompt-go" class="primary">Reskin</button>
         </div>
       </form>

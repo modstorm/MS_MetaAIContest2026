@@ -13,5 +13,6 @@ export { loadModel, exportGLB } from './io/modelIO.js';
 export { analyzeTextureLayout, summarizeLayout, uvSourceOf } from './analysis/textureLayout.js';
 export { computeUvIslands, computeUvCoverage, computeUvBounds, isTiled } from './analysis/uvIslands.js';
 export { generateBoxUvs } from './analysis/uvGenerate.js';
+export { renderAxisViews, AXIS_VIEWS } from './analysis/renderViews.js';
 export { drawUvGuide, drawAtlasWithUvs, textureToCanvas, canvasToBlob, canvasToDataUrl } from './texture/imageUtils.js';
 export { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';

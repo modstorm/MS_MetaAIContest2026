@@ -35,7 +35,10 @@ You can get a key at [dev.meta.ai](https://dev.meta.ai). Without one, the harnes
 ```
 GLB ──► load (GLTFLoader, Draco + meshopt)
      ──► analyze: group meshes by base color texture → UV islands, coverage, overlap, tiling
-     ──► plan:    muse-spark-1.3 looks at the atlas + UV wireframe and names each region
+     ──► suggest: renders six axis views (±X ±Y ±Z); muse-spark-1.3 looks at them + the UV atlases,
+                  says what the object is, and recommends a stronger part-by-part prompt
+                  and a per-region paint plan → shown to the user to review and edit
+     ──► plan:    (without suggest) muse-spark-1.3 reads the atlas + UV wireframe and names each region
      ──► paint:   muse-image-1.0 /images/edits repaints the atlas in the theme, layout locked
                (untextured or tiled materials: /images/generations makes a seamless texture)
      ──► post:    resize to the source size, keep a little of the original shading,
@@ -86,13 +89,15 @@ plugin.on('textureUpdated', ({ kind, canvas }) => { /* preview */ });
 const { model, layout } = await plugin.postModel(file);          // File, File[], Blob, ArrayBuffer or URL
 scene.add(model.scene);
 
-await plugin.postPrompt('haunted Halloween pumpkin armor', { detailPreserve: 0.35 });
+const suggestion = await plugin.postSuggest('haunted Halloween pumpkin armor'); // optional: review suggestion.prompt
+await plugin.postPrompt(suggestion.prompt, { suggestion, detailPreserve: 0.35 });
 const { glb, filename } = await plugin.postExport();             // ArrayBuffer
 ```
 
 | Method | Purpose |
 | --- | --- |
 | `postModel(input, opts?)` | Load and analyze a model. Emits `loaded`. |
+| `postSuggest(theme, opts?)` | Art-director step: six-view renders + atlases → Muse Spark recommends a prompt and region plan. Emits `views`, `suggestion`. Nothing is painted. |
 | `postPrompt(prompt, opts?)` | Reskin the current model. Emits `progress`, `plan`, `textureUpdated`, `reskinned`. |
 | `postExport(filename?)` | Export a GLB. Emits `exported`. |
 | `on(type, cb)` / `onUpdate(cb)` | Subscribe to one event type or to all events. Both return an unsubscribe function. |
@@ -100,7 +105,7 @@ const { glb, filename } = await plugin.postExport();             // ArrayBuffer
 | `setProvider(provider)` | Swap the backend (`MuseProvider`, `ProceduralProvider`, or your own). |
 | `summary()`, `slotPreview(id)` | JSON layout summary, plus atlas and UV preview canvases. |
 
-`postPrompt` options: `detailPreserve` (0..1), `useVisionPlanning`, `normalMaps`, `roughnessMaps`, `maxTextureSize`, `extraInstructions`, `slotIds`, `signal`.
+`postPrompt` options: `suggestion` (from `postSuggest`), `fast` (default on: no Muse web search, low reasoning, smaller uploads), `detailPreserve` (0..1), `useVisionPlanning`, `normalMaps`, `roughnessMaps`, `maxTextureSize`, `extraInstructions`, `slotIds`, `signal`.
 
 A custom backend is any object with `reskinAtlas(req)` and `generateTexture(req)`. It may also have `planLayout(req)` and `reskinAuxMap(req)`. See `plugin/src/providers/types.js`.
 

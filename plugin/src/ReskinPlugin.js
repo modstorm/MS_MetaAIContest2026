@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
+import { renderAxisViews } from './analysis/renderViews.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import {
@@ -28,6 +29,8 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
  *   reskinned       ReskinResult
  *   reverted        {}
  *   exported        { glb: ArrayBuffer, filename }
+ *   views           { views: [{ name, axis, canvas }], sheet }       six axis renders sent to Muse
+ *   suggestion      Suggestion   Muse's recommended prompt + per-region plan (from postSuggest)
  *   timing          { step, slotId, slotName, ms, ok, provider }   one per model call
  *   warning         { message }
  *   error           { error: Error, stage }
@@ -64,6 +67,8 @@ export class ReskinPlugin {
   snapshots = new Map();
   /** Layout readings per texture, reused across prompts (the layout doesn't depend on the theme). */
   planCache = new Map();
+  /** Art-director suggestions per theme for the current model. */
+  suggestionCache = new Map();
   busy = false;
   abort = null;
 
@@ -138,6 +143,7 @@ export class ReskinPlugin {
       this.model = model;
       this.snapshots.clear();
       this.planCache.clear();
+      this.suggestionCache.clear();
       this.lastResult = null;
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
@@ -181,6 +187,89 @@ export class ReskinPlugin {
   }
 
   // ---------------------------------------------------------------- post: prompt
+
+  /** True if the current provider can recommend prompts (postSuggest). */
+  get canSuggest() {
+    return typeof this.provider.suggestPrompt === 'function';
+  }
+
+  /**
+   * Art-director step, run before painting: renders the model from the six axis
+   * directions (±X, ±Y, ±Z), sends those views plus the UV atlases to the vision
+   * model, and returns what it thinks the object is, a stronger prompt for the
+   * theme, and a per-region paint plan. Nothing is painted. Pass the result to
+   * `postPrompt(text, { suggestion })` to use it (the text may be edited first).
+   * @param {string} theme
+   * @param {{ signal?: AbortSignal, fast?: boolean, viewSize?: number }} [opts]
+   * @returns {Promise<import('./types.js').Suggestion>}
+   */
+  async postSuggest(theme, opts = {}) {
+    this.guard();
+    if (!this.model || !this.layout) throw new Error('Post a model before asking for a suggestion');
+    if (!this.canSuggest) throw new Error(`${this.provider.name} cannot suggest prompts`);
+    theme = theme.trim();
+    if (!theme) throw new Error('Prompt is empty');
+    const cached = this.suggestionCache.get(theme);
+    if (cached) {
+      this.emit('suggestion', cached);
+      return cached;
+    }
+
+    this.busy = true;
+    this.abort = new AbortController();
+    const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
+    try {
+      if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
+      this.restoreSnapshots(); // study the original look
+      this.status('analyzing', 'Rendering six views of the model…');
+      this.emit('progress', { stage: 'plan', message: 'Rendering six views of the model', progress: 0.1 });
+      const { views, sheet } = renderAxisViews(this.model.scene, { size: opts.viewSize ?? 384 });
+      this.emit('views', { views, sheet });
+
+      const atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
+      const atlases = atlasSlots.map((slot) => {
+        const atlas = textureToCanvas(slot.texture, 1024);
+        return {
+          slotId: slot.id,
+          name: slot.name,
+          meshNames: slot.meshes.map((m) => m.name),
+          atlasWithUvs: drawAtlasWithUvs(atlas, slot),
+        };
+      });
+
+      this.status('analyzing', 'Muse is studying the model…');
+      this.emit('progress', {
+        stage: 'plan',
+        message: 'Muse is studying the model and the texture layout',
+        progress: 0.3,
+      });
+      const raw = await this.timed('suggest prompt', null, () =>
+        this.provider.suggestPrompt({ theme, sheet, atlases, signal }),
+      );
+
+      const plans = {};
+      for (const a of raw.atlases ?? []) {
+        const slot = atlasSlots[a.index - 1];
+        if (!slot || !a.regions?.length) continue;
+        plans[slot.id] = {
+          subject: raw.subject,
+          regions: a.regions.map((r) => ({ name: r.name, bbox: r.bbox, description: r.paint })),
+        };
+      }
+      const suggestion = { ...raw, theme, prompt: raw.prompt || theme, plans, sheet, views };
+      this.suggestionCache.set(theme, suggestion);
+      this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
+      this.emit('suggestion', suggestion);
+      this.status('idle', `Muse sees: ${suggestion.subject || 'unknown object'}`);
+      return suggestion;
+    } catch (err) {
+      this.fail(err, 'suggest');
+      throw err;
+    } finally {
+      this.busy = false;
+      this.abort = null;
+    }
+  }
 
   /**
    * Reskin the current model from a theme prompt. Updates the model's materials in place.
@@ -342,7 +431,11 @@ export class ReskinPlugin {
         lineWidth: Math.max(1, original.width / 1024),
       });
       const planKey = `${this.provider.name}:${slot.texture.uuid}`;
-      if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
+      const suggested = opts.suggestion?.plans?.[slot.id];
+      if (suggested) {
+        // The art-director step already mapped this atlas's regions.
+        plan = suggested;
+      } else if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
         // The layout doesn't depend on the theme, so it is read once per model.
         plan = this.planCache.get(planKey);
       } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {

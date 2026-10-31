@@ -87,7 +87,21 @@
  * @property {boolean} [fast] Provider speed mode (Muse: no web/image search, low reasoning, smaller uploads). Default: provider's setting (on).
  * @property {boolean} [localSmallParts] Tint small untextured parts from the new palette instead of a model call. Default true.
  * @property {number} [smallPartRatio] "Small" = bounding radius below this fraction of the model's. Default 0.2.
+ * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.
  * @property {AbortSignal} [signal]
+ */
+
+/**
+ * What the art-director step (postSuggest) recommends.
+ * @typedef {object} Suggestion
+ * @property {string} theme The user's original theme.
+ * @property {string} subject What the vision model thinks the object is.
+ * @property {string} prompt The recommended, more detailed prompt.
+ * @property {{ name: string, description?: string }[]} parts Visible parts it identified.
+ * @property {Record<string, LayoutPlan>} plans Per-slot region plans (slotId -> plan).
+ * @property {string} [tips]
+ * @property {HTMLCanvasElement} sheet The six-view contact sheet that was sent.
+ * @property {{ name: string, axis: string, canvas: HTMLCanvasElement }[]} views
  */
 
 /**

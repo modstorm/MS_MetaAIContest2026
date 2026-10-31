@@ -92,3 +92,63 @@ export function parseLayoutPlan(text) {
     return null;
   }
 }
+
+/**
+ * Art-director prompt: Muse Spark sees six axis renders plus the UV atlases, works out
+ * what the object is, and writes a stronger, part-by-part paint prompt for the theme.
+ */
+export function suggestPrompt(theme, atlases, hasSheet = true) {
+  const atlasLines = atlases.map(
+    (a, i) =>
+      `Image ${i + (hasSheet ? 2 : 1)}: UV texture atlas "${a.name}" (UV island outlines in pink), used by: ${a.meshNames.slice(0, 12).join(', ') || 'unknown'}.`,
+  );
+  return [
+    'You are the art director for retexturing a 3D game asset.',
+    hasSheet
+      ? 'Image 1 is a contact sheet with six orthographic renders of the model: front (+Z), back (-Z), left (-X), right (+X), top (+Y), bottom (-Y).'
+      : '',
+    ...atlasLines,
+    `The user wants to retheme the model as: "${theme}".`,
+    'Work out what the object is and which atlas regions belong to which visible part. Then write the best possible instruction for an image model that will repaint each atlas while keeping its exact layout.',
+    'Reply with JSON only, no prose, in this shape:',
+    '{"subject": "what the object is, one line",',
+    ' "parts": [{"name": "visible part", "description": "what it looks like now"}],',
+    ' "prompt": "2-4 sentences: the improved theme prompt, naming concrete colors, materials and motifs for each part, flat unlit albedo, no text",',
+    ' "atlases": [{"index": 1, "regions": [{"name": "part name", "bbox": [x0, y0, x1, y1], "paint": "what to paint there in the new theme"}]}],',
+    ' "tips": "optional one-line note for the user"}',
+    'Atlas "index" counts the atlas images from 1. bbox is on a 0-1000 grid of that atlas image, origin top-left. At most 12 regions per atlas.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Parses the art-director reply. Returns null if it is not usable JSON. */
+export function parseSuggestion(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const o = JSON.parse(text.slice(start, end + 1));
+    const bbox = (b) =>
+      Array.isArray(b) && b.length === 4 && b.every((n) => Number.isFinite(Number(n)))
+        ? b.map((n) => Math.round(Number(n)))
+        : undefined;
+    return {
+      subject: String(o.subject ?? ''),
+      prompt: String(o.prompt ?? '').trim(),
+      tips: o.tips ? String(o.tips) : undefined,
+      parts: (Array.isArray(o.parts) ? o.parts : [])
+        .filter((p) => p && p.name)
+        .map((p) => ({ name: String(p.name), description: p.description ? String(p.description) : undefined })),
+      atlases: (Array.isArray(o.atlases) ? o.atlases : []).map((a) => ({
+        index: Number(a.index),
+        regions: (Array.isArray(a.regions) ? a.regions : [])
+          .filter((r) => r && r.name)
+          .map((r) => ({ name: String(r.name), bbox: bbox(r.bbox), paint: r.paint ? String(r.paint) : undefined })),
+      })),
+      raw: text,
+    };
+  } catch {
+    return null;
+  }
+}

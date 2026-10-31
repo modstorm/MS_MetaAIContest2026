@@ -369,3 +369,47 @@ summary {
 .empty-state[hidden] {
   display: none;
 }
+
+.dialog label.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.suggestion {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #12141a;
+}
+.suggestion p {
+  margin: 8px 0;
+}
+.sheet canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+}
+.chips.static span {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.regions {
+  font-size: 12px;
+  color: var(--muted);
+  padding-left: 18px;
+  max-height: 160px;
+  overflow: auto;
+}
+.dialog {
+  max-height: 92vh;
+  overflow: auto;
+}
+[hidden] {
+  display: none !important;
+}

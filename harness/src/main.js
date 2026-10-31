@@ -251,6 +251,8 @@ function openPrompt() {
     : '';
   $('provider-label').textContent = `Backend: ${plugin.getProvider().name}`;
   $('prompt-progress').hidden = true;
+  $('suggest-row').hidden = !plugin.canSuggest;
+  clearSuggestion();
   setPromptBusy(false);
   if (!dialog.open) dialog.showModal();
   promptText.focus();
@@ -258,6 +260,7 @@ function openPrompt() {
 
 function setPromptBusy(busy) {
   $('prompt-go').disabled = busy;
+  $('prompt-original').disabled = busy;
   promptText.disabled = busy;
   $('prompt-cancel').textContent = busy ? 'Stop' : 'Cancel';
 }
@@ -267,15 +270,57 @@ $('prompt-cancel').onclick = () => {
   if (plugin.isBusy) plugin.cancel();
   else dialog.close();
 };
-$('prompt-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const prompt = promptText.value.trim();
-  if (!prompt) return;
+// The suggestion waiting for the user's OK (art-director step), if any.
+let pending = null;
+
+function suggestEnabled() {
+  return plugin.canSuggest && $('opt-suggest').checked;
+}
+
+function updateGoLabel() {
+  $('prompt-go').textContent = pending ? 'Paint with this prompt' : suggestEnabled() ? 'Get Muse suggestion' : 'Reskin';
+  $('prompt-original').hidden = !pending;
+}
+
+function clearSuggestion() {
+  pending = null;
+  $('suggestion').hidden = true;
+  updateGoLabel();
+}
+
+function showSuggestion(s) {
+  pending = s;
+  const sheet = $('sugg-sheet');
+  sheet.innerHTML = '';
+  if (s.sheet) sheet.append(thumb(s.sheet, 900));
+  $('sugg-subject').textContent = s.subject || 'not sure';
+  $('sugg-parts').innerHTML = (s.parts ?? [])
+    .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
+    .join('');
+  $('sugg-prompt').value = s.prompt;
+  $('sugg-tips').textContent = s.tips ?? '';
+  const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
+    const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
+    return plan.regions.map(
+      (r) => `<li><b>${escapeHtml(name)} / ${escapeHtml(r.name)}</b>: ${escapeHtml(r.description ?? '')}</li>`,
+    );
+  });
+  $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
+  $('suggestion').hidden = false;
+  updateGoLabel();
+  $('sugg-prompt').focus();
+}
+
+promptText.addEventListener('input', () => pending && clearSuggestion());
+$('opt-suggest').addEventListener('change', updateGoLabel);
+
+async function runReskin(text, suggestion) {
   $('prompt-progress').hidden = false;
   $('prompt-bar').style.width = '0%';
   setPromptBusy(true);
   try {
-    const res = await plugin.postPrompt(prompt, {
+    const res = await plugin.postPrompt(text, {
+      suggestion,
       detailPreserve: Number($('opt-detail').value),
       useVisionPlanning: $('opt-plan').checked,
       fast: $('opt-fast').checked,
@@ -295,7 +340,31 @@ $('prompt-form').addEventListener('submit', async (e) => {
   } finally {
     setPromptBusy(false);
   }
+}
+
+$('prompt-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const prompt = promptText.value.trim();
+  if (!prompt) return;
+  if (pending) return runReskin($('sugg-prompt').value.trim() || prompt, pending);
+  if (!suggestEnabled()) return runReskin(prompt);
+
+  // Step 1: Muse studies six views + the atlases and recommends a prompt. Nothing is painted yet.
+  $('prompt-progress').hidden = false;
+  $('prompt-bar').style.width = '0%';
+  setPromptBusy(true);
+  try {
+    showSuggestion(await plugin.postSuggest(prompt, { fast: $('opt-fast').checked }));
+    $('prompt-stage').textContent = 'Review the suggestion, edit it if you like, then paint.';
+  } catch (err) {
+    $('prompt-stage').textContent =
+      `Suggestion failed: ${err.message}. You can untick the suggestion box and reskin directly.`;
+  } finally {
+    setPromptBusy(false);
+  }
 });
+
+$('prompt-original').onclick = () => runReskin(promptText.value.trim(), pending);
 
 // ------------------------------------------------------------------ compare + export
 let showingOriginal = false;

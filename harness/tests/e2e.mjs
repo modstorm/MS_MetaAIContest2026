@@ -50,8 +50,9 @@ async function newPage(settings) {
   return page;
 }
 
-async function reskinViaPopup(page, prompt) {
+async function reskinViaPopup(page, prompt, { suggest = false } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
+  if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
   await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
@@ -148,7 +149,7 @@ try {
   });
 
   console.log('Muse backend (mocked API)');
-  await step('calls muse-spark-1.3 + muse-image-1.0 with the documented request shapes', async () => {
+  await step('direct mode: calls muse-spark-1.3 + muse-image-1.0 with the documented request shapes', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'test-key-not-real', useProxy: false });
     const calls = [];
     const png = makePng().toString('base64');
@@ -215,6 +216,73 @@ try {
     await page.context().close();
   });
 
+  await step('suggestion mode: six views -> Muse recommendation shown -> edited prompt is painted', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const calls = [];
+    const png = makePng().toString('base64');
+    const suggestion = {
+      subject: 'cartoon toy robot on a round base',
+      parts: [
+        { name: 'head', description: 'boxy grey head with cyan eyes' },
+        { name: 'limbs', description: 'striped capsules' },
+      ],
+      prompt: 'Frosted glacier robot: icy blue head with glowing white eyes, cracked ice torso plates.',
+      atlases: [
+        {
+          index: 1,
+          regions: [{ name: 'face', bbox: [0, 0, 500, 500], paint: 'frosted ice face plate with glowing eyes' }],
+        },
+      ],
+      tips: 'Keep the eyes bright so they read from far away.',
+    };
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      calls.push({ url: req.url(), body });
+      const json = req.url().endsWith('/chat/completions')
+        ? { choices: [{ message: { content: JSON.stringify(suggestion) } }] }
+        : { data: [{ b64_json: png }] };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(json),
+      });
+    });
+    await page.click('#btn-sample');
+    await page.waitForSelector('#prompt-dialog[open]');
+    assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
+    await page.fill('#prompt-text', 'ice');
+    await page.click('#prompt-go');
+    await page.waitForSelector('#suggestion:not([hidden])');
+    // Nothing painted yet: only the art-director call was made, with the 6-view sheet + 1 atlas.
+    assert.deepEqual(
+      calls.map((c) => c.url.split('/v1/')[1]),
+      ['chat/completions'],
+    );
+    const content = calls[0].body.messages[0].content;
+    assert.equal(content.filter((p) => p.type === 'image_url').length, 2);
+    assert.match(content[0].text, /six orthographic renders/);
+    assert.match(content[0].text, /"ice"/);
+    assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
+    assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
+    assert.equal(await page.textContent('#prompt-go'), 'Paint with this prompt');
+    const sheet = await page.$eval('#sugg-sheet canvas', (c) => [c.width, c.height]);
+    assert.ok(sheet[0] > sheet[1], 'contact sheet is 3x2');
+    await page.screenshot({ path: `${outDir}05-muse-suggestion.png` });
+
+    await page.fill('#sugg-prompt', suggestion.prompt + ' Add tiny snowflakes.');
+    await page.click('#prompt-go');
+    await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+    const urls = calls.map((c) => c.url.split('/v1/')[1]);
+    assert.deepEqual(urls, ['chat/completions', 'images/edits']); // region plan reused, no extra layout reading
+    const edit = calls[1].body;
+    assert.match(edit.prompt, /Add tiny snowflakes/);
+    assert.match(edit.prompt, /frosted ice face plate/);
+    assert.match(edit.prompt, /cartoon toy robot/);
+    await page.context().close();
+  });
+
   await step('shows the Muse error message when the API rejects a request', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'bad', useProxy: false });
     await page.route('https://api.meta.ai/v1/**', (route) =>
@@ -272,7 +340,7 @@ try {
       });
     });
     await page.click('#btn-sample');
-    await reskinViaPopup(page, 'gold armor');
+    await reskinViaPopup(page, 'gold armor', { suggest: false });
     assert.equal(bodies.length, 2);
     assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
     await page.context().close();

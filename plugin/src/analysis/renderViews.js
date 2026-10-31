@@ -1,0 +1,116 @@
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { createCanvas, ctx2d } from '../texture/imageUtils.js';
+
+/** The six axis views, in contact-sheet order. `dir` points from the model toward the camera. */
+export const AXIS_VIEWS = [
+  { name: 'front', axis: '+Z', dir: [0, 0, 1], up: [0, 1, 0] },
+  { name: 'back', axis: '-Z', dir: [0, 0, -1], up: [0, 1, 0] },
+  { name: 'left', axis: '-X', dir: [-1, 0, 0], up: [0, 1, 0] },
+  { name: 'right', axis: '+X', dir: [1, 0, 0], up: [0, 1, 0] },
+  { name: 'top', axis: '+Y', dir: [0, 1, 0], up: [0, 0, -1] },
+  { name: 'bottom', axis: '-Y', dir: [0, -1, 0], up: [0, 0, 1] },
+];
+
+/**
+ * Renders the model from the six axis directions with orthographic cameras and
+ * neutral studio lighting. Returns one canvas per view plus a labelled 3×2
+ * contact sheet (one image is cheaper to send to a vision model than six).
+ *
+ * The object is briefly moved into a private scene and put back where it was,
+ * so the host's scene is unchanged afterwards.
+ *
+ * @param {import('three').Object3D} object
+ * @param {{ size?: number, background?: string }} [opts]
+ * @returns {{ views: { name: string, axis: string, canvas: HTMLCanvasElement }[], sheet: HTMLCanvasElement }}
+ */
+export function renderAxisViews(object, opts = {}) {
+  const size = opts.size ?? 384;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
+  renderer.setPixelRatio(1);
+  renderer.setSize(size, size, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(opts.background ?? '#9aa0a8');
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = env;
+  const key = new THREE.DirectionalLight(0xffffff, 0.8);
+  scene.add(key);
+
+  const parent = object.parent;
+  const index = parent ? parent.children.indexOf(object) : -1;
+  const views = [];
+  try {
+    scene.add(object);
+    object.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(object);
+    const center = box.getCenter(new THREE.Vector3());
+    const size3 = box.getSize(new THREE.Vector3());
+    const radius = Math.max(1e-6, size3.length() / 2);
+    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, radius * 0.01, radius * 10);
+
+    for (const v of AXIS_VIEWS) {
+      const dir = new THREE.Vector3(...v.dir);
+      cam.position.copy(center).addScaledVector(dir, radius * 3);
+      cam.up.set(...v.up);
+      cam.lookAt(center);
+      // Frame tightly: half of the larger box extent across this view, plus a margin.
+      const across = [Math.abs(v.dir[0]) ? 0 : size3.x, Math.abs(v.dir[1]) ? 0 : size3.y, Math.abs(v.dir[2]) ? 0 : size3.z];
+      const half = Math.max(1e-6, Math.max(...across) / 2) * 1.08;
+      cam.left = -half;
+      cam.right = half;
+      cam.top = half;
+      cam.bottom = -half;
+      cam.updateProjectionMatrix();
+      key.position.copy(cam.position).add(new THREE.Vector3(radius, radius * 2, radius));
+      key.target.position.copy(center);
+      key.target.updateMatrixWorld();
+      renderer.render(scene, cam);
+      const c = createCanvas(size, size);
+      ctx2d(c).drawImage(renderer.domElement, 0, 0);
+      views.push({ name: v.name, axis: v.axis, canvas: c });
+    }
+  } finally {
+    scene.remove(object);
+    if (parent) {
+      parent.add(object);
+      // Restore the original child order.
+      parent.children.splice(parent.children.indexOf(object), 1);
+      parent.children.splice(index, 0, object);
+    }
+    object.updateMatrixWorld(true);
+    env.dispose();
+    pmrem.dispose();
+    renderer.dispose();
+    renderer.forceContextLoss?.();
+  }
+
+  return { views, sheet: contactSheet(views, size) };
+}
+
+function contactSheet(views, size) {
+  const cols = 3;
+  const rows = Math.ceil(views.length / cols);
+  const sheet = createCanvas(cols * size, rows * size);
+  const g = ctx2d(sheet);
+  g.font = `bold ${Math.round(size / 14)}px system-ui, sans-serif`;
+  g.textBaseline = 'top';
+  views.forEach((v, i) => {
+    const x = (i % cols) * size;
+    const y = Math.floor(i / cols) * size;
+    g.drawImage(v.canvas, x, y);
+    const label = `${v.name} (${v.axis})`;
+    const pad = size / 40;
+    const w = g.measureText(label).width + pad * 2;
+    g.fillStyle = 'rgba(0,0,0,0.6)';
+    g.fillRect(x + pad, y + pad, w, size / 14 + pad * 2);
+    g.fillStyle = '#fff';
+    g.fillText(label, x + pad * 2, y + pad * 2);
+    g.strokeStyle = 'rgba(0,0,0,0.35)';
+    g.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+  });
+  return sheet;
+}

@@ -4,7 +4,9 @@ import {
   parseLayoutPlan,
   reskinAtlasPrompt,
   roughnessMapPrompt,
+  parseSuggestion,
   seamlessTexturePrompt,
+  suggestPrompt as suggestPromptText,
   visionPlanPrompt,
 } from '../muse/prompts.js';
 import { canvasToDataUrl, fitSize, museSizeFor, resizeCanvas } from '../texture/imageUtils.js';
@@ -117,6 +119,33 @@ export class MuseProvider {
       ],
     });
     return parseLayoutPlan(text);
+  }
+
+  /**
+   * Art-director step: Muse Spark looks at six renders of the model plus the UV atlases
+   * and recommends a better prompt and a per-region paint plan.
+   * @param {{ theme: string, sheet?: HTMLCanvasElement, atlases: { name: string, meshNames: string[], atlasWithUvs: HTMLCanvasElement }[], signal?: AbortSignal }} req
+   */
+  async suggestPrompt(req) {
+    const images = [];
+    if (req.sheet) images.push(this.toUploadSized(req.sheet, this.fast ? 1152 : 1536));
+    for (const a of req.atlases.slice(0, 4)) images.push(this.toUploadSized(a.atlasWithUvs, this.fast ? 768 : 1024));
+    const text = await this.client.chat({
+      reasoningEffort: this.fast ? 'low' : 'medium',
+      signal: req.signal,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet) },
+            ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+          ],
+        },
+      ],
+    });
+    const s = parseSuggestion(text);
+    if (!s) throw new Error('Muse returned a suggestion that could not be read');
+    return s;
   }
 
   toUploadSized(c, max) {
