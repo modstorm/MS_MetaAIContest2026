@@ -134,7 +134,9 @@ export function analyzeTextureLayout(root) {
     slot.coverage = srcs.length ? computeUvCoverage(srcs, 256) : slot.coverage;
 
     if (slot.missingUvs)
-      warnings.push(`"${slot.name}": some meshes have no UVs; box-projected UVs and a seamless texture will be generated.`);
+      warnings.push(
+        `"${slot.name}": some meshes have no UVs; box-projected UVs and a seamless texture will be generated.`,
+      );
     if (slot.tiled)
       warnings.push(`"${slot.name}": UVs go outside 0..1, the texture tiles; a seamless texture is generated.`);
     if (slot.coverage.overlap > 0.05)

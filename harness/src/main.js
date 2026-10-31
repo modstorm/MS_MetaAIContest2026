@@ -65,6 +65,11 @@ plugin.onUpdate((e) => {
       $('prompt-stage').textContent = e.data.message;
       statusEl.textContent = e.data.message;
       break;
+    case 'timing':
+      log(
+        `⏱ ${e.data.step}${e.data.slotName ? ` (${e.data.slotName})` : ''}: ${(e.data.ms / 1000).toFixed(1)}s${e.data.ok ? '' : ' (failed)'}`,
+      );
+      break;
     case 'warning':
       log(e.data.message, 'warn');
       break;
@@ -273,6 +278,7 @@ $('prompt-form').addEventListener('submit', async (e) => {
     const res = await plugin.postPrompt(prompt, {
       detailPreserve: Number($('opt-detail').value),
       useVisionPlanning: $('opt-plan').checked,
+      fast: $('opt-fast').checked,
       normalMaps: $('opt-normal').checked,
       roughnessMaps: $('opt-rough').checked,
       maxTextureSize: Number($('opt-size').value),

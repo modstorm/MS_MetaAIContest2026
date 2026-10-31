@@ -1,10 +1,12 @@
 /** Prompt templates sent to Muse. Kept in one place so they are easy to tune. */
 
-export function visionPlanPrompt(slotName, meshNames) {
+export function visionPlanPrompt(slotName, meshNames, imageCount = 2) {
   return [
     'You are analyzing a UV texture atlas for a 3D model used in a real-time engine.',
     `Texture name: "${slotName}". Meshes using it: ${meshNames.slice(0, 12).join(', ') || 'unknown'}.`,
-    'Image 1 is the base color atlas. Image 2 is the same atlas with the UV island outlines drawn in pink.',
+    imageCount > 1
+      ? 'Image 1 is the base color atlas. Image 2 is the same atlas with the UV island outlines drawn in pink.'
+      : 'The image is the base color atlas with the UV island outlines drawn in pink.',
     'Identify what the model is and which part of the model each painted region of the atlas belongs to.',
     'Reply with JSON only, no prose, in this shape:',
     '{"subject": "short description of the model", "style": "current art style", "regions": [{"name": "part name", "description": "what is painted there", "bbox": [x0, y0, x1, y1]}]}',

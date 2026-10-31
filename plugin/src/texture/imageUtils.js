@@ -201,6 +201,32 @@ export function averageColor(c) {
   return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
 }
 
+/**
+ * The most vivid color in a canvas (high saturation and brightness), or null if
+ * the image is basically gray. Used to tint small untextured parts to match.
+ */
+export function accentColor(c) {
+  const small = resizeCanvas(c, 48, 48);
+  const d = ctx2d(small).getImageData(0, 0, 48, 48).data;
+  let best = -1;
+  let rgb = null;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i] / 255,
+      g = d[i + 1] / 255,
+      b = d[i + 2] / 255;
+    const max = Math.max(r, g, b),
+      min = Math.min(r, g, b);
+    const sat = max === 0 ? 0 : (max - min) / max;
+    const score = sat * 0.7 + max * 0.3;
+    if (score > best) {
+      best = score;
+      rgb = [r, g, b];
+    }
+  }
+  if (!rgb || best < 0.35) return null;
+  return new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
+}
+
 /** Picks a Muse `size` string with the closest supported aspect ratio. */
 export function museSizeFor(width, height) {
   const aspect = width / height;

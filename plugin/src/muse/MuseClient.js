@@ -22,6 +22,7 @@ export class MuseApiError extends Error {
     this.type = type;
     this.code = code;
     this.body = body;
+    this.param = body && typeof body === 'object' ? body.error?.param : undefined;
     this.name = 'MuseApiError';
   }
 }

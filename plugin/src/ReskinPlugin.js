@@ -5,6 +5,7 @@ import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import {
   applyDetailPreserve,
+  accentColor,
   averageColor,
   blobToCanvas,
   drawAtlasWithUvs,
@@ -27,6 +28,7 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
  *   reskinned       ReskinResult
  *   reverted        {}
  *   exported        { glb: ArrayBuffer, filename }
+ *   timing          { step, slotId, slotName, ms, ok, provider }   one per model call
  *   warning         { message }
  *   error           { error: Error, stage }
  *
@@ -60,6 +62,8 @@ export class ReskinPlugin {
   listeners = new Map();
   anyListeners = new Set();
   snapshots = new Map();
+  /** Layout readings per texture, reused across prompts (the layout doesn't depend on the theme). */
+  planCache = new Map();
   busy = false;
   abort = null;
 
@@ -133,6 +137,7 @@ export class ReskinPlugin {
       const model = await loadModel(input, opts);
       this.model = model;
       this.snapshots.clear();
+      this.planCache.clear();
       this.lastResult = null;
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
@@ -198,14 +203,25 @@ export class ReskinPlugin {
     let firstError = null;
 
     try {
+      if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
       // Start from the original look every time, so prompts don't compound.
       this.restoreSnapshots();
 
+      const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
+      // Small untextured parts (a button, an eye, an antenna ball) are tinted locally
+      // from the new palette instead of costing a Muse call.
+      const modelRadius = boundingRadius(this.model.scene);
+      const isSmallUntextured = (s) =>
+        (opts.localSmallParts ?? true) &&
+        !s.texture &&
+        boundingRadius(s.meshes) < modelRadius * (opts.smallPartRatio ?? 0.2);
+      const localIds = new Set(this.layout.slots.filter((s) => wanted(s) && isSmallUntextured(s)).map((s) => s.id));
+
       // Meshes with no UVs get box-projected UVs, then the layout is re-analyzed.
       let addedUvs = false;
       for (const slot of this.layout.slots) {
-        if (!slot.missingUvs) continue;
+        if (!slot.missingUvs || localIds.has(slot.id) || !wanted(slot)) continue;
         for (const mesh of slot.meshes) addedUvs = generateBoxUvs(mesh, slot.uvChannel) || addedUvs;
       }
       if (addedUvs) {
@@ -213,31 +229,59 @@ export class ReskinPlugin {
         this.emit('warning', { message: 'Generated box-projected UVs for meshes without UVs.' });
       }
 
-      const slots = this.layout.slots.filter((s) => !opts.slotIds || opts.slotIds.includes(s.id));
-      const steps = slots.length || 1;
-      const progress = (i, frac, stage, message, slotId) =>
-        this.emit('progress', { stage, slotId, message, progress: Math.min(1, (i + frac) / steps) });
+      const remote = this.layout.slots.filter((s) => wanted(s) && !localIds.has(s.id));
+      const local = this.layout.slots.filter((s) => localIds.has(s.id));
+      const fractions = remote.map(() => 0);
+      const progress = (i, frac, stage, message, slotId) => {
+        fractions[i] = Math.max(fractions[i], frac);
+        const total = fractions.reduce((a, b) => a + b, 0) / (fractions.length || 1);
+        this.emit('progress', { stage, slotId, message, progress: Math.min(0.98, total) });
+      };
 
-      for (let i = 0; i < slots.length; i++) {
-        signal.throwIfAborted();
-        const slot = slots[i];
-        try {
-          const r = await this.reskinSlot(slot, theme, opts, signal, (frac, stage, msg) =>
-            progress(i, frac, stage, msg, slot.id),
-          );
-          if (r) results.push(r);
-          else recolored += slot.materials.length;
-        } catch (err) {
-          if (signal.aborted) throw err;
-          const e = toError(err);
+      // All texture slots run in parallel: each one is independent.
+      const settled = await Promise.allSettled(
+        remote.map((slot, i) =>
+          this.reskinSlot(slot, theme, opts, signal, (frac, stage, msg) => progress(i, frac, stage, msg, slot.id)),
+        ),
+      );
+      signal.throwIfAborted();
+      settled.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          if (r.value) results.push(r.value);
+          else recolored += remote[i].materials.length;
+        } else {
+          const e = toError(r.reason);
           firstError ??= e;
-          this.emit('warning', { message: `Slot "${slot.name}" failed: ${e.message}` });
-          if (slots.length === 1) throw e;
+          this.emit('warning', { message: `Slot "${remote[i].name}" failed: ${e.message}` });
+        }
+      });
+
+      if (local.length) {
+        // Pick an accent color from the largest new texture so small parts match the theme.
+        const biggest = [...results].sort(
+          (a, b) => b.canvas.width * b.canvas.height - a.canvas.width * a.canvas.height,
+        )[0];
+        let color = biggest ? accentColor(biggest.canvas) : null;
+        if (!color) {
+          const swatch = await this.timed('swatch', local[0].id, () =>
+            this.provider.generateTexture({ theme, materialName: local[0].name, width: 256, height: 256, signal }),
+          );
+          color = averageColor(await this.toCanvas(swatch));
+        }
+        for (const slot of local) {
+          for (const mat of slot.materials) {
+            this.snapshot(mat);
+            mat.color.copy(color);
+            mat.needsUpdate = true;
+          }
+          recolored += slot.materials.length;
         }
       }
-      if (slots.length && !results.length && !recolored) {
+
+      if ((remote.length || local.length) && !results.length && !recolored) {
         throw firstError ?? new Error('No texture slot could be reskinned');
       }
+      if (firstError && !results.length && remote.length) throw firstError;
 
       const result = {
         prompt: theme,
@@ -269,7 +313,9 @@ export class ReskinPlugin {
       // Nothing to map a texture onto: tint from a generated swatch.
       report(0.1, 'generate', `Generating color swatch for "${slot.name}"`);
       const swatch = await this.toCanvas(
-        await this.provider.generateTexture({ theme, materialName: slot.name, width: 256, height: 256, signal }),
+        await this.timed('swatch', slot.id, () =>
+          this.provider.generateTexture({ theme, materialName: slot.name, width: 256, height: 256, signal }),
+        ),
       );
       const color = averageColor(swatch);
       for (const mat of slot.materials) {
@@ -295,16 +341,23 @@ export class ReskinPlugin {
       const uvGuide = drawUvGuide(slot, original.width, original.height, {
         lineWidth: Math.max(1, original.width / 1024),
       });
-      if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
+      const planKey = `${this.provider.name}:${slot.texture.uuid}`;
+      if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
+        // The layout doesn't depend on the theme, so it is read once per model.
+        plan = this.planCache.get(planKey);
+      } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
         report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
         try {
-          plan = await this.provider.planLayout({
-            slotName: slot.name,
-            meshNames: slot.meshes.map((m) => m.name),
-            atlas: original,
-            atlasWithUvs: drawAtlasWithUvs(original, slot),
-            signal,
-          });
+          plan = await this.timed('read layout', slot.id, () =>
+            this.provider.planLayout({
+              slotName: slot.name,
+              meshNames: slot.meshes.map((m) => m.name),
+              atlas: original,
+              atlasWithUvs: drawAtlasWithUvs(original, slot),
+              signal,
+            }),
+          );
+          if (plan) this.planCache.set(planKey, plan);
         } catch (err) {
           if (signal.aborted) throw err;
           this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
@@ -313,29 +366,33 @@ export class ReskinPlugin {
       }
       report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
       raw = await this.toCanvas(
-        await this.provider.reskinAtlas({
-          theme,
-          slotName: slot.name,
-          atlas: original,
-          uvGuide,
-          width,
-          height,
-          plan,
-          extraInstructions: opts.extraInstructions,
-          signal,
-        }),
+        await this.timed('paint atlas', slot.id, () =>
+          this.provider.reskinAtlas({
+            theme,
+            slotName: slot.name,
+            atlas: original,
+            uvGuide,
+            width,
+            height,
+            plan,
+            extraInstructions: opts.extraInstructions,
+            signal,
+          }),
+        ),
       );
     } else {
       report(0.2, 'generate', `Generating seamless texture for "${slot.name}"`);
       raw = await this.toCanvas(
-        await this.provider.generateTexture({
-          theme,
-          materialName: slot.name,
-          width,
-          height,
-          extraInstructions: opts.extraInstructions,
-          signal,
-        }),
+        await this.timed('generate texture', slot.id, () =>
+          this.provider.generateTexture({
+            theme,
+            materialName: slot.name,
+            width,
+            height,
+            extraInstructions: opts.extraInstructions,
+            signal,
+          }),
+        ),
       );
     }
     signal.throwIfAborted();
@@ -410,15 +467,17 @@ export class ReskinPlugin {
   async auxMap(kind, theme, source, newBaseColor, signal, derive) {
     if (source && this.provider.reskinAuxMap) {
       try {
-        const img = await this.provider.reskinAuxMap({
-          kind,
-          theme,
-          source,
-          newBaseColor,
-          width: newBaseColor.width,
-          height: newBaseColor.height,
-          signal,
-        });
+        const img = await this.timed(`paint ${kind} map`, null, () =>
+          this.provider.reskinAuxMap({
+            kind,
+            theme,
+            source,
+            newBaseColor,
+            width: newBaseColor.width,
+            height: newBaseColor.height,
+            signal,
+          }),
+        );
         const c = await this.toCanvas(img);
         return c.width === newBaseColor.width && c.height === newBaseColor.height
           ? c
@@ -500,6 +559,27 @@ export class ReskinPlugin {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  /** Runs one provider call and emits a `timing` event with how long it took. */
+  async timed(step, slotId, fn) {
+    const t0 = performance.now();
+    let ok = false;
+    try {
+      const out = await fn();
+      ok = true;
+      return out;
+    } finally {
+      const slot = slotId ? this.layout?.slots.find((s) => s.id === slotId) : null;
+      this.emit('timing', {
+        step,
+        slotId,
+        slotName: slot?.name,
+        ms: performance.now() - t0,
+        ok,
+        provider: this.provider.name,
+      });
+    }
+  }
 
   guard() {
     if (this.busy) throw new Error('The plugin is busy with another request');
@@ -598,4 +678,11 @@ function anySignal(signals) {
   const ctrl = new AbortController();
   for (const s of signals) s.addEventListener('abort', () => ctrl.abort(s.reason), { once: true });
   return ctrl.signal;
+}
+
+/** Bounding-sphere radius of one object or a list of objects (world space). */
+function boundingRadius(objs) {
+  const box = new THREE.Box3();
+  for (const o of Array.isArray(objs) ? objs : [objs]) box.expandByObject(o);
+  return box.isEmpty() ? 0 : box.getSize(new THREE.Vector3()).length() / 2;
 }

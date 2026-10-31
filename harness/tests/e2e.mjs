@@ -179,18 +179,36 @@ try {
     await reskinViaPopup(page, 'frozen ice crystal, frost and snow');
     const chat = calls.find((c) => c.url.endsWith('/chat/completions'));
     const edit = calls.find((c) => c.url.endsWith('/images/edits'));
-    const gen = calls.find((c) => c.url.endsWith('/images/generations'));
-    assert.ok(chat && edit && gen, `calls: ${calls.map((c) => c.url).join(', ')}`);
+    assert.ok(chat && edit, `calls: ${calls.map((c) => c.url).join(', ')}`);
+    // The small untextured antenna ball is tinted locally: no extra generation call.
+    assert.equal(calls.filter((c) => c.url.endsWith('/images/generations')).length, 0);
     assert.equal(chat.body.model, 'muse-spark-1.3');
-    assert.equal(chat.body.messages[0].content.filter((p) => p.type === 'image_url').length, 2);
+    assert.equal(chat.body.reasoning_effort, 'minimal'); // fast mode
+    assert.equal(chat.body.messages[0].content.filter((p) => p.type === 'image_url').length, 1);
     assert.equal(edit.body.model, 'muse-image-1.0');
     assert.equal(edit.body.images.length, 2);
-    assert.match(edit.body.images[0].image_url, /^data:image\/png;base64,/);
+    assert.match(edit.body.images[0].image_url, /^data:image\/jpeg;base64,/);
+    assert.match(edit.body.images[1].image_url, /^data:image\/png;base64,/);
     assert.match(edit.body.prompt, /frozen ice crystal/);
     assert.match(edit.body.prompt, /toy robot/); // vision plan fed into the edit prompt
     assert.equal(edit.body.output_format, 'png');
-    assert.equal(gen.body.model, 'muse-image-1.0');
+    assert.equal(edit.body.reasoning_strength, 'low');
+    assert.deepEqual(edit.body.tool_enablement, {
+      enable_image_search: false,
+      enable_web_search: false,
+      enable_shell: false,
+    });
     for (const c of calls) assert.equal(c.auth, 'Bearer test-key-not-real');
+    const log = await page.textContent('#log');
+    assert.match(log, /⏱ paint atlas \(robot_atlas\)/);
+    assert.match(log, /⏱ read layout \(robot_atlas\)/);
+
+    // Second prompt on the same model: layout reading is cached, so only the paint call is made.
+    const before = calls.length;
+    await page.click('#btn-reskin');
+    await reskinViaPopup(page, 'mossy ancient stone ruin');
+    const second = calls.slice(before).map((c) => c.url.split('/v1/')[1]);
+    assert.deepEqual(second, ['images/edits']);
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${outDir}04-reskinned-muse-mock.png` });
     await exportAndCheck(page, 'muse-mock.glb');
@@ -216,6 +234,47 @@ try {
       null,
       { timeout: 30_000 },
     );
+    await page.context().close();
+  });
+
+  await step('retries without the speed options if Muse rejects them', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const bodies = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      if (req.url().endsWith('/chat/completions')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({ choices: [{ message: { content: '{}' } }] }),
+        });
+      }
+      bodies.push(body);
+      const reject = 'tool_enablement' in body;
+      await route.fulfill({
+        status: reject ? 400 : 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(
+          reject
+            ? {
+                error: {
+                  type: 'invalid_request_error',
+                  param: 'tool_enablement',
+                  message: 'Unknown parameter: tool_enablement',
+                },
+              }
+            : { data: [{ b64_json: png }] },
+        ),
+      });
+    });
+    await page.click('#btn-sample');
+    await reskinViaPopup(page, 'gold armor');
+    assert.equal(bodies.length, 2);
+    assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
     await page.context().close();
   });
 

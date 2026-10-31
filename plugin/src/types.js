@@ -84,6 +84,9 @@
  * @property {boolean} [normalMaps] Regenerate / create normal maps. Default true.
  * @property {boolean} [roughnessMaps] Regenerate / create roughness maps. Default true.
  * @property {number} [normalStrength] Strength of derived normal maps. Default 2.
+ * @property {boolean} [fast] Provider speed mode (Muse: no web/image search, low reasoning, smaller uploads). Default: provider's setting (on).
+ * @property {boolean} [localSmallParts] Tint small untextured parts from the new palette instead of a model call. Default true.
+ * @property {number} [smallPartRatio] "Small" = bounding radius below this fraction of the model's. Default 0.2.
  * @property {AbortSignal} [signal]
  */
 
