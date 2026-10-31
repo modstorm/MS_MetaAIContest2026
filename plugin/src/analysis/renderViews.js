@@ -12,6 +12,19 @@ export const AXIS_VIEWS = [
   { name: 'bottom', axis: '-Y', dir: [0, -1, 0], up: [0, 0, 1] },
 ];
 
+const D = Math.SQRT1_2;
+/** Review views: the six axis views plus three-quarter (45°) views of the front and the back. */
+export const REVIEW_VIEWS = [
+  { name: 'front', axis: '+Z', dir: [0, 0, 1], up: [0, 1, 0] },
+  { name: 'front 45°', axis: "model's front-left", dir: [D, 0, D], up: [0, 1, 0] },
+  { name: 'side', axis: "model's left, +X", dir: [1, 0, 0], up: [0, 1, 0] },
+  { name: 'top', axis: '+Y', dir: [0, 1, 0], up: [0, 0, -1] },
+  { name: 'back', axis: '-Z', dir: [0, 0, -1], up: [0, 1, 0] },
+  { name: 'back 45°', axis: "model's back-right", dir: [-D, 0, -D], up: [0, 1, 0] },
+  { name: 'side', axis: "model's right, -X", dir: [-1, 0, 0], up: [0, 1, 0] },
+  { name: 'bottom', axis: '-Y', dir: [0, -1, 0], up: [0, 0, 1] },
+];
+
 /**
  * Renders the model from the six axis directions with orthographic cameras and
  * neutral studio lighting. Returns one canvas per view plus a labelled 3×2
@@ -21,7 +34,7 @@ export const AXIS_VIEWS = [
  * so the host's scene is unchanged afterwards.
  *
  * @param {import('three').Object3D} object
- * @param {{ size?: number, background?: string }} [opts]
+ * @param {{ size?: number, background?: string, views?: typeof AXIS_VIEWS, cols?: number }} [opts]
  * @returns {{ views: { name: string, axis: string, canvas: HTMLCanvasElement }[], sheet: HTMLCanvasElement }}
  */
 export function renderAxisViews(object, opts = {}) {
@@ -52,17 +65,17 @@ export function renderAxisViews(object, opts = {}) {
     const radius = Math.max(1e-6, size3.length() / 2);
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, radius * 0.01, radius * 10);
 
-    for (const v of AXIS_VIEWS) {
+    for (const v of opts.views ?? AXIS_VIEWS) {
       const dir = new THREE.Vector3(...v.dir);
       cam.position.copy(center).addScaledVector(dir, radius * 3);
       cam.up.set(...v.up);
       cam.lookAt(center);
       // Frame tightly: half of the larger box extent across this view, plus a margin.
-      const across = [
-        Math.abs(v.dir[0]) ? 0 : size3.x,
-        Math.abs(v.dir[1]) ? 0 : size3.y,
-        Math.abs(v.dir[2]) ? 0 : size3.z,
-      ];
+      // Diagonal views see the box's diagonal, so they use the full radius.
+      const axial = v.dir.filter((n) => n !== 0).length === 1;
+      const across = axial
+        ? [Math.abs(v.dir[0]) ? 0 : size3.x, Math.abs(v.dir[1]) ? 0 : size3.y, Math.abs(v.dir[2]) ? 0 : size3.z]
+        : [Math.hypot(size3.x, size3.z), size3.y];
       const half = Math.max(1e-6, Math.max(...across) / 2) * 1.08;
       cam.left = -half;
       cam.right = half;
@@ -92,11 +105,10 @@ export function renderAxisViews(object, opts = {}) {
     renderer.forceContextLoss?.();
   }
 
-  return { views, sheet: contactSheet(views, size) };
+  return { views, sheet: contactSheet(views, size, opts.cols ?? 3) };
 }
 
-function contactSheet(views, size) {
-  const cols = 3;
+export function contactSheet(views, size, cols = 3) {
   const rows = Math.ceil(views.length / cols);
   const sheet = createCanvas(cols * size, rows * size);
   const g = ctx2d(sheet);
@@ -117,4 +129,21 @@ function contactSheet(views, size) {
     g.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
   });
   return sheet;
+}
+
+/** Stacks canvases vertically into one image (each scaled to the first one's width). */
+export function stackCanvases(list) {
+  const w = list[0].width;
+  const heights = list.map((c) => Math.round((c.height * w) / c.width));
+  const out = createCanvas(
+    w,
+    heights.reduce((a, b) => a + b, 0),
+  );
+  const g = ctx2d(out);
+  let y = 0;
+  list.forEach((c, i) => {
+    g.drawImage(c, 0, y, w, heights[i]);
+    y += heights[i];
+  });
+  return out;
 }

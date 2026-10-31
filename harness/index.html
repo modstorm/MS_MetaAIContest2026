@@ -18,6 +18,8 @@
           <button id="btn-open" title="Open a .glb or .gltf file">Open model</button>
           <button id="btn-sample" title="Load a built-in sample model">Sample model</button>
           <button id="btn-reskin" class="primary" disabled>Reskin…</button>
+          <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">ID map</button>
+          <button id="btn-review" disabled title="Muse checks renders of the result and repaints the areas it flags">Review &amp; fix</button>
           <button id="btn-toggle" disabled title="Compare with the original textures">Show original</button>
           <button id="btn-export" disabled>Export GLB</button>
           <button id="btn-settings" class="icon" title="Settings">⚙</button>
@@ -47,6 +49,10 @@
             <h3>Generated maps</h3>
             <div id="generated" class="muted">Nothing generated yet.</div>
           </section>
+          <section id="review-section" hidden>
+            <h3>Review</h3>
+            <div id="review"></div>
+          </section>
           <section>
             <h3>Log</h3>
             <ol id="log" class="log"></ol>
@@ -56,6 +62,11 @@
 
       <div id="drop-overlay" class="drop-overlay" hidden><div>Drop to load</div></div>
     </div>
+
+    <menu id="img-menu" class="img-menu" hidden>
+      <li><button type="button" id="img-save">Save image</button></li>
+      <li><button type="button" id="img-open">Open full size</button></li>
+    </menu>
 
     <dialog id="prompt-dialog" class="dialog">
       <form method="dialog" id="prompt-form">
@@ -87,6 +98,7 @@
             <label><input id="opt-pad" type="checkbox" checked /> Edge padding against dark seams</label>
             <label><input id="opt-normal" type="checkbox" checked /> Regenerate normal maps</label>
             <label><input id="opt-rough" type="checkbox" checked /> Regenerate roughness maps</label>
+            <label><input id="opt-review" type="checkbox" checked /> Review &amp; fix after painting (Muse checks 8 views of the result and repaints flagged areas once)</label>
             <label><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images shortened)</label>
             <div class="row"><button type="button" id="btn-probe">Run filter probe</button><span class="muted">5 small Muse calls (~$0.05) to find what the safety filter rejects</span></div>
             <ul id="probe-results" class="probe" hidden></ul>

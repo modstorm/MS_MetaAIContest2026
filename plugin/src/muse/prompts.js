@@ -137,15 +137,19 @@ export function parseLayoutPlan(text) {
  * Art-director prompt: Muse Spark sees six axis renders plus the UV atlases, works out
  * what the object is, and writes a stronger, part-by-part paint prompt for the theme.
  */
-export function suggestPrompt(theme, atlases, hasSheet = true) {
+export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = false) {
+  const first = (hasSheet ? 1 : 0) + (hasIdSheet ? 1 : 0) + 1;
   const atlasLines = atlases.flatMap((a, i) => [
-    `Image ${i + (hasSheet ? 2 : 1)}: UV texture atlas "${a.name}" with each part tinted in its own color and labelled with its name and an arrow pointing to the part's top.`,
+    `Image ${i + first}: UV texture atlas "${a.name}" with each part tinted in its own color and labelled with its name and an arrow pointing to the part's top.`,
     ...partLines(a.parts, { colors: true }),
   ]);
   return [
     'You are the art director for retexturing a 3D game asset.',
     hasSheet
       ? 'Image 1 is a contact sheet with six orthographic renders of the model: front (+Z), back (-Z), left (-X), right (+X), top (+Y), bottom (-Y).'
+      : '',
+    hasIdSheet
+      ? `Image ${hasSheet ? 2 : 1} shows the same views with every texture area in its own flat color: the same colors as the areas in the atlas images, so you can see which atlas area is which part of the model.`
       : '',
     ...atlasLines,
     `The user wants to retheme the model as: "${theme}".`,
@@ -248,4 +252,48 @@ export function reskinPartPrompt(
 /** Plain per-part fallback after a content-filter rejection. */
 export function plainReskinPartPrompt(theme, partName) {
   return `Recolor this game texture of a ${partName} in a "${theme}" style. Keep every shape in exactly the same place and size. Flat colors, no lighting. Ignore the grey areas.`;
+}
+
+/**
+ * Review prompt: one image with the painted model from eight angles (top two rows) and
+ * the same angles as an ID map (bottom two rows). Muse lists what is wrong, per area.
+ */
+export function reviewPrompt(theme, { areas = [], subject, classRules = [] } = {}) {
+  return [
+    'You are reviewing a retextured 3D game asset before it ships.',
+    'The image has four rows. Rows 1-2: the newly painted model from eight angles (front, front 45°, side, top, back, back 45°, side, bottom). Rows 3-4: the same eight angles with every texture area in its own flat color (an ID map).',
+    subject ? `The model is: ${subject}.` : '',
+    `The requested theme was: "${theme}".`,
+    'Texture areas (exact names) and their ID-map colors:',
+    ...areas.map((a) => `- ${a.name}${a.color ? ` = ${a.color}` : ''}${a.facing ? ` (${a.facing})` : ''}`),
+    classRules.length ? 'Rules this asset should follow:' : '',
+    ...classRules.map((r) => `- ${r}`),
+    'Look for: front details repeated on the back, details on the wrong part, doubled features, stripes or patches of the old texture or skin, designs cut off at seams (chains, straps), areas that do not match the theme or the rest of the model, garments that stop partway round a limb.',
+    'Reply with JSON only, no prose:',
+    '{"ok": true or false, "summary": "one line", "issues": [{"area": "exact area name from the list", "problem": "what is wrong", "fix": "one sentence instruction for repainting that area"}]}',
+    'At most 4 issues, most visible first. Only list real, clearly visible problems; an empty list is fine. Keep the wording family friendly.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Parses the review reply. */
+export function parseReview(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return { ok: true, summary: '', issues: [], raw: text };
+  try {
+    const o = JSON.parse(text.slice(start, end + 1));
+    const issues = (Array.isArray(o.issues) ? o.issues : [])
+      .filter((x) => x && (x.problem || x.fix))
+      .slice(0, 4)
+      .map((x) => ({
+        area: x.area ? String(x.area) : '',
+        problem: x.problem ? String(x.problem) : '',
+        fix: x.fix ? String(x.fix) : '',
+      }));
+    return { ok: o.ok !== false && !issues.length, summary: String(o.summary ?? ''), issues, raw: text };
+  } catch {
+    return { ok: true, summary: '', issues: [], raw: text };
+  }
 }

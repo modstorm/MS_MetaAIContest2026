@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
-import { renderAxisViews } from './analysis/renderViews.js';
+import { REVIEW_VIEWS, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
 import {
+  PART_COLORS,
   chooseOrientation,
   isIdentity,
   partName,
@@ -99,6 +100,8 @@ export class ReskinPlugin {
   /** Art-director suggestions per theme for the current model. */
   /** Per-part paint jobs of the last run, per slot (for review & repaint). */
   lastPartJobs = new Map();
+  /** Paint areas per slot (UV island groups do not change for a loaded model). */
+  regionCache = new Map();
   suggestionCache = new Map();
   busy = false;
   abort = null;
@@ -180,6 +183,8 @@ export class ReskinPlugin {
       this.planCache.clear();
       this.suggestionCache.clear();
       this.lastPartJobs.clear();
+      this.regionCache.clear();
+      this.idMapSaved = null;
       this.lastResult = null;
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
@@ -202,6 +207,7 @@ export class ReskinPlugin {
   analyze() {
     if (!this.model) throw new Error('No model loaded');
     this.layout = analyzeTextureLayout(this.model.scene);
+    this.regionCache.clear();
     return this.layout;
   }
 
@@ -215,7 +221,7 @@ export class ReskinPlugin {
     const slot = this.requireSlot(slotId);
     const { width, height } = fitSize(slot.width || 512, slot.height || 512, maxSize);
     const atlas = slot.texture ? textureToCanvas(slot.texture, maxSize) : null;
-    const parts = slotParts(slot);
+    const parts = this.idRegions(slot);
     const w = atlas?.width ?? width;
     const h = atlas?.height ?? height;
     return {
@@ -225,7 +231,7 @@ export class ReskinPlugin {
       // Each part (mesh name) tinted, labelled, with an arrow toward the part's top on the model.
       partMap: drawPartMap(slot, parts, w, h, { atlas, alpha: atlas ? 0.45 : 1, labels: true }),
       parts: parts.map(({ meshes, ...p }) => p),
-      orientation: chooseOrientation(parts),
+      orientation: chooseOrientation(slotParts(slot)),
     };
   }
 
@@ -317,14 +323,16 @@ export class ReskinPlugin {
       this.status('analyzing', 'Rendering six views of the model…');
       this.emit('progress', { stage: 'plan', message: 'Rendering six views of the model', progress: 0.1 });
       const { views, sheet } = renderAxisViews(this.model.scene, { size: opts.viewSize ?? 384 });
-      this.emit('views', { views, sheet });
+      // The same views with every area in its own flat color (matching the atlas part map).
+      const idSheet = this.renderIdSheet({ size: Math.round((opts.viewSize ?? 384) * 0.75) });
+      this.emit('views', { views, sheet, idSheet });
 
       const atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
       const atlases = atlasSlots.map((slot) => {
         const original = textureToCanvas(slot.texture, 1024);
-        const rawParts = slotParts(slot);
-        // Same upright transform as the paint step, so region boxes line up.
-        const orient = resolveOrientation(opts.orientation, rawParts);
+        const rawParts = this.idRegions(slot);
+        // Same upright transform as the whole-atlas paint step, so region boxes line up.
+        const orient = resolveOrientation(opts.orientation, slotParts(slot));
         const parts = transformParts(rawParts, orient);
         const atlas = transformCanvas(original, orient);
         return {
@@ -353,7 +361,7 @@ export class ReskinPlugin {
         progress: 0.3,
       });
       const raw = await this.timed('suggest prompt', null, () =>
-        this.provider.suggestPrompt({ theme, sheet, atlases, signal }),
+        this.provider.suggestPrompt({ theme, sheet, idSheet, atlases, signal }),
       );
 
       const plans = {};
@@ -369,7 +377,7 @@ export class ReskinPlugin {
       for (const plan of Object.values(plans)) {
         for (const r of plan.regions) r.description = r.description && sanitizePrompt(r.description);
       }
-      const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, views };
+      const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, idSheet, views };
       this.suggestionCache.set(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`, suggestion);
       this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
       this.emit('suggestion', suggestion);
@@ -499,6 +507,8 @@ export class ReskinPlugin {
       };
       this.lastResult = result;
       this.lastPrompt = theme;
+      const { signal: _s, fixes: _f, ...runOpts } = opts;
+      this.lastRun = { theme, opts: runOpts };
       this.emit('progress', { stage: 'done', message: 'Done', progress: 1 });
       this.emit('reskinned', result);
       this.status('idle', `Reskinned ${results.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s`);
@@ -755,6 +765,7 @@ export class ReskinPlugin {
   async postExport(filename) {
     this.guard();
     if (!this.model) throw new Error('No model loaded');
+    this.showIdMap(false); // never export the ID-map preview materials
     this.busy = true;
     try {
       this.status('exporting', 'Exporting GLB…');
@@ -844,7 +855,10 @@ export class ReskinPlugin {
     const grow = Math.max(1, Math.round((2 * W) / 1024));
     const manual =
       opts.orientation != null && opts.orientation !== 'auto' ? resolveOrientation(opts.orientation, parts) : null;
-    const regions = this.paintRegions(slot, parts, opts);
+    const regions = this.idRegions(slot, opts);
+    // Review & fix: areas Muse did not flag reuse their last painted image.
+    const prev = opts.fixes ? this.lastPartJobs.get(slot.id) : null;
+    const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
     for (const part of regions) {
       const mask = partMask(slot, part, W, H, grow);
@@ -852,7 +866,14 @@ export class ReskinPlugin {
       if (!rect) continue;
       const t = manual ?? chooseOrientation([part]);
       const facing = drawFacingMap(slot, part, W, H, { grow });
-      jobs.push({ part, mask, rect, facing, orient: isIdentity(t) ? null : t });
+      const job = { part, mask, rect, facing, orient: isIdentity(t) ? null : t };
+      if (opts.fixes) {
+        const fix = opts.fixes[part.name];
+        const old = prevByName.get(part.name);
+        if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
+        else if (old) job.reuse = old.painted;
+      }
+      jobs.push(job);
     }
     // Largest area first: it is painted alone and then shown to the others as the style reference.
     jobs.sort((a, b) => b.rect.pixels - a.rect.pixels);
@@ -883,9 +904,22 @@ export class ReskinPlugin {
     const out = copyCanvas(original);
     let done = 0;
     let styleRef = null;
-    report(0.2, 'generate', `Painting "${slot.name}" part by part (${jobs.length} areas)`);
+    const toPaint = jobs.filter((j) => !j.reuse).length;
+    report(
+      0.2,
+      'generate',
+      toPaint < jobs.length
+        ? `Repainting ${toPaint} of ${jobs.length} areas of "${slot.name}"`
+        : `Painting "${slot.name}" part by part (${jobs.length} areas)`,
+    );
     const paintOne = async (job) => {
       const { part, mask, rect, orient, facing } = job;
+      if (job.reuse) {
+        pasteInsideMask(out, untransformCanvas(job.reuse, orient), mask, rect);
+        job.painted = job.reuse;
+        done++;
+        return job.reuse;
+      }
       const crop = transformCanvas(greyedCrop(original, mask, rect), orient);
       const guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
       const padded = padToMuseAspect(crop);
@@ -920,7 +954,10 @@ export class ReskinPlugin {
     };
     const results = [];
     const rest = jobs.slice();
-    if ((opts.styleReference ?? true) && jobs.length > 2) {
+    const reused = jobs.find((j) => j.reuse && !j.note);
+    if (reused) styleRef = reused.reuse;
+    const styleFirst = !reused && (opts.styleReference ?? true) && jobs.length > 2;
+    if (styleFirst) {
       // Paint the biggest area first so every other call can match its palette and style.
       const first = rest.shift();
       const [r] = await mapLimit([first], 1, paintOne);
@@ -929,7 +966,7 @@ export class ReskinPlugin {
     }
     results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
     signal.throwIfAborted();
-    const ordered = (opts.styleReference ?? true) && jobs.length > 2 ? jobs : rest;
+    const ordered = styleFirst ? jobs : rest;
     const failed = results.map((r, i) => [r, ordered[i]]).filter(([r]) => r.status === 'rejected');
     if (failed.length === jobs.length && failed.length) throw failed[0][0].reason;
     for (const [r, job] of failed) {
@@ -939,6 +976,193 @@ export class ReskinPlugin {
     }
     this.lastPartJobs.set(slot.id, { jobs, original, out, theme, plan, opts });
     return out;
+  }
+
+  /**
+   * The areas of an atlas slot, each with its own color: every part, split into regions
+   * when its UV islands sit in clearly separate groups. These are the areas painted one by
+   * one, shown in the ID map, and named in the suggestion and review prompts.
+   */
+  idRegions(slot, opts = {}) {
+    const key = `${slot.id}|${opts.splitRegions !== false}|${opts.maxPaintAreas ?? 12}`;
+    const hit = this.regionCache.get(key);
+    if (hit) return hit;
+    const regions = this.paintRegions(slot, slotParts(slot), opts);
+    const out = regions.map((r, i) => ({
+      ...r,
+      color: PART_COLORS[i % PART_COLORS.length][0],
+      hex: PART_COLORS[i % PART_COLORS.length][1],
+    }));
+    this.regionCache.set(key, out);
+    return out;
+  }
+
+  /** ID-map textures: per atlas slot, each area filled with its own flat color. */
+  idMapTextures(size = 1024) {
+    const out = new Map();
+    for (const slot of this.layout?.slots ?? []) {
+      if (!slot.texture || slot.tiled) continue;
+      const { width, height } = fitSize(slot.width || size, slot.height || size, size);
+      const c = drawPartMap(slot, this.idRegions(slot), width, height);
+      const tex = new THREE.CanvasTexture(c);
+      tex.flipY = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.channel = slot.uvChannel;
+      out.set(slot.id, { canvas: c, texture: tex, regions: this.idRegions(slot) });
+    }
+    return out;
+  }
+
+  /**
+   * Shows (or hides) the ID map on the model: every area in its own flat, unlit color,
+   * the same colors as the part map, so you can see which atlas area is which part.
+   * Untextured materials get a flat grey.
+   */
+  showIdMap(on) {
+    if (!this.model) return;
+    if (!on) {
+      for (const [mesh, mat] of this.idMapSaved ?? []) mesh.material = mat;
+      this.idMapSaved = null;
+      this.emit('idMap', { on: false });
+      return;
+    }
+    if (this.idMapSaved) return;
+    const textures = this.idMapTextures();
+    const bySlotMat = new Map();
+    for (const slot of this.layout.slots) {
+      const t = textures.get(slot.id);
+      for (const mat of slot.materials) bySlotMat.set(mat, t);
+    }
+    this.idMapSaved = new Map();
+    this.model.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      this.idMapSaved.set(o, o.material);
+      const swap = (m) => {
+        const t = bySlotMat.get(m);
+        return new THREE.MeshBasicMaterial(
+          t ? { map: t.texture, side: m.side } : { color: 0x5a5f6a, side: m?.side ?? THREE.FrontSide },
+        );
+      };
+      o.material = Array.isArray(o.material) ? o.material.map(swap) : swap(o.material);
+    });
+    this.emit('idMap', {
+      on: true,
+      slots: [...textures.entries()].map(([slotId, t]) => ({
+        slotId,
+        canvas: t.canvas,
+        regions: t.regions.map(({ meshes, islands, ...r }) => r),
+      })),
+    });
+  }
+
+  get idMapVisible() {
+    return !!this.idMapSaved;
+  }
+
+  /** One labelled image of the model from many angles with the ID map shown. */
+  renderIdSheet({ size = 288, views, cols } = {}) {
+    const wasOn = this.idMapVisible;
+    this.showIdMap(true);
+    try {
+      return renderAxisViews(this.model.scene, { size, views, cols }).sheet;
+    } finally {
+      if (!wasOn) this.showIdMap(false);
+    }
+  }
+
+  /** Whether the provider can review a painted result. */
+  get canReview() {
+    return typeof this.provider.reviewResult === 'function';
+  }
+
+  /**
+   * Review & fix: renders the painted model from eight angles (the six axis views plus
+   * 45° views of the front and back) above the same views as an ID map, all in ONE image,
+   * and asks Muse to compare it with the prompt. Muse returns notes per area; the flagged
+   * areas are repainted with the note as a correction while the other areas keep their
+   * painted image. Repeats up to `passes` times (default 1) or until Muse finds nothing.
+   * Returns { passes: [{ notes, sheet, repainted }] }.
+   */
+  async postReview(opts = {}) {
+    this.guard();
+    if (!this.lastRun || !this.lastResult) throw new Error('Paint the model before reviewing it');
+    if (!this.canReview) throw new Error(`${this.provider.name} cannot review results`);
+    const passes = Math.max(1, Math.min(opts.passes ?? 1, 3));
+    const out = [];
+    for (let i = 0; i < passes; i++) {
+      const review = await this.reviewOnce(opts);
+      const fixable = review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
+      const pass = { notes: review, sheet: review.sheet, repainted: [] };
+      out.push(pass);
+      if (opts.fix === false || !fixable.length) break;
+      const fixes = {};
+      for (const x of fixable) fixes[x.area] = [fixes[x.area], x.fix || x.problem].filter(Boolean).join(' ');
+      pass.repainted = Object.keys(fixes);
+      this.status('reskinning', `Repainting ${pass.repainted.join(', ')}`);
+      await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, fixes, signal: opts.signal });
+    }
+    return { passes: out };
+  }
+
+  /** Names of all areas painted one by one in the last run. */
+  areaNames() {
+    return [...this.lastPartJobs.values()].flatMap((r) => r.jobs.map((j) => j.part.name));
+  }
+
+  async reviewOnce(opts = {}) {
+    this.busy = true;
+    this.abort = new AbortController();
+    const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
+    try {
+      this.status('analyzing', 'Rendering the result from 8 angles for review…');
+      this.emit('progress', { stage: 'review', message: 'Rendering the result for review', progress: 0.1 });
+      const size = opts.viewSize ?? 256;
+      const idWasOn = this.idMapVisible;
+      if (idWasOn) this.showIdMap(false);
+      const painted = renderAxisViews(this.model.scene, { size, views: REVIEW_VIEWS, cols: 4 }).sheet;
+      if (idWasOn) this.showIdMap(true);
+      const ids = this.renderIdSheet({ size, views: REVIEW_VIEWS, cols: 4 });
+      const sheet = stackCanvases([painted, ids]);
+      this.emit('progress', { stage: 'review', message: 'Muse is reviewing the result', progress: 0.4 });
+      const areas = [];
+      for (const slot of this.layout.slots) {
+        const run = this.lastPartJobs.get(slot.id);
+        if (!run) continue;
+        const regions = this.idRegions(slot);
+        for (const j of run.jobs) {
+          const r = regions.find((x) => x.name === j.part.name);
+          areas.push({ name: j.part.name, color: r?.color, facing: facingSummary(j.facing.share) });
+        }
+      }
+      const theme = this.lastRun.theme;
+      const notes = await this.timed('review result', null, () =>
+        this.provider.reviewResult({
+          theme,
+          sheet,
+          areas,
+          subject: this.lastRun.opts.suggestion?.subject,
+          classRules: assetClassRules(
+            this.lastRun.opts.assetClass,
+            areas.map((a) => a.name),
+          ),
+          signal,
+        }),
+      );
+      for (const x of notes.issues) {
+        x.problem = x.problem && sanitizePrompt(x.problem);
+        x.fix = x.fix && sanitizePrompt(x.fix);
+      }
+      const review = { ...notes, sheet };
+      this.emit('review', review);
+      this.status('idle', notes.issues.length ? `Review: ${notes.issues.length} issue(s)` : 'Review: looks good');
+      return review;
+    } catch (err) {
+      this.fail(err, 'review');
+      throw err;
+    } finally {
+      this.busy = false;
+      this.abort = null;
+    }
   }
 
   /**

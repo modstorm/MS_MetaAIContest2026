@@ -55,8 +55,14 @@ async function setPaintMode(page, mode) {
   await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
 }
 
-async function reskinViaPopup(page, prompt, { suggest = false, paintMode } = {}) {
+/** Turns the automatic review & fix pass on or off (it adds Muse calls). */
+async function setReview(page, on) {
+  await page.$eval('#opt-review', (el, v) => (el.checked = v), on);
+}
+
+async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review = false } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
+  await setReview(page, review);
   if (paintMode) await setPaintMode(page, paintMode);
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
@@ -260,6 +266,7 @@ try {
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
     await setPaintMode(page, 'atlas');
+    await setReview(page, false);
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
@@ -269,7 +276,8 @@ try {
       ['chat/completions'],
     );
     const content = calls[0].body.messages[0].content;
-    assert.equal(content.filter((p) => p.type === 'image_url').length, 2);
+    assert.equal(content.filter((p) => p.type === 'image_url').length, 3); // views, ID-map views, atlas
+    assert.match(content[0].text, /same views with every texture area in its own flat color/);
     assert.match(content[0].text, /six orthographic renders/);
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
@@ -542,6 +550,97 @@ try {
     assert.equal(head.images.length, 2);
     assert.match(head.size, /^1792x1024$/); // half-height crop padded to the closest wide size
     assert.match(await page.textContent('#log'), /Head is stored rotated or mirrored/);
+    await page.context().close();
+  });
+
+  await step('ID map: flat color per area on the model, restored afterwards, never exported', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    await page.click('#btn-sample');
+    await page.waitForSelector('#prompt-dialog[open]');
+    await page.click('#prompt-cancel');
+    const r = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      const mats = () => {
+        const out = [];
+        p.model.scene.traverse((o) => o.isMesh && out.push(o.material.type));
+        return out;
+      };
+      const before = mats();
+      p.showIdMap(true);
+      const during = mats();
+      p.showIdMap(false);
+      return { before, during, after: mats() };
+    });
+    assert.ok(
+      r.during.every((t) => t === 'MeshBasicMaterial'),
+      r.during.join(),
+    );
+    assert.deepEqual(r.after, r.before);
+    await page.click('#btn-idmap');
+    assert.ok(await page.evaluate(() => window.reskin.plugin.idMapVisible));
+    await page.screenshot({ path: `${outDir}07-id-map.png` });
+    // Right-click a layout image: menu offers a named save.
+    await page.click('#slots canvas[data-save-name]', { button: 'right' });
+    assert.match(await page.textContent('#img-save'), /Save ".+\+atlas\.png"/);
+    await page.context().close();
+  });
+
+  await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    const chats = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) {
+        chats.push(body);
+        return ok({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  ok: false,
+                  summary: 'Body has a stripe',
+                  issues: [{ area: 'Body', problem: 'skin stripe down the side', fix: 'cover the whole body area' }],
+                }),
+              },
+            },
+          ],
+        });
+      }
+      edits.push(body);
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'review-test' });
+      await p.postPrompt('steampunk', { useVisionPlanning: false, normalMaps: false, roughnessMaps: false });
+      const r = await p.postReview({ passes: 1 });
+      return { repainted: r.passes[0].repainted, sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height] };
+    }, glb);
+    assert.equal(chats.length, 1);
+    const images = chats[0].messages[0].content.filter((x) => x.type === 'image_url');
+    assert.equal(images.length, 1, 'one combined review image');
+    assert.match(chats[0].messages[0].content[0].text, /front 45°/);
+    assert.match(chats[0].messages[0].content[0].text, /- Body = \w+/);
+    assert.deepEqual(res.repainted, ['Body']);
+    assert.equal(res.sheet[0], 1024); // 4 columns x 256
+    assert.equal(edits.length, 3); // Head + Body, then Body again
+    assert.match(edits[2].prompt, /"Body" area/);
+    assert.match(edits[2].prompt, /Correction from a review of the last attempt: cover the whole body area/);
+    assert.match(await page.textContent('#review'), /skin stripe/);
     await page.context().close();
   });
 

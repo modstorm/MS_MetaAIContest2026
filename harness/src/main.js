@@ -100,6 +100,12 @@ plugin.onUpdate((e) => {
     case 'regions':
       log(`Painting ${e.data.regions.length} areas: ${e.data.regions.map((r) => r.name).join(', ')}`);
       break;
+    case 'review':
+      renderReview(e.data);
+      break;
+    case 'idMap':
+      $('btn-idmap').classList.toggle('on', e.data.on);
+      break;
     case 'plan':
       if (e.data.plan) log(`Layout read: ${e.data.plan.subject} (${e.data.plan.regions.length} regions)`);
       break;
@@ -129,6 +135,10 @@ async function load(input, name) {
 function setLoaded(on) {
   $('btn-reskin').disabled = !on;
   $('btn-export').disabled = !on;
+  $('btn-idmap').disabled = !on;
+  $('btn-idmap').classList.remove('on');
+  $('btn-review').disabled = true;
+  $('review-section').hidden = true;
 }
 
 $('btn-open').onclick = () => $('file-input').click();
@@ -187,8 +197,8 @@ function renderLayout(layout) {
     thumbs.className = 'thumbs';
     const prev = plugin.slotPreview(slot.id, 256);
     thumbs.append(
-      figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs'),
-      figure(prev.partMap, 'parts (arrow = top of part)'),
+      figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs', `${slot.name}+atlas`),
+      figure(prev.partMap, 'areas (arrow = top of part)', `${slot.name} areas`),
     );
     const o = prev.orientation;
     if (o && (o.rot || o.flipX)) {
@@ -232,12 +242,14 @@ function showGenerated(slotId, kind, canvas) {
   }
   const thumbs = group.querySelector('.thumbs');
   thumbs.querySelector(`[data-kind="${kind}"]`)?.remove();
-  const fig = figure(thumb(canvas, 256), kind);
+  const slotName = plugin.layout?.slots.find((s) => s.id === slotId)?.name ?? slotId;
+  const fig = figure(named(thumb(canvas, 256), `${slotName} ${kind}`, canvas), kind);
   fig.dataset.kind = kind;
   thumbs.append(fig);
 }
 
-function figure(c, caption) {
+function figure(c, caption, saveName) {
+  if (saveName) named(c, saveName);
   const f = document.createElement('figure');
   const cap = document.createElement('figcaption');
   cap.textContent = caption;
@@ -330,7 +342,8 @@ function showSuggestion(s) {
   pending = s;
   const sheet = $('sugg-sheet');
   sheet.innerHTML = '';
-  if (s.sheet) sheet.append(thumb(s.sheet, 900));
+  if (s.sheet) sheet.append(named(thumb(s.sheet, 900), 'muse views', s.sheet));
+  if (s.idSheet) sheet.append(named(thumb(s.idSheet, 900), 'muse views ID map', s.idSheet));
   $('sugg-subject').textContent = s.subject || 'not sure';
   $('sugg-parts').innerHTML = (s.parts ?? [])
     .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
@@ -418,9 +431,11 @@ async function runReskin(text, suggestion) {
     showingOriginal = false;
     $('btn-toggle').textContent = 'Show original';
     $('btn-toggle').disabled = false;
+    $('btn-review').disabled = !plugin.canReview;
     log(
       `Reskinned "${res.prompt}": ${res.slots.length} texture(s), ${res.recoloredMaterials} recolored, ${(res.durationMs / 1000).toFixed(1)}s`,
     );
+    if ($('opt-review').checked && plugin.canReview) runReview();
   } catch (err) {
     if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
     else showError(err, () => runReskin(text, suggestion));
@@ -493,6 +508,96 @@ async function runProbe() {
 $('btn-probe').onclick = runProbe;
 $('err-probe').onclick = runProbe;
 
+// ------------------------------------------------------------------ review & fix
+async function runReview() {
+  $('btn-review').disabled = true;
+  $('btn-reskin').disabled = true;
+  try {
+    const { passes } = await plugin.postReview({ passes: 1 });
+    const fixed = passes.flatMap((p) => p.repainted);
+    log(fixed.length ? `Review & fix: repainted ${fixed.join(', ')}` : 'Review: no problems found');
+  } catch (err) {
+    if (err.name !== 'AbortError') log(`Review failed: ${err.message}`, 'err');
+  } finally {
+    $('btn-review').disabled = !plugin.canReview;
+    $('btn-reskin').disabled = false;
+  }
+}
+$('btn-review').onclick = runReview;
+
+function renderReview(r) {
+  $('review-section').hidden = false;
+  const host = $('review');
+  host.innerHTML = '';
+  const p = document.createElement('div');
+  p.className = 'muted';
+  p.textContent = r.summary || (r.issues.length ? '' : 'Looks good.');
+  const ul = document.createElement('ul');
+  ul.className = 'review-notes';
+  ul.innerHTML = r.issues
+    .map(
+      (x) =>
+        `<li><b>${escapeHtml(x.area || 'general')}</b>: ${escapeHtml(x.problem)}${x.fix ? ` → <i>${escapeHtml(x.fix)}</i>` : ''}</li>`,
+    )
+    .join('');
+  const fig = document.createElement('div');
+  fig.className = 'review-sheet';
+  fig.append(named(thumb(r.sheet, 640), 'review views', r.sheet));
+  host.append(p, ul, fig);
+  for (const x of r.issues) log(`Review: ${x.area || 'general'}: ${x.problem}`, 'warn');
+}
+
+// ------------------------------------------------------------------ ID map
+$('btn-idmap').onclick = () => {
+  const on = !plugin.idMapVisible;
+  plugin.showIdMap(on);
+  $('btn-idmap').classList.toggle('on', on);
+};
+
+// ------------------------------------------------------------------ image save names
+// Right-click an image: save it under a name that says what it is (e.g. "Body+atlas.png").
+const fullSize = new WeakMap();
+function named(c, name, source) {
+  c.dataset.saveName = name;
+  if (source) fullSize.set(c, source);
+  return c;
+}
+const imgMenu = $('img-menu');
+let menuTarget = null;
+document.addEventListener('contextmenu', (e) => {
+  const c = e.target.closest?.('canvas[data-save-name]');
+  if (!c) return;
+  e.preventDefault();
+  menuTarget = c;
+  $('img-save').textContent = `Save "${fileName(c.dataset.saveName)}"`;
+  imgMenu.hidden = false;
+  imgMenu.style.left = `${Math.min(e.clientX, innerWidth - 220)}px`;
+  imgMenu.style.top = `${Math.min(e.clientY, innerHeight - 90)}px`;
+});
+document.addEventListener('click', (e) => {
+  if (!imgMenu.contains(e.target)) imgMenu.hidden = true;
+});
+function fileName(name) {
+  return `${name.replace(/[\\/:*?"<>|]+/g, '_').trim()}.png`;
+}
+function menuBlob() {
+  const src = fullSize.get(menuTarget) ?? menuTarget;
+  return new Promise((r) => src.toBlob(r, 'image/png'));
+}
+$('img-save').onclick = async () => {
+  imgMenu.hidden = true;
+  const url = URL.createObjectURL(await menuBlob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName(menuTarget.dataset.saveName);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+$('img-open').onclick = async () => {
+  imgMenu.hidden = true;
+  window.open(URL.createObjectURL(await menuBlob()), '_blank');
+};
+
 // ------------------------------------------------------------------ compare + export
 let showingOriginal = false;
 $('btn-toggle').onclick = () => {
@@ -503,6 +608,7 @@ $('btn-toggle').onclick = () => {
 
 $('btn-export').onclick = async () => {
   if (showingOriginal) $('btn-toggle').click();
+  if (plugin.idMapVisible) $('btn-idmap').click();
   const { glb, filename } = await plugin.postExport();
   const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
   const a = document.createElement('a');

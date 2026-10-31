@@ -5,6 +5,8 @@ import {
   reskinAtlasPrompt,
   roughnessMapPrompt,
   parseSuggestion,
+  parseReview,
+  reviewPrompt,
   plainReskinAtlasPrompt,
   plainReskinPartPrompt,
   reskinPartPrompt,
@@ -133,6 +135,7 @@ export class MuseProvider {
   async suggestPrompt(req) {
     const images = [];
     if (req.sheet) images.push(this.toUploadSized(req.sheet, this.fast ? 1152 : 1536));
+    if (req.idSheet) images.push(this.toUploadSized(req.idSheet, this.fast ? 864 : 1152));
     for (const a of req.atlases.slice(0, 4)) images.push(this.toUploadSized(a.atlasWithUvs, this.fast ? 768 : 1024));
     const text = await this.client.chat({
       reasoningEffort: this.fast ? 'low' : 'medium',
@@ -141,7 +144,7 @@ export class MuseProvider {
         {
           role: 'user',
           content: [
-            { type: 'text', text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet) },
+            { type: 'text', text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet, !!req.idSheet) },
             ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
           ],
         },
@@ -150,6 +153,27 @@ export class MuseProvider {
     const s = parseSuggestion(text);
     if (!s) throw new Error('Muse returned a suggestion that could not be read');
     return s;
+  }
+
+  /**
+   * Review step: Muse Spark looks at one image of the painted model (eight angles, plus the
+   * same angles as an ID map) and lists problems per texture area.
+   */
+  async reviewResult(req) {
+    const text = await this.client.chat({
+      reasoningEffort: this.fast ? 'low' : 'medium',
+      signal: req.signal,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: reviewPrompt(req.theme, req) },
+            { type: 'image_url', image_url: { url: this.toUploadSized(req.sheet, 1024) } },
+          ],
+        },
+      ],
+    });
+    return parseReview(text);
   }
 
   /**
