@@ -102,6 +102,17 @@ export class ReskinPlugin {
   lastPartJobs = new Map();
   /** Paint areas per slot (UV island groups do not change for a loaded model). */
   regionCache = new Map();
+  /** Per variation index: Map slotId → part jobs (filled during a run). */
+  variantJobs = [];
+  /** Painted results, newest last: { id, prompt, variant, of, state, partJobs, thumb }. */
+  history = [];
+  historyIndex = -1;
+  /**
+   * Learned tips: general lessons from review passes, per asset class ('all' = every
+   * class). They are added to future paint and suggestion prompts. Persist them with
+   * getLessons() / setLessons() (the harness keeps them in localStorage).
+   */
+  lessons = {};
   suggestionCache = new Map();
   busy = false;
   abort = null;
@@ -185,6 +196,8 @@ export class ReskinPlugin {
       this.lastPartJobs.clear();
       this.regionCache.clear();
       this.idMapSaved = null;
+      this.history = [];
+      this.historyIndex = -1;
       this.lastResult = null;
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
@@ -361,7 +374,14 @@ export class ReskinPlugin {
         progress: 0.3,
       });
       const raw = await this.timed('suggest prompt', null, () =>
-        this.provider.suggestPrompt({ theme, sheet, idSheet, atlases, signal }),
+        this.provider.suggestPrompt({
+          theme,
+          sheet,
+          idSheet,
+          atlases,
+          lessons: this.lessonsFor(this.resolveAssetClass(opts)),
+          signal,
+        }),
       );
 
       const plans = {};
@@ -417,6 +437,7 @@ export class ReskinPlugin {
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
       // Start from the original look every time, so prompts don't compound.
       this.restoreSnapshots();
+      this.variantJobs = [];
 
       opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
@@ -499,11 +520,14 @@ export class ReskinPlugin {
       }
       if (firstError && !results.length && remote.length) throw firstError;
 
+      // History: one entry per variation (all slots), the first one applied.
+      const entries = this.recordVariations(theme, results, opts);
       const result = {
         prompt: theme,
         slots: results,
         recoloredMaterials: recolored,
         durationMs: performance.now() - started,
+        variations: entries.map(({ id, variant, thumb }) => ({ id, variant, thumb })),
       };
       this.lastResult = result;
       this.lastPrompt = theme;
@@ -549,105 +573,157 @@ export class ReskinPlugin {
       ? fitSize(slot.width, slot.height, maxSize)
       : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
 
-    let raw;
     let plan = null;
     let orient = null;
     let parts = null;
     let usedPrompt = theme;
     let original = null;
 
-    if (atlasMode) {
-      original = textureToCanvas(slot.texture, maxSize);
-      // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
-      const rawParts = slotParts(slot);
-      const byParts =
-        (opts.paintMode ?? 'auto') !== 'atlas' && typeof this.provider.reskinPart === 'function' && rawParts.length > 1;
-      if (byParts) {
-        // Per-part mode: each part is painted on its own, upright, and pasted back inside its islands.
-        parts = rawParts;
-        plan = opts.suggestion?.plans?.[slot.id] ?? null;
-        raw = await this.paintByParts(slot, theme, rawParts, original, plan, opts, signal, report);
-      } else {
-        // If the key part (head/face, else the largest) is stored upside down, sideways or
-        // mirrored, turn the whole atlas upright before painting and turn the result back.
-        orient = resolveOrientation(opts.orientation, rawParts);
-        if (orient && !isIdentity(orient)) {
-          this.emit('warning', {
-            message:
-              orient.reason === 'manual'
-                ? `"${slot.name}": using the manual orientation (${orient.rot}°${orient.flipX ? ', mirrored' : ''}).`
-                : `"${slot.name}": "${orient.reason}" is stored ${orient.rot ? `rotated ${orient.rot}°` : ''}${orient.rot && orient.flipX ? ' and ' : ''}${orient.flipX ? 'mirrored' : ''} in the atlas; painting it upright and turning it back.`,
-          });
-        }
-        parts = transformParts(rawParts, orient);
-        const guide =
-          rawParts.length > 1
-            ? drawPartMap(slot, rawParts, original.width, original.height)
-            : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
-        const uvGuide = transformCanvas(guide, orient);
-        const sendAtlas = transformCanvas(original, orient);
-        const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
-        const suggested = opts.suggestion?.plans?.[slot.id];
-        if (suggested) {
-          // The art-director step already mapped this atlas's regions.
-          plan = suggested;
-        } else if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
-          // The layout doesn't depend on the theme, so it is read once per model.
-          plan = this.planCache.get(planKey);
-        } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
-          report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
-          try {
-            plan = await this.timed('read layout', slot.id, () =>
-              this.provider.planLayout({
+    // Variations: each one is painted in parallel with its own variation note.
+    const variants = Math.max(1, Math.min(opts.variants ?? 1, 4));
+    const paintVariant = async (opts) => {
+      let raw;
+      if (atlasMode) {
+        original = textureToCanvas(slot.texture, maxSize);
+        // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
+        const rawParts = slotParts(slot);
+        const byParts =
+          (opts.paintMode ?? 'auto') !== 'atlas' &&
+          typeof this.provider.reskinPart === 'function' &&
+          rawParts.length > 1;
+        if (byParts) {
+          // Per-part mode: each part is painted on its own, upright, and pasted back inside its islands.
+          parts = rawParts;
+          plan = opts.suggestion?.plans?.[slot.id] ?? null;
+          raw = await this.paintByParts(slot, theme, rawParts, original, plan, opts, signal, report);
+        } else {
+          // If the key part (head/face, else the largest) is stored upside down, sideways or
+          // mirrored, turn the whole atlas upright before painting and turn the result back.
+          orient = resolveOrientation(opts.orientation, rawParts);
+          if (orient && !isIdentity(orient)) {
+            this.emit('warning', {
+              message:
+                orient.reason === 'manual'
+                  ? `"${slot.name}": using the manual orientation (${orient.rot}°${orient.flipX ? ', mirrored' : ''}).`
+                  : `"${slot.name}": "${orient.reason}" is stored ${orient.rot ? `rotated ${orient.rot}°` : ''}${orient.rot && orient.flipX ? ' and ' : ''}${orient.flipX ? 'mirrored' : ''} in the atlas; painting it upright and turning it back.`,
+            });
+          }
+          parts = transformParts(rawParts, orient);
+          const guide =
+            rawParts.length > 1
+              ? drawPartMap(slot, rawParts, original.width, original.height)
+              : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
+          const uvGuide = transformCanvas(guide, orient);
+          const sendAtlas = transformCanvas(original, orient);
+          const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
+          const suggested = opts.suggestion?.plans?.[slot.id];
+          if (suggested) {
+            // The art-director step already mapped this atlas's regions.
+            plan = suggested;
+          } else if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
+            // The layout doesn't depend on the theme, so it is read once per model.
+            plan = this.planCache.get(planKey);
+          } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
+            report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
+            try {
+              plan = await this.timed('read layout', slot.id, () =>
+                this.provider.planLayout({
+                  slotName: slot.name,
+                  meshNames: slot.meshes.map((m) => m.name),
+                  atlas: sendAtlas,
+                  atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
+                  signal,
+                }),
+              );
+              if (plan) this.planCache.set(planKey, plan);
+            } catch (err) {
+              if (signal.aborted) throw err;
+              this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
+            }
+            this.emit('plan', { slotId: slot.id, plan });
+          }
+          report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
+          raw = await this.toCanvas(
+            await this.withFilterRetry('paint atlas', slot, theme, (plain, t) =>
+              this.provider.reskinAtlas({
+                theme: t,
                 slotName: slot.name,
-                meshNames: slot.meshes.map((m) => m.name),
                 atlas: sendAtlas,
-                atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
+                uvGuide,
+                parts: plain ? undefined : parts,
+                width: sendAtlas.width,
+                height: sendAtlas.height,
+                plan: plain ? null : plan,
+                extraInstructions: plain
+                  ? undefined
+                  : [
+                      opts.extraInstructions,
+                      ...this.rulesFor(
+                        opts.assetClass,
+                        rawParts.map((p) => p.name),
+                      ),
+                    ]
+                      .filter(Boolean)
+                      .join('\n') || undefined,
+                plain,
                 signal,
               }),
-            );
-            if (plan) this.planCache.set(planKey, plan);
-          } catch (err) {
-            if (signal.aborted) throw err;
-            this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
-          }
-          this.emit('plan', { slotId: slot.id, plan });
+            ),
+          );
         }
-        report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
+      } else {
+        report(0.2, 'generate', `Generating seamless texture for "${slot.name}"`);
         raw = await this.toCanvas(
-          await this.withFilterRetry('paint atlas', slot, theme, (plain, t) =>
-            this.provider.reskinAtlas({
+          await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
+            this.provider.generateTexture({
               theme: t,
-              slotName: slot.name,
-              atlas: sendAtlas,
-              uvGuide,
-              parts: plain ? undefined : parts,
-              width: sendAtlas.width,
-              height: sendAtlas.height,
-              plan: plain ? null : plan,
-              extraInstructions: plain ? undefined : opts.extraInstructions,
+              materialName: slot.name,
+              width,
+              height,
+              extraInstructions: plain
+                ? undefined
+                : [opts.extraInstructions, ...this.lessonsFor(opts.assetClass)].filter(Boolean).join('\n') || undefined,
               plain,
               signal,
             }),
           ),
         );
       }
-    } else {
-      report(0.2, 'generate', `Generating seamless texture for "${slot.name}"`);
-      raw = await this.toCanvas(
-        await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
-          this.provider.generateTexture({
-            theme: t,
-            materialName: slot.name,
-            width,
-            height,
-            extraInstructions: plain ? undefined : opts.extraInstructions,
-            plain,
-            signal,
-          }),
-        ),
-      );
+      return raw;
+    };
+    const settled = await Promise.allSettled(
+      Array.from({ length: variants }, (_, vi) =>
+        paintVariant({
+          ...opts,
+          variantIndex: vi,
+          extraInstructions:
+            [opts.extraInstructions, variationNote(vi, variants)].filter(Boolean).join('\n') || undefined,
+        }),
+      ),
+    );
+    signal.throwIfAborted();
+    const okIdx = settled.map((r, i) => (r.status === 'fulfilled' ? i : -1)).filter((i) => i >= 0);
+    const raws = okIdx.map((i) => settled[i].value);
+    if (!raws.length) throw settled[0].reason;
+    if (raws.length < variants) {
+      this.emit('warning', { message: `"${slot.name}": ${variants - raws.length} of ${variants} variations failed.` });
     }
+    const ctx = { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts };
+    const done = [];
+    for (let vi = 0; vi < raws.length; vi++) {
+      const r = await this.finishSlot(slot, { ...ctx, raw: raws[vi] });
+      r.variant = vi;
+      r.state = this.captureMaterials(slot.materials);
+      r.partJobs = this.variantJobs[okIdx[vi]]?.get(slot.id);
+      done.push(r);
+    }
+    return { ...done[0], variants: done };
+  }
+
+  /** Post-processing and apply step of one painted texture (see reskinSlot). */
+  async finishSlot(slot, ctx) {
+    const { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts } = ctx;
+    let raw = ctx.raw;
     signal.throwIfAborted();
     // Undo the upright transform so the texture matches the model's UVs again.
     if (orient && !isIdentity(orient)) raw = untransformCanvas(raw, orient);
@@ -904,6 +980,17 @@ export class ReskinPlugin {
     const out = copyCanvas(original);
     let done = 0;
     let styleRef = null;
+    // Live preview: the model shows each area as soon as it is painted (first variation only).
+    let live = null;
+    if ((opts.variantIndex ?? 0) === 0 && opts.livePreview !== false) {
+      live = this.makeTexture(out, slot.texture, THREE.SRGBColorSpace, slot.uvChannel, false);
+      for (const mat of slot.materials) {
+        this.snapshot(mat);
+        mat.map = live;
+        mat.color.set(0xffffff);
+        mat.needsUpdate = true;
+      }
+    }
     const toPaint = jobs.filter((j) => !j.reuse).length;
     report(
       0.2,
@@ -924,7 +1011,7 @@ export class ReskinPlugin {
       const guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
       const padded = padToMuseAspect(crop);
       const paddedGuide = padToMuseAspect(guide, { fill: '#000000' });
-      const rules = assetClassRules(opts.assetClass, [part.baseName ?? part.name]);
+      const rules = this.rulesFor(opts.assetClass, [part.baseName ?? part.name]);
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
           theme: t,
@@ -948,6 +1035,10 @@ export class ReskinPlugin {
       const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
       pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
       job.painted = upright;
+      if (live) {
+        live.needsUpdate = true;
+        this.emit('partPainted', { slotId: slot.id, area: part.name, canvas: out });
+      }
       done++;
       report(0.2 + (0.5 * done) / jobs.length, 'generate', `Painted ${part.name} (${done}/${jobs.length})`);
       return upright;
@@ -974,8 +1065,191 @@ export class ReskinPlugin {
         message: `"${slot.name}": could not paint ${job.part.name} (${toError(r.reason).message}); it keeps its old colors.`,
       });
     }
-    this.lastPartJobs.set(slot.id, { jobs, original, out, theme, plan, opts });
+    const rec = { jobs, original, out, theme, plan, opts };
+    const vi = opts.variantIndex ?? 0;
+    (this.variantJobs[vi] ??= new Map()).set(slot.id, rec);
+    if (vi === 0) this.lastPartJobs.set(slot.id, rec);
     return out;
+  }
+
+  // ---------------------------------------------------------------- variations + history
+
+  // ---------------------------------------------------------------- learned tips
+
+  /** Class rules plus the learned tips for that class. */
+  rulesFor(assetClass, partNames = []) {
+    return [...assetClassRules(assetClass, partNames), ...this.lessonsFor(assetClass)];
+  }
+
+  lessonsFor(assetClass) {
+    return [...(this.lessons.all ?? []), ...(this.lessons[assetClass] ?? [])];
+  }
+
+  getLessons() {
+    return JSON.parse(JSON.stringify(this.lessons));
+  }
+
+  /** Replaces all learned tips: { [assetClass | 'all']: string[] }. */
+  setLessons(lessons = {}) {
+    const clean = {};
+    for (const [k, list] of Object.entries(lessons ?? {})) {
+      const items = [...new Set((Array.isArray(list) ? list : []).map((x) => String(x).trim()).filter(Boolean))];
+      if (items.length) clean[k] = items.slice(-(this.maxLessons ?? 12));
+    }
+    this.lessons = clean;
+    this.emit('lessons', this.getLessons());
+  }
+
+  /** Adds tips for a class, skipping near-duplicates; keeps the newest `maxLessons` (12). */
+  addLessons(assetClass, list) {
+    const norm = (t) =>
+      t
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const cur = this.lessons[assetClass] ?? [];
+    const seen = new Set([...cur, ...(this.lessons.all ?? [])].map(norm));
+    const added = [];
+    for (const l of list ?? []) {
+      const n = norm(l);
+      if (!n || seen.has(n)) continue;
+      seen.add(n);
+      added.push(sanitizePrompt(l));
+    }
+    if (!added.length) return [];
+    this.setLessons({ ...this.lessons, [assetClass]: [...cur, ...added] });
+    return added;
+  }
+
+  /** Material state (maps, color, roughness) of `materials`, to switch between results. */
+  captureMaterials(materials) {
+    const state = new Map();
+    for (const mat of materials) {
+      state.set(mat, {
+        map: mat.map,
+        normalMap: mat.normalMap,
+        roughnessMap: mat.roughnessMap,
+        metalnessMap: mat.metalnessMap,
+        color: mat.color.clone(),
+        roughness: mat.roughness,
+      });
+    }
+    return state;
+  }
+
+  applyState(state) {
+    for (const [mat, s] of state) {
+      delete mat.userData.__reskin;
+      mat.map = s.map;
+      mat.normalMap = s.normalMap;
+      mat.roughnessMap = s.roughnessMap;
+      mat.metalnessMap = s.metalnessMap;
+      mat.color.copy(s.color);
+      mat.roughness = s.roughness;
+      mat.needsUpdate = true;
+    }
+  }
+
+  recordVariations(theme, results, opts) {
+    const base = this.captureMaterials(this.snapshots.keys());
+    const count = Math.max(1, ...results.map((r) => r.variants?.length ?? 1));
+    const entries = [];
+    // Drop any redo branch: a new paint goes after the current entry.
+    this.history = this.history.slice(0, this.historyIndex + 1);
+    for (let vi = 0; vi < count; vi++) {
+      const state = new Map(base);
+      const partJobs = new Map();
+      for (const r of results) {
+        const v = r.variants?.[vi] ?? r.variants?.[0] ?? r;
+        for (const [mat, st] of v.state ?? []) state.set(mat, st);
+        if (v.partJobs) partJobs.set(r.slotId, v.partJobs);
+      }
+      this.applyState(state);
+      const thumb = this.renderThumb();
+      const entry = {
+        id: `h${Date.now().toString(36)}${vi}`,
+        prompt: theme,
+        variant: vi,
+        of: count,
+        state,
+        partJobs,
+        thumb,
+        fixes: !!opts.fixes,
+      };
+      this.history.push(entry);
+      entries.push(entry);
+    }
+    this.goToHistory(this.history.length - count, { silent: true });
+    this.emit('history', this.historySummary());
+    return entries;
+  }
+
+  /** A small three-quarter render of the model as it looks now. */
+  renderThumb(size = 160) {
+    try {
+      return renderAxisViews(this.model.scene, { size, views: [REVIEW_VIEWS[1]], cols: 1 }).views[0].canvas;
+    } catch {
+      return null;
+    }
+  }
+
+  historySummary() {
+    return {
+      index: this.historyIndex,
+      entries: this.history.map(({ id, prompt, variant, of, thumb, fixes }) => ({
+        id,
+        prompt,
+        variant,
+        of,
+        thumb,
+        fixes,
+      })),
+    };
+  }
+
+  /** Shows history entry `index` (-1 = the original model). */
+  goToHistory(index, { silent = false } = {}) {
+    if (index < -1 || index >= this.history.length) return false;
+    this.showIdMap(false);
+    if (index === -1) this.restoreSnapshots();
+    else {
+      const e = this.history[index];
+      this.applyState(e.state);
+      this.lastPartJobs = new Map(e.partJobs);
+      this.lastPrompt = e.prompt;
+      if (this.lastRun) this.lastRun.theme = e.prompt;
+    }
+    this.historyIndex = index;
+    if (!silent) this.emit('history', this.historySummary());
+    return true;
+  }
+
+  /**
+   * Before/after compare: returns { before(), after() } that switch the materials between
+   * the original look and the current result (used for a split-screen slider).
+   */
+  compareStates() {
+    const after = this.captureMaterials(this.snapshots.keys());
+    const before = new Map([...this.snapshots].map(([mat, s]) => [mat, { ...s, color: s.color.clone() }]));
+    return { before: () => this.applyState(before), after: () => this.applyState(after) };
+  }
+
+  /** Pick a result (e.g. one of the variations) by its id. */
+  applyHistory(id) {
+    return this.goToHistory(this.history.findIndex((e) => e.id === id));
+  }
+
+  undo() {
+    return this.guardIdle() && this.goToHistory(this.historyIndex - 1);
+  }
+
+  redo() {
+    return this.guardIdle() && this.goToHistory(this.historyIndex + 1);
+  }
+
+  guardIdle() {
+    return !this.busy;
   }
 
   /**
@@ -1099,7 +1373,7 @@ export class ReskinPlugin {
       for (const x of fixable) fixes[x.area] = [fixes[x.area], x.fix || x.problem].filter(Boolean).join(' ');
       pass.repainted = Object.keys(fixes);
       this.status('reskinning', `Repainting ${pass.repainted.join(', ')}`);
-      await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, fixes, signal: opts.signal });
+      await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, variants: 1, fixes, signal: opts.signal });
     }
     return { passes: out };
   }
@@ -1141,7 +1415,7 @@ export class ReskinPlugin {
           sheet,
           areas,
           subject: this.lastRun.opts.suggestion?.subject,
-          classRules: assetClassRules(
+          classRules: this.rulesFor(
             this.lastRun.opts.assetClass,
             areas.map((a) => a.name),
           ),
@@ -1151,6 +1425,10 @@ export class ReskinPlugin {
       for (const x of notes.issues) {
         x.problem = x.problem && sanitizePrompt(x.problem);
         x.fix = x.fix && sanitizePrompt(x.fix);
+      }
+      if (opts.learn !== false && notes.lessons?.length) {
+        const added = this.addLessons(this.lastRun.opts.assetClass ?? 'generic', notes.lessons);
+        if (added.length) notes.learned = added;
       }
       const review = { ...notes, sheet };
       this.emit('review', review);
@@ -1304,6 +1582,18 @@ export class ReskinPlugin {
     tex.needsUpdate = true;
     return tex;
   }
+}
+
+/** Extra instruction that makes each variation look different. */
+export function variationNote(index, count) {
+  if (count <= 1 || index === 0) return '';
+  const styles = [
+    '',
+    'Variation 2: use a clearly different color palette and different motifs from the obvious choice.',
+    'Variation 3: a bolder, more stylized take with a contrasting accent color.',
+    'Variation 4: a subtle, muted take with fine detail.',
+  ];
+  return styles[index] ?? `Variation ${index + 1}: a different palette and motifs.`;
 }
 
 export function slug(s) {

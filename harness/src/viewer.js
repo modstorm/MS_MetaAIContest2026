@@ -11,6 +11,10 @@ export class Viewer {
   content = null;
   mixer = null;
   timer = new THREE.Timer();
+  /** Before/after split: { before(), after() } called around the two half renders, or null. */
+  compare = null;
+  /** Where the split is, 0..1 across the canvas (left = before). */
+  split = 0.5;
 
   constructor(container) {
     this.container = container;
@@ -34,6 +38,9 @@ export class Viewer {
     this.camera.position.set(2, 1.5, 3);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    // Turntable: spins until the user grabs the model.
+    this.controls.autoRotateSpeed = 1.6;
+    this.controls.addEventListener('start', () => this.setSpin(false));
 
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
@@ -51,6 +58,14 @@ export class Viewer {
       this.mixer.clipAction(animations[0]).play();
     }
     this.frame(obj);
+    this.setSpin(true);
+  }
+
+  /** Turntable on/off. Calls onSpinChange so the UI can follow. */
+  setSpin(on) {
+    if (this.controls.autoRotate === on) return;
+    this.controls.autoRotate = on;
+    this.onSpinChange?.(on);
   }
 
   /** Points the camera at the object and puts the grid at its feet. */
@@ -85,6 +100,21 @@ export class Viewer {
     const dt = this.timer.getDelta();
     this.mixer?.update(dt);
     this.controls.update();
+    if (!this.compare) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    // Split view: left of the handle shows "before", right shows "after".
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    const x = Math.round(w * this.split);
+    this.renderer.setScissorTest(true);
+    this.compare.before();
+    this.renderer.setScissor(0, 0, x, h);
     this.renderer.render(this.scene, this.camera);
+    this.compare.after();
+    this.renderer.setScissor(x, 0, w - x, h);
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.setScissorTest(false);
   }
 }

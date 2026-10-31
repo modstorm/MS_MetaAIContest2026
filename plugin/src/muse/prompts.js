@@ -137,7 +137,7 @@ export function parseLayoutPlan(text) {
  * Art-director prompt: Muse Spark sees six axis renders plus the UV atlases, works out
  * what the object is, and writes a stronger, part-by-part paint prompt for the theme.
  */
-export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = false) {
+export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = false, lessons = []) {
   const first = (hasSheet ? 1 : 0) + (hasIdSheet ? 1 : 0) + 1;
   const atlasLines = atlases.flatMap((a, i) => [
     `Image ${i + first}: UV texture atlas "${a.name}" with each part tinted in its own color and labelled with its name and an arrow pointing to the part's top.`,
@@ -153,6 +153,8 @@ export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = fals
       : '',
     ...atlasLines,
     `The user wants to retheme the model as: "${theme}".`,
+    lessons.length ? 'Lessons learned from reviews of earlier results (follow them):' : '',
+    ...lessons.map((l) => `- ${l}`),
     'Work out what the object is and which atlas regions belong to which visible part. Then write the best possible instruction for an image model that will repaint each atlas while keeping its exact layout.',
     'Reply with JSON only, no prose, in this shape:',
     '{"subject": "what the object is, one line",',
@@ -270,7 +272,8 @@ export function reviewPrompt(theme, { areas = [], subject, classRules = [] } = {
     ...classRules.map((r) => `- ${r}`),
     'Look for: front details repeated on the back, details on the wrong part, doubled features, stripes or patches of the old texture or skin, designs cut off at seams (chains, straps), areas that do not match the theme or the rest of the model, garments that stop partway round a limb.',
     'Reply with JSON only, no prose:',
-    '{"ok": true or false, "summary": "one line", "issues": [{"area": "exact area name from the list", "problem": "what is wrong", "fix": "one sentence instruction for repainting that area"}]}',
+    '{"ok": true or false, "summary": "one line", "issues": [{"area": "exact area name from the list", "problem": "what is wrong", "fix": "one sentence instruction for repainting that area"}], "lessons": ["general rule"]}',
+    '"lessons": 0-2 short, general rules that would have avoided these problems on ANY model of this kind (not specific to this model, theme or area names), e.g. "Keep chest details on front-facing areas only". Empty if nothing general was learned.',
     'At most 4 issues, most visible first. Only list real, clearly visible problems; an empty list is fine. Keep the wording family friendly.',
   ]
     .filter(Boolean)
@@ -281,7 +284,7 @@ export function reviewPrompt(theme, { areas = [], subject, classRules = [] } = {
 export function parseReview(text) {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return { ok: true, summary: '', issues: [], raw: text };
+  if (start < 0 || end <= start) return { ok: true, summary: '', issues: [], lessons: [], raw: text };
   try {
     const o = JSON.parse(text.slice(start, end + 1));
     const issues = (Array.isArray(o.issues) ? o.issues : [])
@@ -292,8 +295,12 @@ export function parseReview(text) {
         problem: x.problem ? String(x.problem) : '',
         fix: x.fix ? String(x.fix) : '',
       }));
-    return { ok: o.ok !== false && !issues.length, summary: String(o.summary ?? ''), issues, raw: text };
+    const lessons = (Array.isArray(o.lessons) ? o.lessons : [])
+      .map((x) => String(x ?? '').trim())
+      .filter((x) => x.length > 8 && x.length < 240)
+      .slice(0, 2);
+    return { ok: o.ok !== false && !issues.length, summary: String(o.summary ?? ''), issues, lessons, raw: text };
   } catch {
-    return { ok: true, summary: '', issues: [], raw: text };
+    return { ok: true, summary: '', issues: [], lessons: [], raw: text };
   }
 }

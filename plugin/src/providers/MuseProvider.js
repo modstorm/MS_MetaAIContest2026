@@ -144,7 +144,10 @@ export class MuseProvider {
         {
           role: 'user',
           content: [
-            { type: 'text', text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet, !!req.idSheet) },
+            {
+              type: 'text',
+              text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet, !!req.idSheet, req.lessons),
+            },
             ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
           ],
         },

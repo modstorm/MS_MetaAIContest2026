@@ -29,6 +29,7 @@ const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable
 let failures = 0;
 
 async function step(name, fn) {
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return; // ONLY="variations" runs one test
   try {
     await fn();
     console.log(`  ✓ ${name}`);
@@ -60,14 +61,17 @@ async function setReview(page, on) {
   await page.$eval('#opt-review', (el, v) => (el.checked = v), on);
 }
 
-async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review = false } = {}) {
+async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review = false, variations = 1 } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
   await setReview(page, review);
+  await page.selectOption('#opt-variations', String(variations));
   if (paintMode) await setPaintMode(page, paintMode);
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
   await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+  if (variations > 1) await page.waitForSelector('#variations:not([hidden])', { timeout: 120_000 });
+  else await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
 }
 
 function parseGlb(buf) {
@@ -158,6 +162,41 @@ try {
     // Compare toggle works
     await page.click('#btn-toggle');
     await page.screenshot({ path: `${outDir}03-original.png` });
+    await page.context().close();
+  });
+
+  await step('3 variations at once: pick one, history + undo, before/after slider', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    await page.click('#btn-sample');
+    await reskinViaPopup(page, 'molten lava rock', { variations: 3 }).catch(async (e) => {
+      await page.screenshot({ path: `${outDir}08-variations-fail.png` });
+      throw e;
+    });
+    assert.equal(await page.locator('#variation-list button').count(), 3);
+    const h = await page.evaluate(() => window.reskin.plugin.historySummary());
+    assert.equal(h.entries.length, 3);
+    assert.equal(h.index, 0);
+    // Variations differ (different variation notes reach the provider; offline palettes hash the theme only,
+    // so compare the stored states instead).
+    await page.click('#variation-list button:nth-child(2)');
+    assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 1);
+    await page.screenshot({ path: `${outDir}08-variations.png` });
+    await page.click('#run-cancel');
+    await page.waitForSelector('#run-dialog:not([open])', { state: 'attached' });
+    assert.equal(await page.locator('#history button.entry').count(), 4); // original + 3
+    await page.click('#btn-undo');
+    assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 0);
+    await page.click('#history button.entry:nth-child(1)'); // original
+    assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
+    await page.click('#history button.entry:nth-child(3)');
+    await page.click('#btn-compare');
+    assert.ok(await page.isVisible('#compare-handle'));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${outDir}09-compare.png` });
+    await page.click('#btn-compare');
+    assert.ok(!(await page.isVisible('#compare-handle')));
+    // Turntable spins after load and stops when the user drags.
+    assert.ok(await page.evaluate(() => window.reskin.viewer.controls.autoRotate));
     await page.context().close();
   });
 
@@ -267,6 +306,7 @@ try {
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
     await setPaintMode(page, 'atlas');
     await setReview(page, false);
+    await page.selectOption('#opt-variations', '1');
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
@@ -282,14 +322,14 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
-    assert.equal(await page.textContent('#prompt-go'), 'Paint with this prompt');
+    assert.equal(await page.textContent('#run-go'), 'Paint with this prompt');
     const sheet = await page.$eval('#sugg-sheet canvas', (c) => [c.width, c.height]);
     assert.ok(sheet[0] > sheet[1], 'contact sheet is 3x2');
     await page.screenshot({ path: `${outDir}05-muse-suggestion.png` });
 
     await page.fill('#sugg-prompt', suggestion.prompt + ' Add tiny snowflakes.');
-    await page.click('#prompt-go');
-    await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+    await page.click('#run-go');
+    await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
     const urls = calls.map((c) => c.url.split('/v1/')[1]);
     assert.deepEqual(urls, ['chat/completions', 'images/edits']); // region plan reused, no extra layout reading
     const edit = calls[1].body;
@@ -610,6 +650,7 @@ try {
                   ok: false,
                   summary: 'Body has a stripe',
                   issues: [{ area: 'Body', problem: 'skin stripe down the side', fix: 'cover the whole body area' }],
+                  lessons: ['Keep chest details on front-facing areas only'],
                 }),
               },
             },
@@ -641,6 +682,10 @@ try {
     assert.match(edits[2].prompt, /"Body" area/);
     assert.match(edits[2].prompt, /Correction from a review of the last attempt: cover the whole body area/);
     assert.match(await page.textContent('#review'), /skin stripe/);
+    // The lesson is stored (per asset type), persisted, and sent with the next paint calls.
+    assert.match(edits[2].prompt, /Keep chest details on front-facing areas only/);
+    assert.match(await page.evaluate(() => localStorage.getItem('muse-reskin-lessons')), /front-facing/);
+    assert.match(await page.inputValue('#lessons'), /: Keep chest details/);
     await page.context().close();
   });
 

@@ -100,6 +100,16 @@ plugin.onUpdate((e) => {
     case 'regions':
       log(`Painting ${e.data.regions.length} areas: ${e.data.regions.map((r) => r.name).join(', ')}`);
       break;
+    case 'lessons':
+      localStorage.setItem(LESSONS_KEY, JSON.stringify(e.data));
+      if (document.activeElement !== $('lessons')) $('lessons').value = lessonsToText(e.data);
+      break;
+    case 'history':
+      renderHistory(e.data);
+      break;
+    case 'partPainted':
+      log(`Painted ${e.data.area}`);
+      break;
     case 'review':
       renderReview(e.data);
       break;
@@ -139,6 +149,10 @@ function setLoaded(on) {
   $('btn-idmap').classList.remove('on');
   $('btn-review').disabled = true;
   $('review-section').hidden = true;
+  $('history-section').hidden = true;
+  $('btn-compare').disabled = true;
+  $('btn-toggle').disabled = true;
+  if (compareOn) setCompare(false);
 }
 
 $('btn-open').onclick = () => $('file-input').click();
@@ -278,6 +292,7 @@ const PRESETS = [
   'rusted steampunk copper and brass',
 ];
 const dialog = $('prompt-dialog');
+const runDialog = $('run-dialog');
 const promptText = $('prompt-text');
 const chips = $('prompt-chips');
 for (const p of PRESETS) {
@@ -293,50 +308,79 @@ for (const p of PRESETS) {
 }
 $('opt-detail').oninput = (e) => ($('opt-detail-out').textContent = e.target.value);
 
+// ---- step 1: the prompt popup (theme + style; everything else under Advanced)
 function openPrompt() {
+  if (plugin.isBusy) return runDialog.open || runDialog.show();
   const s = plugin.summary();
   $('prompt-model-info').textContent = s
     ? `${plugin.model?.name}: ${s.slots.length} texture slot(s), ${s.triangleCount.toLocaleString()} triangles`
     : '';
   $('provider-label').textContent = `Backend: ${plugin.getProvider().name}`;
-  $('prompt-progress').hidden = true;
   $('suggest-row').hidden = !plugin.canSuggest;
-  clearSuggestion();
-  hideError();
-  setPromptBusy(false);
+  if (runDialog.open) runDialog.close();
+  updateGoLabel();
   if (!dialog.open) dialog.showModal();
   promptText.focus();
 }
 
-function setPromptBusy(busy) {
-  $('prompt-go').disabled = busy;
-  $('prompt-original').disabled = busy;
-  promptText.disabled = busy;
-  $('prompt-cancel').textContent = busy ? 'Stop' : 'Cancel';
-}
-
 $('btn-reskin').onclick = openPrompt;
-$('prompt-cancel').onclick = () => {
-  if (plugin.isBusy) plugin.cancel();
-  else dialog.close();
-};
-// The suggestion waiting for the user's OK (art-director step), if any.
-let pending = null;
+$('prompt-cancel').onclick = () => dialog.close();
 
 function suggestEnabled() {
   return plugin.canSuggest && $('opt-suggest').checked;
 }
 
 function updateGoLabel() {
-  $('prompt-go').textContent = pending ? 'Paint with this prompt' : suggestEnabled() ? 'Get Muse suggestion' : 'Reskin';
-  $('prompt-original').hidden = !pending;
+  $('prompt-go').textContent = suggestEnabled() ? 'Get Muse suggestion' : 'Reskin';
+}
+$('opt-suggest').addEventListener('change', updateGoLabel);
+
+$('prompt-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const prompt = promptText.value.trim();
+  if (!prompt) return;
+  dialog.close();
+  openRun(prompt);
+  if (suggestEnabled()) runSuggest(prompt);
+  else runReskin(prompt);
+});
+
+// ---- step 2: the progress panel (progress, Muse's detailed prompt, variations, errors)
+// The suggestion waiting for the user's OK (art-director step), if any.
+let pending = null;
+
+function openRun(prompt) {
+  pending = null;
+  $('run-title').textContent = 'Painting';
+  $('run-theme').textContent = `"${prompt}"`;
+  $('suggestion').hidden = true;
+  $('variations').hidden = true;
+  $('variation-list').innerHTML = '';
+  $('prompt-bar').style.width = '0%';
+  $('prompt-stage').textContent = '';
+  setRunButtons({ go: false });
+  hideError();
+  if (!runDialog.open) runDialog.show();
 }
 
-function clearSuggestion() {
-  pending = null;
-  $('suggestion').hidden = true;
-  updateGoLabel();
+function setRunButtons({ go = false, busy = false, done = false } = {}) {
+  $('run-go').hidden = !go;
+  $('prompt-original').hidden = !go;
+  $('run-go').textContent = 'Paint with this prompt';
+  $('sugg-prompt').disabled = !go;
+  $('run-cancel').textContent = busy ? 'Stop' : done ? 'Done' : 'Close';
 }
+
+$('run-cancel').onclick = () => {
+  if (plugin.isBusy) plugin.cancel();
+  else {
+    runDialog.close();
+    if (pickedReview) {
+      pickedReview = false;
+      if ($('opt-review').checked && plugin.canReview) runReview();
+    }
+  }
+};
 
 function showSuggestion(s) {
   pending = s;
@@ -358,12 +402,10 @@ function showSuggestion(s) {
   });
   $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
   $('suggestion').hidden = false;
-  updateGoLabel();
+  $('run-title').textContent = 'Muse suggests';
+  setRunButtons({ go: true });
   $('sugg-prompt').focus();
 }
-
-promptText.addEventListener('input', () => pending && clearSuggestion());
-$('opt-suggest').addEventListener('change', updateGoLabel);
 
 let retryAction = null;
 
@@ -372,7 +414,7 @@ function hideError() {
   retryAction = null;
 }
 
-/** Shows a failure in the popup with Retry / Edit prompt (and Skip suggestion for the suggest step). */
+/** Shows a failure with Retry / Edit prompt (and Skip suggestion for the suggest step). */
 function showError(err, retry, { canSkip = false } = {}) {
   const filtered =
     err.code === 'content_policy_violation' ||
@@ -386,6 +428,7 @@ function showError(err, retry, { canSkip = false } = {}) {
   $('err-probe').hidden = !filtered;
   $('prompt-error').hidden = false;
   $('prompt-stage').textContent = '';
+  if (!runDialog.open) runDialog.show();
   retryAction = retry;
 }
 
@@ -396,83 +439,117 @@ $('err-retry').onclick = () => {
 };
 $('err-edit').onclick = () => {
   hideError();
-  const field = pending ? $('sugg-prompt') : promptText;
-  field.focus();
-  field.select();
+  if (pending) {
+    setRunButtons({ go: true });
+    $('sugg-prompt').focus();
+  } else openPrompt();
 };
 $('err-skip').onclick = () => {
   hideError();
   $('opt-suggest').checked = false;
-  clearSuggestion();
+  pending = null;
+  $('suggestion').hidden = true;
   runReskin(promptText.value.trim());
 };
 
+function paintOptions() {
+  return {
+    detailPreserve: Number($('opt-detail').value),
+    useVisionPlanning: $('opt-plan').checked,
+    fast: $('opt-fast').checked,
+    orientation: $('opt-orient').value,
+    paintMode: $('opt-paint-mode').value,
+    assetClass: $('opt-asset-class').value,
+    variants: Number($('opt-variations').value),
+    cleanTinyIslands: $('opt-tiny').checked,
+    edgePadding: $('opt-pad').checked ? 12 : 0,
+    normalMaps: $('opt-normal').checked,
+    roughnessMaps: $('opt-rough').checked,
+    maxTextureSize: Number($('opt-size').value),
+  };
+}
+
+// Set when the user still has to pick a variation; the review runs after they close the panel.
+let pickedReview = false;
+
 async function runReskin(text, suggestion) {
   hideError();
-  $('prompt-progress').hidden = false;
+  if (!runDialog.open) openRun(text);
+  $('run-title').textContent = 'Painting';
   $('prompt-bar').style.width = '0%';
-  setPromptBusy(true);
+  setRunButtons({ busy: true });
+  if (suggestion) $('sugg-prompt').disabled = true;
   try {
-    const res = await plugin.postPrompt(text, {
-      suggestion,
-      detailPreserve: Number($('opt-detail').value),
-      useVisionPlanning: $('opt-plan').checked,
-      fast: $('opt-fast').checked,
-      orientation: $('opt-orient').value,
-      paintMode: $('opt-paint-mode').value,
-      assetClass: $('opt-asset-class').value,
-      cleanTinyIslands: $('opt-tiny').checked,
-      edgePadding: $('opt-pad').checked ? 12 : 0,
-      normalMaps: $('opt-normal').checked,
-      roughnessMaps: $('opt-rough').checked,
-      maxTextureSize: Number($('opt-size').value),
-    });
-    dialog.close();
-    showingOriginal = false;
-    $('btn-toggle').textContent = 'Show original';
-    $('btn-toggle').disabled = false;
-    $('btn-review').disabled = !plugin.canReview;
+    const res = await plugin.postPrompt(text, { suggestion, ...paintOptions() });
+    afterPaint();
     log(
       `Reskinned "${res.prompt}": ${res.slots.length} texture(s), ${res.recoloredMaterials} recolored, ${(res.durationMs / 1000).toFixed(1)}s`,
     );
-    if ($('opt-review').checked && plugin.canReview) runReview();
+    if ((res.variations?.length ?? 1) > 1) {
+      showVariations(res.variations);
+      pickedReview = true;
+      setRunButtons({ done: true });
+      $('run-title').textContent = 'Done';
+      $('prompt-stage').textContent = `${res.variations.length} variations ready.`;
+    } else {
+      runDialog.close();
+      if ($('opt-review').checked && plugin.canReview) runReview();
+    }
   } catch (err) {
+    setRunButtons({});
     if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
     else showError(err, () => runReskin(text, suggestion));
-  } finally {
-    setPromptBusy(false);
   }
 }
 
-$('prompt-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const prompt = promptText.value.trim();
-  if (!prompt) return;
-  if (pending) return runReskin($('sugg-prompt').value.trim() || prompt, pending);
-  if (!suggestEnabled()) return runReskin(prompt);
+function afterPaint() {
+  if (compareOn) setCompare(true); // refresh the "after" side
+  $('btn-toggle').disabled = false;
+  $('btn-compare').disabled = false;
+  $('btn-review').disabled = !plugin.canReview;
+  showingOriginal = false;
+  $('btn-toggle').textContent = 'Show original';
+}
 
-  // Step 1: Muse studies six views + the atlases and recommends a prompt. Nothing is painted yet.
-  runSuggest(prompt);
-});
+function showVariations(list) {
+  const host = $('variation-list');
+  host.innerHTML = '';
+  list.forEach((v, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.id = v.id;
+    if (v.thumb) b.append(named(thumb(v.thumb, 200), `variation ${i + 1}`, v.thumb));
+    const cap = document.createElement('span');
+    cap.textContent = `Variation ${i + 1}`;
+    b.append(cap);
+    b.onclick = () => {
+      plugin.applyHistory(v.id);
+      host.querySelectorAll('button').forEach((x) => x.classList.toggle('picked', x === b));
+      if (compareOn) setCompare(true);
+    };
+    if (i === 0) b.classList.add('picked');
+    host.append(b);
+  });
+  $('variations').hidden = false;
+}
 
 async function runSuggest(prompt) {
   hideError();
-  $('prompt-progress').hidden = false;
-  $('prompt-bar').style.width = '0%';
-  setPromptBusy(true);
+  $('run-title').textContent = 'Muse is studying the model';
+  setRunButtons({ busy: true });
   try {
     showSuggestion(
       await plugin.postSuggest(prompt, { fast: $('opt-fast').checked, orientation: $('opt-orient').value }),
     );
-    $('prompt-stage').textContent = 'Review the suggestion, edit it if you like, then paint.';
+    $('prompt-stage').textContent = 'Edit the prompt if you like, then paint.';
   } catch (err) {
+    setRunButtons({});
     if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
     else showError(err, () => runSuggest(prompt), { canSkip: true });
-  } finally {
-    setPromptBusy(false);
   }
 }
 
+$('run-go').onclick = () => runReskin($('sugg-prompt').value.trim() || promptText.value.trim(), pending);
 $('prompt-original').onclick = () => runReskin(promptText.value.trim(), pending);
 
 // ------------------------------------------------------------------ filter probe
@@ -494,19 +571,29 @@ async function runProbe() {
   $('probe-results').innerHTML = '';
   $('probe-results').hidden = false;
   $('probe-results').closest('details')?.setAttribute('open', '');
-  setPromptBusy(true);
+  $('btn-probe').disabled = true;
+  const note = (t) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<b>${escapeHtml(t)}</b>`;
+    $('probe-results').append(li);
+  };
   try {
     const results = await plugin.postProbe(theme);
     const failed = results.filter((r) => !r.ok).map((r) => r.name);
-    $('prompt-stage').textContent = failed.length ? `Blocked: ${failed.join(', ')}` : 'Every probe passed.';
+    note(failed.length ? `Blocked: ${failed.join(', ')}` : 'Every probe passed.');
   } catch (err) {
-    $('prompt-stage').textContent = `Probe failed: ${err.message}`;
+    note(`Probe failed: ${err.message}`);
   } finally {
-    setPromptBusy(false);
+    $('btn-probe').disabled = false;
   }
 }
 $('btn-probe').onclick = runProbe;
-$('err-probe').onclick = runProbe;
+$('err-probe').onclick = () => {
+  runDialog.close();
+  openPrompt();
+  $('advanced').open = true;
+  runProbe();
+};
 
 // ------------------------------------------------------------------ review & fix
 async function runReview() {
@@ -545,6 +632,13 @@ function renderReview(r) {
   fig.append(named(thumb(r.sheet, 640), 'review views', r.sheet));
   host.append(p, ul, fig);
   for (const x of r.issues) log(`Review: ${x.area || 'general'}: ${x.problem}`, 'warn');
+  for (const l of r.learned ?? []) log(`Learned tip saved: ${l}`);
+  if (r.learned?.length) {
+    const t = document.createElement('p');
+    t.className = 'muted';
+    t.textContent = `Saved for next time: ${r.learned.join(' · ')}`;
+    host.append(t);
+  }
 }
 
 // ------------------------------------------------------------------ ID map
@@ -598,6 +692,147 @@ $('img-open').onclick = async () => {
   window.open(URL.createObjectURL(await menuBlob()), '_blank');
 };
 
+// ------------------------------------------------------------------ learned tips
+// Lessons Muse writes during review & fix; kept in this browser and sent with future prompts.
+const LESSONS_KEY = 'muse-reskin-lessons';
+function lessonsToText(l) {
+  return Object.entries(l)
+    .flatMap(([k, list]) => list.map((t) => `${k}: ${t}`))
+    .join('\n');
+}
+function textToLessons(text) {
+  const out = {};
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*([a-z][\w-]*)\s*:\s*(.+)$/i);
+    const [k, t] = m ? [m[1].toLowerCase(), m[2]] : ['all', line.trim()];
+    if (t.trim()) (out[k] ??= []).push(t.trim());
+  }
+  return out;
+}
+try {
+  plugin.setLessons(JSON.parse(localStorage.getItem(LESSONS_KEY) || '{}'));
+} catch {
+  /* ignore broken storage */
+}
+$('lessons').value = lessonsToText(plugin.getLessons());
+$('lessons').addEventListener('change', () => plugin.setLessons(textToLessons($('lessons').value)));
+$('lessons-clear').onclick = () => plugin.setLessons({});
+$('lessons-export').onclick = () => {
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(plugin.getLessons(), null, 2)], { type: 'application/json' }),
+  );
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'muse-reskin-learned-tips.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+$('lessons-import').onclick = () => $('lessons-file').click();
+$('lessons-file').onchange = async (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (!f) return;
+  try {
+    const add = JSON.parse(await f.text());
+    const cur = plugin.getLessons();
+    for (const [k, list] of Object.entries(add)) cur[k] = [...(cur[k] ?? []), ...(Array.isArray(list) ? list : [])];
+    plugin.setLessons(cur);
+  } catch (err) {
+    log(`Could not import tips: ${err.message}`, 'err');
+  }
+};
+
+// ------------------------------------------------------------------ before/after slider + turntable
+let compareOn = false;
+function setCompare(on) {
+  compareOn = on;
+  $('compare').hidden = !on;
+  $('btn-compare').classList.toggle('on', on);
+  $('btn-toggle').disabled = on || !plugin.lastResult;
+  if (!on) {
+    viewer.compare?.after();
+    viewer.compare = null;
+    return;
+  }
+  if (showingOriginal) $('btn-toggle').click();
+  plugin.showIdMap(false);
+  viewer.compare = plugin.compareStates();
+  placeHandle();
+}
+function placeHandle() {
+  $('compare-handle').style.left = `${viewer.split * 100}%`;
+}
+$('btn-compare').onclick = () => setCompare(!compareOn);
+$('compare-handle').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const host = $('viewport');
+  const move = (ev) => {
+    const r = host.getBoundingClientRect();
+    viewer.split = Math.min(0.98, Math.max(0.02, (ev.clientX - r.left) / r.width));
+    placeHandle();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
+
+viewer.onSpinChange = (on) => $('btn-spin').classList.toggle('on', on);
+$('btn-spin').onclick = () => viewer.setSpin(!viewer.controls.autoRotate);
+
+// ------------------------------------------------------------------ history + undo
+function renderHistory(h) {
+  $('history-section').hidden = !h.entries.length;
+  const host = $('history');
+  host.innerHTML = '';
+  const add = (index, label, canvas) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `entry${index === h.index ? ' current' : ''}`;
+    b.title = label;
+    if (canvas) b.append(named(thumb(canvas, 160), label, canvas));
+    const cap = document.createElement('span');
+    cap.textContent = label;
+    b.append(cap);
+    b.onclick = () => {
+      if (plugin.isBusy) return;
+      plugin.goToHistory(index);
+      if (compareOn) setCompare(true);
+    };
+    host.append(b);
+  };
+  add(-1, 'Original', null);
+  h.entries.forEach((e, i) =>
+    add(i, `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`, e.thumb),
+  );
+  $('btn-undo').disabled = h.index < 0;
+  $('btn-redo').disabled = h.index >= h.entries.length - 1;
+  // Keep the variation picker in sync.
+  const cur = h.entries[h.index];
+  $('variation-list')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('picked', b.dataset.id === cur?.id));
+}
+const undo = () => {
+  plugin.undo();
+  if (compareOn) setCompare(true);
+};
+const redo = () => {
+  plugin.redo();
+  if (compareOn) setCompare(true);
+};
+$('btn-undo').onclick = undo;
+$('btn-redo').onclick = redo;
+window.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+  if (e.target.closest?.('textarea, input')) return;
+  e.preventDefault();
+  if (e.shiftKey) redo();
+  else undo();
+});
+
 // ------------------------------------------------------------------ compare + export
 let showingOriginal = false;
 $('btn-toggle').onclick = () => {
@@ -608,6 +843,7 @@ $('btn-toggle').onclick = () => {
 
 $('btn-export').onclick = async () => {
   if (showingOriginal) $('btn-toggle').click();
+  if (compareOn) setCompare(false);
   if (plugin.idMapVisible) $('btn-idmap').click();
   const { glb, filename } = await plugin.postExport();
   const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));

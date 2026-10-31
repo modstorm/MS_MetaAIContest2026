@@ -16,6 +16,9 @@ export class ProceduralProvider {
     const d = img.data;
     const rand = mulberry32(hash(req.theme));
     const noise = new ValueNoise(rand, 64);
+    // Variations get the palette turned around the color wheel so they look different offline too.
+    const vm = /Variation (\d)/.exec(req.extraInstructions ?? '');
+    const hue = vm ? hueMatrix((Number(vm[1]) - 1) * 50) : null;
     for (let y = 0; y < src.height; y++) {
       for (let x = 0; x < src.width; x++) {
         const i = (y * src.width + x) * 4;
@@ -23,9 +26,15 @@ export class ProceduralProvider {
         const n = noise.fbm((x / src.width) * 8, (y / src.height) * 8);
         const t = Math.min(1, Math.max(0, lum * 0.85 + (n - 0.5) * 0.3));
         const [r, g, b] = samplePalette(palette, t);
-        d[i] = r;
-        d[i + 1] = g;
-        d[i + 2] = b;
+        if (hue) {
+          d[i] = Math.max(0, Math.min(255, hue[0] * r + hue[1] * g + hue[2] * b));
+          d[i + 1] = Math.max(0, Math.min(255, hue[3] * r + hue[4] * g + hue[5] * b));
+          d[i + 2] = Math.max(0, Math.min(255, hue[6] * r + hue[7] * g + hue[8] * b));
+        } else {
+          d[i] = r;
+          d[i + 1] = g;
+          d[i + 2] = b;
+        }
       }
     }
     ctx2d(out).putImageData(img, 0, 0);
@@ -35,7 +44,7 @@ export class ProceduralProvider {
 
   /** Per-part painting: the same gradient map, applied to the part's crop. */
   reskinPart(req) {
-    return this.reskinAtlas({ theme: req.theme, atlas: req.image });
+    return this.reskinAtlas({ theme: req.theme, atlas: req.image, extraInstructions: req.extra });
   }
 
   async generateTexture(req) {
@@ -275,4 +284,22 @@ class ValueNoise {
 
 function yieldFrame() {
   return new Promise((r) => setTimeout(r, 0));
+}
+
+/** RGB hue-rotation matrix (row-major 3×3). */
+function hueMatrix(deg) {
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a),
+    s = Math.sin(a);
+  return [
+    0.213 + c * 0.787 - s * 0.213,
+    0.715 - c * 0.715 - s * 0.715,
+    0.072 - c * 0.072 + s * 0.928,
+    0.213 - c * 0.213 + s * 0.143,
+    0.715 + c * 0.285 + s * 0.14,
+    0.072 - c * 0.072 - s * 0.283,
+    0.213 - c * 0.213 - s * 0.787,
+    0.715 - c * 0.715 + s * 0.715,
+    0.072 + c * 0.928 + s * 0.072,
+  ];
 }
