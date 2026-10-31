@@ -50,6 +50,7 @@ GLB ──► load (GLTFLoader, Draco + meshopt)
 Edge cases handled:
 
 - **Which patch is which part**: each mesh's UV area is drawn in its own color and named (Hair, Head, Body…) in a part map sent to Muse, so details land on the right part.
+- **Part by part**: when a texture is shared by several named meshes (head, shirt, pants, shoes…), each part is cut out of the atlas on its own, turned upright, greyed outside its islands and painted with its own prompt (up to 4 Muse calls at once). The result is pasted back only inside that part's islands, so a design can't drift onto the wrong part or leave stripes of the old texture. `paintMode: 'atlas'` paints the whole atlas in one call instead.
 - **Upside-down, sideways or mirrored islands**: the plugin works out from the 3D data which way "up" points in the texture. It turns the atlas upright before painting (head/face first) and turns the result back. The texture's own `flipY` and `KHR_texture_transform` are applied first, and the popup has a manual orientation override.
 - **Safety filter rejections**: a plainer retry runs automatically, the popup shows a clear error with Retry, and a **filter probe** shows which input was rejected.
 

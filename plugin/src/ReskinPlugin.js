@@ -2,7 +2,16 @@ import * as THREE from 'three';
 import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { renderAxisViews } from './analysis/renderViews.js';
-import { chooseOrientation, isIdentity, resolveOrientation, slotParts, transformParts } from './analysis/parts.js';
+import {
+  chooseOrientation,
+  isIdentity,
+  partName,
+  resolveOrientation,
+  slotParts,
+  transformParts,
+} from './analysis/parts.js';
+import { drawFacingMap, facingSummary, splitPartRegions } from './analysis/facing.js';
+import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
@@ -23,6 +32,17 @@ import {
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, padIslands } from './texture/islandPost.js';
+import {
+  copyCanvas,
+  cropCanvas,
+  greyedCrop,
+  mapLimit,
+  maskRect,
+  padToMuseAspect,
+  partMask,
+  pasteInsideMask,
+  unpad,
+} from './texture/partPaint.js';
 
 /**
  * Events the plugin emits. Subscribe to one with `plugin.on(type, cb)` or to
@@ -77,6 +97,8 @@ export class ReskinPlugin {
   /** Layout readings per texture, reused across prompts (the layout doesn't depend on the theme). */
   planCache = new Map();
   /** Art-director suggestions per theme for the current model. */
+  /** Per-part paint jobs of the last run, per slot (for review & repaint). */
+  lastPartJobs = new Map();
   suggestionCache = new Map();
   busy = false;
   abort = null;
@@ -157,6 +179,7 @@ export class ReskinPlugin {
       this.snapshots.clear();
       this.planCache.clear();
       this.suggestionCache.clear();
+      this.lastPartJobs.clear();
       this.lastResult = null;
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
@@ -387,6 +410,9 @@ export class ReskinPlugin {
       // Start from the original look every time, so prompts don't compound.
       this.restoreSnapshots();
 
+      opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
+      this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
+
       const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
       // Small untextured parts (a button, an eye, an antenna ball) are tinted locally
       // from the new palette instead of costing a Muse call.
@@ -524,69 +550,78 @@ export class ReskinPlugin {
       original = textureToCanvas(slot.texture, maxSize);
       // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
       const rawParts = slotParts(slot);
-      // If the key part (head/face, else the largest) is stored upside down, sideways or
-      // mirrored, turn the whole atlas upright before painting and turn the result back.
-      orient = resolveOrientation(opts.orientation, rawParts);
-      if (orient && !isIdentity(orient)) {
-        this.emit('warning', {
-          message:
-            orient.reason === 'manual'
-              ? `"${slot.name}": using the manual orientation (${orient.rot}°${orient.flipX ? ', mirrored' : ''}).`
-              : `"${slot.name}": "${orient.reason}" is stored ${orient.rot ? `rotated ${orient.rot}°` : ''}${orient.rot && orient.flipX ? ' and ' : ''}${orient.flipX ? 'mirrored' : ''} in the atlas; painting it upright and turning it back.`,
-        });
-      }
-      parts = transformParts(rawParts, orient);
-      const guide =
-        rawParts.length > 1
-          ? drawPartMap(slot, rawParts, original.width, original.height)
-          : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
-      const uvGuide = transformCanvas(guide, orient);
-      const sendAtlas = transformCanvas(original, orient);
-      const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
-      const suggested = opts.suggestion?.plans?.[slot.id];
-      if (suggested) {
-        // The art-director step already mapped this atlas's regions.
-        plan = suggested;
-      } else if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
-        // The layout doesn't depend on the theme, so it is read once per model.
-        plan = this.planCache.get(planKey);
-      } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
-        report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
-        try {
-          plan = await this.timed('read layout', slot.id, () =>
-            this.provider.planLayout({
+      const byParts =
+        (opts.paintMode ?? 'auto') !== 'atlas' && typeof this.provider.reskinPart === 'function' && rawParts.length > 1;
+      if (byParts) {
+        // Per-part mode: each part is painted on its own, upright, and pasted back inside its islands.
+        parts = rawParts;
+        plan = opts.suggestion?.plans?.[slot.id] ?? null;
+        raw = await this.paintByParts(slot, theme, rawParts, original, plan, opts, signal, report);
+      } else {
+        // If the key part (head/face, else the largest) is stored upside down, sideways or
+        // mirrored, turn the whole atlas upright before painting and turn the result back.
+        orient = resolveOrientation(opts.orientation, rawParts);
+        if (orient && !isIdentity(orient)) {
+          this.emit('warning', {
+            message:
+              orient.reason === 'manual'
+                ? `"${slot.name}": using the manual orientation (${orient.rot}°${orient.flipX ? ', mirrored' : ''}).`
+                : `"${slot.name}": "${orient.reason}" is stored ${orient.rot ? `rotated ${orient.rot}°` : ''}${orient.rot && orient.flipX ? ' and ' : ''}${orient.flipX ? 'mirrored' : ''} in the atlas; painting it upright and turning it back.`,
+          });
+        }
+        parts = transformParts(rawParts, orient);
+        const guide =
+          rawParts.length > 1
+            ? drawPartMap(slot, rawParts, original.width, original.height)
+            : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
+        const uvGuide = transformCanvas(guide, orient);
+        const sendAtlas = transformCanvas(original, orient);
+        const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
+        const suggested = opts.suggestion?.plans?.[slot.id];
+        if (suggested) {
+          // The art-director step already mapped this atlas's regions.
+          plan = suggested;
+        } else if ((opts.useVisionPlanning ?? true) && this.planCache.has(planKey)) {
+          // The layout doesn't depend on the theme, so it is read once per model.
+          plan = this.planCache.get(planKey);
+        } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
+          report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
+          try {
+            plan = await this.timed('read layout', slot.id, () =>
+              this.provider.planLayout({
+                slotName: slot.name,
+                meshNames: slot.meshes.map((m) => m.name),
+                atlas: sendAtlas,
+                atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
+                signal,
+              }),
+            );
+            if (plan) this.planCache.set(planKey, plan);
+          } catch (err) {
+            if (signal.aborted) throw err;
+            this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
+          }
+          this.emit('plan', { slotId: slot.id, plan });
+        }
+        report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
+        raw = await this.toCanvas(
+          await this.withFilterRetry('paint atlas', slot, theme, (plain, t) =>
+            this.provider.reskinAtlas({
+              theme: t,
               slotName: slot.name,
-              meshNames: slot.meshes.map((m) => m.name),
               atlas: sendAtlas,
-              atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
+              uvGuide,
+              parts: plain ? undefined : parts,
+              width: sendAtlas.width,
+              height: sendAtlas.height,
+              plan: plain ? null : plan,
+              extraInstructions: plain ? undefined : opts.extraInstructions,
+              plain,
               signal,
             }),
-          );
-          if (plan) this.planCache.set(planKey, plan);
-        } catch (err) {
-          if (signal.aborted) throw err;
-          this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
-        }
-        this.emit('plan', { slotId: slot.id, plan });
+          ),
+        );
       }
-      report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
-      raw = await this.toCanvas(
-        await this.withFilterRetry('paint atlas', slot, theme, (plain, t) =>
-          this.provider.reskinAtlas({
-            theme: t,
-            slotName: slot.name,
-            atlas: sendAtlas,
-            uvGuide,
-            parts: plain ? undefined : parts,
-            width: sendAtlas.width,
-            height: sendAtlas.height,
-            plan: plain ? null : plan,
-            extraInstructions: plain ? undefined : opts.extraInstructions,
-            plain,
-            signal,
-          }),
-        ),
-      );
     } else {
       report(0.2, 'generate', `Generating seamless texture for "${slot.name}"`);
       raw = await this.toCanvas(
@@ -784,6 +819,148 @@ export class ReskinPlugin {
    * Runs a paint call; if the model's safety filter rejects it, retries once with a
    * plain prompt (no generated region text) and a toned-down theme.
    */
+  /**
+   * The asset class for this run: a manual choice, else what the art-director step named,
+   * else a guess from the model's part names.
+   */
+  resolveAssetClass(opts = {}) {
+    if (opts.assetClass && opts.assetClass !== 'auto' && getAssetClass(opts.assetClass)) return opts.assetClass;
+    const fromMuse = normalizeAssetClass(opts.suggestion?.assetClass);
+    if (fromMuse) return fromMuse;
+    const partNames = (this.layout?.slots ?? []).flatMap((s) => s.meshes.map((m) => partName(m)));
+    return detectAssetClass({ subject: opts.suggestion?.subject, partNames, modelName: this.model?.name });
+  }
+
+  /**
+   * Paints an atlas part by part. Each part is cut out of the atlas, turned upright by its
+   * own orientation, greyed outside its islands, padded to a supported aspect ratio and
+   * sent with a part-specific prompt. The results are pasted back only inside each part's
+   * (slightly grown) UV area, on top of a copy of the original atlas. Returns that canvas,
+   * in the atlas's own orientation.
+   */
+  async paintByParts(slot, theme, parts, original, plan, opts, signal, report) {
+    const W = original.width,
+      H = original.height;
+    const grow = Math.max(1, Math.round((2 * W) / 1024));
+    const manual =
+      opts.orientation != null && opts.orientation !== 'auto' ? resolveOrientation(opts.orientation, parts) : null;
+    const regions = this.paintRegions(slot, parts, opts);
+    const jobs = [];
+    for (const part of regions) {
+      const mask = partMask(slot, part, W, H, grow);
+      const rect = maskRect(mask, Math.round(W / 128));
+      if (!rect) continue;
+      const t = manual ?? chooseOrientation([part]);
+      const facing = drawFacingMap(slot, part, W, H, { grow });
+      jobs.push({ part, mask, rect, facing, orient: isIdentity(t) ? null : t });
+    }
+    // Largest area first: it is painted alone and then shown to the others as the style reference.
+    jobs.sort((a, b) => b.rect.pixels - a.rect.pixels);
+    const turned = jobs.filter((j) => j.orient).map((j) => j.part.name);
+    if (turned.length && !manual) {
+      this.emit('warning', {
+        message: `"${slot.name}": ${turned.join(', ')} ${turned.length > 1 ? 'are' : 'is'} stored rotated or mirrored; painting upright and turning back.`,
+      });
+    }
+    this.emit('regions', {
+      slotId: slot.id,
+      regions: jobs.map((j) => ({ name: j.part.name, color: j.part.color, hex: j.part.hex, facing: j.facing.share })),
+    });
+    const names = jobs.map((j) => j.part.name);
+    const regionPaint = (part) => {
+      const keys = [part.name, part.baseName].filter(Boolean).map((n) => n.toLowerCase());
+      const hits = (plan?.regions ?? []).filter((r) => {
+        const m = r.name.toLowerCase();
+        return keys.some((n) => m === n || m.includes(n) || n.includes(m));
+      });
+      return (
+        hits
+          .map((r) => r.description)
+          .filter(Boolean)
+          .join(' ') || undefined
+      );
+    };
+    const out = copyCanvas(original);
+    let done = 0;
+    let styleRef = null;
+    report(0.2, 'generate', `Painting "${slot.name}" part by part (${jobs.length} areas)`);
+    const paintOne = async (job) => {
+      const { part, mask, rect, orient, facing } = job;
+      const crop = transformCanvas(greyedCrop(original, mask, rect), orient);
+      const guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
+      const padded = padToMuseAspect(crop);
+      const paddedGuide = padToMuseAspect(guide, { fill: '#000000' });
+      const rules = assetClassRules(opts.assetClass, [part.baseName ?? part.name]);
+      const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
+        this.provider.reskinPart({
+          theme: t,
+          slotName: slot.name,
+          partName: part.name,
+          image: padded.canvas,
+          mask: paddedGuide.canvas,
+          facing: facingSummary(facing.share),
+          styleRef: plain ? null : styleRef,
+          subject: plain ? undefined : plan?.subject,
+          paint: plain ? undefined : regionPaint(part),
+          others: names.filter((n) => n !== part.name),
+          classRules: plain ? undefined : rules,
+          extra: plain ? undefined : [opts.extraInstructions, job.note].filter(Boolean).join('\n') || undefined,
+          plain,
+          signal,
+        }),
+      );
+      signal.throwIfAborted();
+      const painted = await this.toCanvas(img);
+      const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
+      pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
+      job.painted = upright;
+      done++;
+      report(0.2 + (0.5 * done) / jobs.length, 'generate', `Painted ${part.name} (${done}/${jobs.length})`);
+      return upright;
+    };
+    const results = [];
+    const rest = jobs.slice();
+    if ((opts.styleReference ?? true) && jobs.length > 2) {
+      // Paint the biggest area first so every other call can match its palette and style.
+      const first = rest.shift();
+      const [r] = await mapLimit([first], 1, paintOne);
+      results.push(r);
+      if (r.status === 'fulfilled') styleRef = r.value;
+    }
+    results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
+    signal.throwIfAborted();
+    const ordered = (opts.styleReference ?? true) && jobs.length > 2 ? jobs : rest;
+    const failed = results.map((r, i) => [r, ordered[i]]).filter(([r]) => r.status === 'rejected');
+    if (failed.length === jobs.length && failed.length) throw failed[0][0].reason;
+    for (const [r, job] of failed) {
+      this.emit('warning', {
+        message: `"${slot.name}": could not paint ${job.part.name} (${toError(r.reason).message}); it keeps its old colors.`,
+      });
+    }
+    this.lastPartJobs.set(slot.id, { jobs, original, out, theme, plan, opts });
+    return out;
+  }
+
+  /**
+   * The areas painted one by one: each part, split into regions when its UV islands sit
+   * in clearly separate groups (for example a torso and two sleeves). At most 12 in total;
+   * the smallest parts are left whole if there are more.
+   */
+  paintRegions(slot, parts, opts = {}) {
+    if (opts.splitRegions === false) return parts;
+    const max = opts.maxPaintAreas ?? 12;
+    const out = [];
+    let left = max;
+    parts.forEach((p, i) => {
+      const remainingParts = parts.length - i - 1;
+      const split = left - remainingParts > 1 ? splitPartRegions(slot, p) : [p];
+      const take = split.length <= left - remainingParts ? split : [p];
+      out.push(...take);
+      left -= take.length;
+    });
+    return out.slice(0, max);
+  }
+
   async withFilterRetry(step, slot, theme, call) {
     try {
       return await this.timed(step, slot.id, () => call(false, theme));

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { uvSourceOf } from '../analysis/textureLayout.js';
+import { islandIdPerTriangle } from '../analysis/uvIslands.js';
 
 /** Canvas helpers. These need a DOM (browser, or a DOM shim with canvas support). */
 
@@ -102,8 +103,12 @@ export function drawUvGuide(slot, width, height, opts = {}) {
     const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
     if (!src) continue;
     const tris = Math.floor((src.index ? src.index.length : src.uvs.length / 2) / 3);
+    // Optional: only some UV islands of this mesh (a region of a part).
+    const keep = opts.islands?.get(mesh);
+    const islandOf = keep ? islandIdPerTriangle(src) : null;
     const path = new Path2D();
     for (let t = 0; t < tris; t++) {
+      if (keep && !keep.has(islandOf[t])) continue;
       const pts = [];
       for (let k = 0; k < 3; k++) {
         const v = src.index ? src.index[t * 3 + k] : t * 3 + k;
@@ -146,6 +151,7 @@ export function drawPartMap(slot, parts, width, height, { atlas = null, labels =
   for (const p of parts) {
     const layer = drawUvGuide(slot, c.width, c.height, {
       meshes: p.meshes,
+      islands: p.islands,
       fillColor: p.hex,
       wireframe: false,
       background: null,

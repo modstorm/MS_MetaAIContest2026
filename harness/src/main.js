@@ -1,7 +1,15 @@
 import './styles.css';
-import { MuseProvider, ProceduralProvider, ReskinPlugin } from '@metaai26/reskin-plugin';
+import { ASSET_CLASSES, MuseProvider, ProceduralProvider, ReskinPlugin } from '@metaai26/reskin-plugin';
 import { Viewer } from './viewer.js';
 import { buildSampleGlb } from './sampleModel.js';
+
+// Asset type choices come from the plugin's class registry.
+for (const c of ASSET_CLASSES) {
+  const o = document.createElement('option');
+  o.value = c.id;
+  o.textContent = c.label;
+  document.getElementById('opt-asset-class').append(o);
+}
 
 /**
  * Test harness. It only does UI: load a file, ask for a prompt, show results.
@@ -85,6 +93,12 @@ plugin.onUpdate((e) => {
       break;
     case 'warning':
       log(e.data.message, 'warn');
+      break;
+    case 'assetClass':
+      log(`Asset type: ${e.data.label ?? e.data.id}`);
+      break;
+    case 'regions':
+      log(`Painting ${e.data.regions.length} areas: ${e.data.regions.map((r) => r.name).join(', ')}`);
       break;
     case 'plan':
       if (e.data.plan) log(`Layout read: ${e.data.plan.subject} (${e.data.plan.regions.length} regions)`);
@@ -392,6 +406,8 @@ async function runReskin(text, suggestion) {
       useVisionPlanning: $('opt-plan').checked,
       fast: $('opt-fast').checked,
       orientation: $('opt-orient').value,
+      paintMode: $('opt-paint-mode').value,
+      assetClass: $('opt-asset-class').value,
       cleanTinyIslands: $('opt-tiny').checked,
       edgePadding: $('opt-pad').checked ? 12 : 0,
       normalMaps: $('opt-normal').checked,

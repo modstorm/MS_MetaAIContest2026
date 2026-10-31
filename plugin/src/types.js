@@ -92,6 +92,8 @@
  *   head/face (or the largest part) is upright.
  * @property {boolean} [cleanTinyIslands] Fill each tiny island (fingers, buttons) with one solid color. Default true.
  * @property {number} [tinyIslandFraction] "Tiny" = fewer texels than this fraction of the image. Default 0.002.
+ * @property {'auto' | 'parts' | 'atlas'} [paintMode] 'auto' (default) paints atlases shared by several parts one part at a time; 'atlas' paints the whole atlas in one call.
+ * @property {number} [partConcurrency] Parallel Muse calls in part-by-part mode. Default 4.
  * @property {number} [edgePadding] Pixels (at 1024px) to grow island colors into gaps, against seams. Default 12; 0 = off.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.
  * @property {AbortSignal} [signal]

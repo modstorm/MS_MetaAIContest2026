@@ -6,6 +6,8 @@ import {
   roughnessMapPrompt,
   parseSuggestion,
   plainReskinAtlasPrompt,
+  plainReskinPartPrompt,
+  reskinPartPrompt,
   plainSeamlessTexturePrompt,
   seamlessTexturePrompt,
   suggestPrompt as suggestPromptText,
@@ -226,6 +228,25 @@ export class MuseProvider {
       // The plain retry sends only the atlas (no wireframe guide image).
       images: req.plain ? [this.toUpload(req.atlas)] : [this.toUpload(req.atlas), this.toUpload(req.uvGuide, 'guide')],
       size: museSizeFor(req.width, req.height),
+      signal: req.signal,
+    });
+  }
+
+  /**
+   * Per-part painting: req.image is one area cut out and turned upright (grey elsewhere),
+   * req.mask its facing map (black outside), req.styleRef an already painted area.
+   */
+  reskinPart(req) {
+    return this.paint('editImage', {
+      prompt: req.plain ? plainReskinPartPrompt(req.theme, req.partName) : reskinPartPrompt(req.theme, req),
+      images: req.plain
+        ? [this.toUpload(req.image)]
+        : [
+            this.toUpload(req.image),
+            this.toUpload(req.mask, 'guide'),
+            ...(req.styleRef ? [this.toUploadSized(req.styleRef, 512)] : []),
+          ],
+      size: museSizeFor(req.image.width, req.image.height),
       signal: req.signal,
     });
   }

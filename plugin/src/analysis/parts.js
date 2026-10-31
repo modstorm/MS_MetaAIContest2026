@@ -131,7 +131,7 @@ export function islandUpDirections(mesh, src) {
     }
   }
   const out = [];
-  for (const { s, area, signed } of acc.values()) {
+  for (const [id, { s, area, signed }] of acc) {
     const M = [
       [s[0], s[1], s[2]],
       [s[1], s[3], s[4]],
@@ -143,7 +143,7 @@ export function islandUpDirections(mesh, src) {
     if (Math.hypot(A, B) < 1e-9) continue;
     // Image "up" is -y. Classify the direction the model's up points to in the image.
     const dir = Math.abs(A) > Math.abs(B) ? (A > 0 ? 'right' : 'left') : B > 0 ? 'down' : 'up';
-    out.push({ dir, area, gradient: [A, B], mirrored: signed > 0 });
+    out.push({ id, dir, area, gradient: [A, B], mirrored: signed > 0 });
   }
   return out;
 }

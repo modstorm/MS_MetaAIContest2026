@@ -50,8 +50,14 @@ async function newPage(settings) {
   return page;
 }
 
-async function reskinViaPopup(page, prompt, { suggest = false } = {}) {
+/** Sets the popup's paint mode select (it sits in the collapsed Options section). */
+async function setPaintMode(page, mode) {
+  await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
+}
+
+async function reskinViaPopup(page, prompt, { suggest = false, paintMode } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
+  if (paintMode) await setPaintMode(page, paintMode);
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
@@ -178,7 +184,7 @@ try {
       });
     });
     await page.click('#btn-sample');
-    await reskinViaPopup(page, 'frozen ice crystal, frost and snow');
+    await reskinViaPopup(page, 'frozen ice crystal, frost and snow', { paintMode: 'atlas' });
     const chat = calls.find((c) => c.url.endsWith('/chat/completions'));
     const edit = calls.find((c) => c.url.endsWith('/images/edits'));
     assert.ok(chat && edit, `calls: ${calls.map((c) => c.url).join(', ')}`);
@@ -208,7 +214,7 @@ try {
     // Second prompt on the same model: layout reading is cached, so only the paint call is made.
     const before = calls.length;
     await page.click('#btn-reskin');
-    await reskinViaPopup(page, 'mossy ancient stone ruin');
+    await reskinViaPopup(page, 'mossy ancient stone ruin', { paintMode: 'atlas' });
     const second = calls.slice(before).map((c) => c.url.split('/v1/')[1]);
     assert.deepEqual(second, ['images/edits']);
     await page.waitForTimeout(300);
@@ -253,6 +259,7 @@ try {
     await page.click('#btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
+    await setPaintMode(page, 'atlas');
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
@@ -341,7 +348,7 @@ try {
       });
     });
     await page.click('#btn-sample');
-    await reskinViaPopup(page, 'gold armor', { suggest: false });
+    await reskinViaPopup(page, 'gold armor', { suggest: false, paintMode: 'atlas' });
     assert.equal(bodies.length, 2);
     assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
     await page.context().close();
@@ -382,7 +389,7 @@ try {
       return ok({ data: [{ b64_json: png }] });
     });
     await page.click('#btn-sample');
-    await reskinViaPopup(page, 'scary clown');
+    await reskinViaPopup(page, 'scary clown', { paintMode: 'atlas' });
     assert.equal(edits.length, 2);
     assert.match(
       edits[1].prompt,
@@ -411,7 +418,68 @@ try {
   });
 
   console.log('UV orientation');
-  await step('an upside-down head island is painted upright and turned back', async () => {
+  await step('an upside-down head island is painted upright and turned back (whole-atlas mode)', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Muse mock returns: top half red, bottom half blue.
+    const png = makePng(64, 64, (x, y, w, h) => (y < h / 2 ? [255, 0, 0] : [0, 0, 255])).toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions'))
+        return ok({ choices: [{ message: { content: '{"subject":"doll","regions":[]}' } }] });
+      edits.push(body);
+      return ok({ data: [{ b64_json: png }] });
+    });
+    // Build a model in the page: "Head" plane stored upside down in the atlas (top half),
+    // "Body" plane stored upright (bottom half), sharing one texture.
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    await page.evaluate(async (bytes) => {
+      await window.reskin.plugin.postModel(new Uint8Array(bytes).buffer, { name: 'orient-test' });
+    }, glb);
+    const prev = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      const s = p.layout.slots.find((x) => x.texture);
+      const v = p.slotPreview(s.id, 128);
+      return { orientation: v.orientation, parts: v.parts };
+    });
+    assert.deepEqual(prev.orientation, { rot: 180, flipX: true, reason: 'Head' }, JSON.stringify(prev)); // vertical mirror
+    const result = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const r = await p.postPrompt('happy clown', {
+        useVisionPlanning: false,
+        paintMode: 'atlas',
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+      const c = r.slots[0].canvas;
+      const g = c.getContext('2d');
+      return {
+        top: Array.from(g.getImageData(c.width / 2, 2, 1, 1).data),
+        bottom: Array.from(g.getImageData(c.width / 2, c.height - 3, 1, 1).data),
+      };
+    });
+    // Muse's red-top image was turned 180° back: blue is now at the top of the atlas.
+    assert.ok(result.top[2] > 200 && result.top[0] < 60, `top ${result.top}`);
+    assert.ok(result.bottom[0] > 200 && result.bottom[2] < 60, `bottom ${result.bottom}`);
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].prompt, /Head = \w+ area/);
+    assert.match(edits[0].prompt, /Body = \w+ area/);
+    assert.match(await page.textContent('#log'), /"Head" is stored rotated 180° and mirrored/);
+    await page.context().close();
+  });
+
+  await step('an upside-down head island is painted upright on its own in part-by-part mode', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     // Muse mock returns: top half red, bottom half blue.
     const png = makePng(64, 64, (x, y, w, h) => (y < h / 2 ? [255, 0, 0] : [0, 0, 255])).toString('base64');
@@ -461,13 +529,19 @@ try {
         bottom: Array.from(g.getImageData(c.width / 2, c.height - 3, 1, 1).data),
       };
     });
-    // Muse's red-top image was turned 180° back: blue is now at the top of the atlas.
+    // Each part got Muse's red-top image painted upright. The head was turned back
+    // (blue at the top of the atlas); the upright body keeps blue at its bottom.
     assert.ok(result.top[2] > 200 && result.top[0] < 60, `top ${result.top}`);
-    assert.ok(result.bottom[0] > 200 && result.bottom[2] < 60, `bottom ${result.bottom}`);
-    assert.equal(edits.length, 1);
-    assert.match(edits[0].prompt, /Head = \w+ area/);
-    assert.match(edits[0].prompt, /Body = \w+ area/);
-    assert.match(await page.textContent('#log'), /"Head" is stored rotated 180° and mirrored/);
+    assert.ok(result.bottom[2] > 200 && result.bottom[0] < 60, `bottom ${result.bottom}`);
+    assert.equal(edits.length, 2);
+    const head = edits.find((e) => /"Head" area/.test(e.prompt));
+    const body = edits.find((e) => /"Body" area/.test(e.prompt));
+    assert.ok(head && body, edits.map((e) => e.prompt.slice(0, 60)).join(' | '));
+    assert.match(head.prompt, /directly over the existing eyes/);
+    assert.doesNotMatch(body.prompt, /existing eyes/);
+    assert.equal(head.images.length, 2);
+    assert.match(head.size, /^1792x1024$/); // half-height crop padded to the closest wide size
+    assert.match(await page.textContent('#log'), /Head is stored rotated or mirrored/);
     await page.context().close();
   });
 
@@ -501,6 +575,7 @@ try {
       const p = window.reskin.plugin;
       await p.postModel(new Uint8Array(bytes).buffer, { name: 'pad-test' });
       const r = await p.postPrompt('clown', {
+        paintMode: 'atlas',
         useVisionPlanning: false,
         normalMaps: false,
         roughnessMaps: false,

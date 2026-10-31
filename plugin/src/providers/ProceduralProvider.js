@@ -33,6 +33,11 @@ export class ProceduralProvider {
     return out;
   }
 
+  /** Per-part painting: the same gradient map, applied to the part's crop. */
+  reskinPart(req) {
+    return this.reskinAtlas({ theme: req.theme, atlas: req.image });
+  }
+
   async generateTexture(req) {
     const palette = paletteForTheme(req.theme + req.materialName);
     const w = Math.min(1024, req.width);

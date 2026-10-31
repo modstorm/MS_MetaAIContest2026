@@ -1,4 +1,5 @@
 import { orientationNote } from '../analysis/parts.js';
+import { assetClassIds } from '../assetClasses.js';
 
 /** Prompt templates sent to Muse. Kept in one place so they are easy to tune. */
 
@@ -151,6 +152,7 @@ export function suggestPrompt(theme, atlases, hasSheet = true) {
     'Work out what the object is and which atlas regions belong to which visible part. Then write the best possible instruction for an image model that will repaint each atlas while keeping its exact layout.',
     'Reply with JSON only, no prose, in this shape:',
     '{"subject": "what the object is, one line",',
+    ` "assetClass": "one of: ${assetClassIds().join(', ')}",`,
     ' "parts": [{"name": "visible part", "description": "what it looks like now"}],',
     ' "prompt": "2-4 sentences: the improved theme prompt, naming concrete colors, materials and motifs for each part, flat unlit albedo, no text",',
     ' "atlases": [{"index": 1, "regions": [{"name": "part name", "bbox": [x0, y0, x1, y1], "paint": "what to paint there in the new theme"}]}],',
@@ -176,6 +178,7 @@ export function parseSuggestion(text) {
         : undefined;
     return {
       subject: String(o.subject ?? ''),
+      assetClass: o.assetClass ? String(o.assetClass) : undefined,
       prompt: String(o.prompt ?? '').trim(),
       tips: o.tips ? String(o.tips) : undefined,
       parts: (Array.isArray(o.parts) ? o.parts : [])
@@ -192,4 +195,57 @@ export function parseSuggestion(text) {
   } catch {
     return null;
   }
+}
+
+/** True for part names that hold a face (eyes, nose, mouth). */
+export function isFacePart(name) {
+  return /\b(head|face|skull|helmet)\b/i.test(name ?? '');
+}
+
+/**
+ * Prompt for painting one part (or one region of a part) on its own. Image 1 is the area
+ * cut out of the atlas, already turned upright, with everything else grey. Image 2 is its
+ * facing map: which way each area faces on the model. Image 3, if sent, is an area that
+ * was already painted, as the style reference.
+ */
+export function reskinPartPrompt(
+  theme,
+  { partName, subject, paint, others, extra, facing, classRules, styleRef } = {},
+) {
+  const face = isFacePart(partName);
+  const lines = [
+    `Image 1 is the "${partName}" area of a 3D model's UV texture (base color / albedo), cut out on its own and shown upright. Flat grey (#808080) is not part of it.`,
+    "Image 2 is its facing map: each area is colored by which way it faces on the model. Green = front, blue = back, yellow = the model's left side, orange = the model's right side, magenta = top, cyan = bottom. Black = not part of this area.",
+    styleRef
+      ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette, materials and level of detail exactly.'
+      : '',
+    subject ? `The model is: ${subject}.` : '',
+    facing ? `This area is ${facing}.` : '',
+    `Repaint the colored areas of image 2 (the non-grey areas of image 1) in this theme: "${theme}".`,
+    paint ? `For the ${partName}: ${paint}` : '',
+    others?.length
+      ? `The other areas (${others.slice(0, 8).join(', ')}) are painted separately in the same theme, so use one consistent palette and style.`
+      : '',
+    'Rules:',
+    '- Keep every shape at exactly the same position, size and orientation, and keep the same framing. Do not crop, zoom, rotate, mirror or add borders.',
+    '- Cover the whole area edge to edge with the new design. Leave no patches of the old colors or skin showing, and no black or dark gaps.',
+    '- Front details (buttons, pockets, collars, emblems, buckles) only on front (green) areas. Back (blue) areas get the plain back of the same design.',
+    '- Keep each decoration (chains, straps, emblems) whole inside one connected area: separate areas are not next to each other on the model.',
+    '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
+    '- Ignore the grey areas; they will be discarded. Do not draw the facing colors.',
+  ];
+  for (const r of classRules ?? []) lines.push(`- ${r}`);
+  if (face) {
+    lines.push(
+      '- This part contains the face. Keep the eyes, nose and mouth exactly where they are now and repaint them in the theme.',
+      '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes. Never draw a second pair of eyes or a second accessory.',
+    );
+  }
+  if (extra) lines.push(extra);
+  return lines.filter(Boolean).join('\n');
+}
+
+/** Plain per-part fallback after a content-filter rejection. */
+export function plainReskinPartPrompt(theme, partName) {
+  return `Recolor this game texture of a ${partName} in a "${theme}" style. Keep every shape in exactly the same place and size. Flat colors, no lighting. Ignore the grey areas.`;
 }
