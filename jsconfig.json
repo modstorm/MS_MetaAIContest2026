@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "checkJs": false,
+    "baseUrl": ".",
+    "paths": { "@metaai26/reskin-plugin": ["plugin/src/index.js"] }
+  },
+  "include": ["plugin/src", "harness/src"]
+}

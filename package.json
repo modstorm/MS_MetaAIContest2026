@@ -1,0 +1,18 @@
+{
+  "name": "metaai26",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GLB reskin plugin (Meta Muse) and three.js test harness",
+  "type": "module",
+  "workspaces": [
+    "plugin",
+    "harness"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w harness",
+    "build": "npm run build -w harness",
+    "preview": "npm run preview -w harness",
+    "test": "npm run test -w plugin",
+    "test:e2e": "npm run test:e2e -w harness"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@metaai26/reskin-plugin",
+  "version": "0.1.0",
+  "description": "Load a glTF/GLB, analyze its texture/UV layout, reskin it from a prompt with Meta Muse, and export GLB.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": "./src/index.js",
+    "./server": "./src/server/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "devDependencies": {
+    "three": "^0.187.0",
+    "vitest": "^5.0.0"
+  }
+}

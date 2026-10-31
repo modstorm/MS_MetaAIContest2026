@@ -1,0 +1,90 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+
+/** A minimal three.js viewer: PBR lighting, orbit controls, auto-framing, animation playback. */
+export class Viewer {
+  renderer;
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+  controls;
+  content = null;
+  mixer = null;
+  timer = new THREE.Timer();
+
+  constructor(container) {
+    this.container = container;
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    container.prepend(this.renderer.domElement);
+
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.background = new THREE.Color(0x15171d);
+
+    const grid = new THREE.GridHelper(10, 20, 0x2b2f3a, 0x1d2029);
+    grid.name = '__grid';
+    this.scene.add(grid);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(3, 5, 2);
+    this.scene.add(sun);
+
+    this.camera.position.set(2, 1.5, 3);
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+
+    new ResizeObserver(() => this.resize()).observe(container);
+    this.resize();
+    this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  setContent(obj, animations = []) {
+    if (this.content) this.scene.remove(this.content);
+    this.mixer?.stopAllAction();
+    this.content = obj;
+    this.scene.add(obj);
+    this.mixer = null;
+    if (animations.length) {
+      this.mixer = new THREE.AnimationMixer(obj);
+      this.mixer.clipAction(animations[0]).play();
+    }
+    this.frame(obj);
+  }
+
+  /** Points the camera at the object and puts the grid at its feet. */
+  frame(obj) {
+    const box = new THREE.Box3().setFromObject(obj);
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+    const dist = (radius / Math.sin((this.camera.fov * Math.PI) / 360)) * 1.1;
+    this.camera.near = dist / 100;
+    this.camera.far = dist * 100;
+    this.camera.position.copy(center).add(new THREE.Vector3(0.6, 0.35, 1).normalize().multiplyScalar(dist));
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(center);
+    this.controls.update();
+    const grid = this.scene.getObjectByName('__grid');
+    grid.position.y = box.min.y;
+    grid.scale.setScalar(Math.max(1, radius));
+  }
+
+  resize() {
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  tick() {
+    this.timer.update();
+    const dt = this.timer.getDelta();
+    this.mixer?.update(dt);
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+}
