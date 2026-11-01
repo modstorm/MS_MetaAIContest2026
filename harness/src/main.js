@@ -265,6 +265,7 @@ function renderLayout(layout) {
       figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs', `${slot.name}+atlas`),
       figure(prev.partMap, 'areas', `${slot.name} areas`),
     );
+    if (prev.facingMap) thumbs.append(figure(prev.facingMap, 'facing (green front, blue back)', `${slot.name} facing`));
     const o = prev.orientation;
     if (o && (o.rot || o.flipX)) {
       const note = document.createElement('div');
@@ -357,7 +358,6 @@ for (const p of PRESETS) {
   };
   chips.append(b);
 }
-$('opt-detail').oninput = (e) => ($('opt-detail-out').textContent = e.target.value);
 
 // ---- step 1: the prompt popup (theme + style; everything else under Advanced)
 function openPrompt() {
@@ -505,7 +505,7 @@ $('err-skip').onclick = () => {
 
 function paintOptions() {
   return {
-    detailPreserve: Number($('opt-detail').value),
+    detailPreserve: 0,
     useVisionPlanning: $('opt-plan').checked,
     fast: $('opt-fast').checked,
     orientation: $('opt-orient').value,

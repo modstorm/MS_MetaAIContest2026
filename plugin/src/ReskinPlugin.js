@@ -275,7 +275,27 @@ export class ReskinPlugin {
       partMap: drawPartMap(slot, parts, w, h, { atlas, alpha: atlas ? 0.45 : 1, labels: true }),
       parts: parts.map(({ meshes, ...p }) => p),
       orientation: chooseOrientation(slotParts(slot)),
+      // Which way each area faces on the model (green front, blue back, yellow / orange
+      // sides or outer / inner on limbs, magenta top, cyan bottom), for checking layouts.
+      facingMap: slot.texture ? this.facingPreview(slot, parts, w, h) : null,
     };
+  }
+
+  /** All areas' facing maps on one canvas (see slotPreview). */
+  facingPreview(slot, parts, w, h) {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, w, h);
+    g.globalCompositeOperation = 'lighten';
+    const limbs = parts.some((p) => p.zone === 'arms' || p.zone === 'legs') ? this.anatomy() : null;
+    for (const part of parts) {
+      const limb = limbs && (part.zone === 'arms' || part.zone === 'legs');
+      g.drawImage(drawFacingMap(slot, part, w, h, { limbCenterX: limb ? limbs.cx : null }).canvas, 0, 0);
+    }
+    return c;
   }
 
   // ---------------------------------------------------------------- post: probe
