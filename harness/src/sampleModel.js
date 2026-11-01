@@ -191,6 +191,7 @@ export async function buildAvatarTestGlb({
   hairStrands = 0,
   skinSwatch = false,
   separateHands = false,
+  unwrappedLegs = false,
 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
@@ -235,11 +236,50 @@ export async function buildAvatarTestGlb({
         box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
         box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
       ];
-  const legs = [
-    // touchingLegs: legs pressed together (the middle is filled all the way down).
-    box([0.15, 0.85, 0.15], [touchingLegs ? -0.075 : -0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),
-    box([0.15, 0.85, 0.15], [touchingLegs ? 0.075 : 0.12, 0.5, 0], [0.75, 0.4, 0.95, 0.7], 6),
-  ];
+  // unwrappedLegs: each leg is four side strips laid out next to each other in the texture
+  // (right leg: inner, back, outer, front; left leg: inner, front, outer, back).
+  const tube = (cx, rect, order) => {
+    const hw = 0.075,
+      yTop = 0.925,
+      yBot = 0.075;
+    const dirs = {
+      front: [0, 0, 1],
+      back: [0, 0, -1],
+      outer: [Math.sign(cx), 0, 0],
+      inner: [-Math.sign(cx), 0, 0],
+    };
+    const pos = [],
+      uvs = [],
+      idx = [];
+    order.forEach((name, k) => {
+      const n = dirs[name];
+      const r = [n[2], 0, -n[0]]; // up × n
+      const c = [cx + n[0] * hw, 0, n[2] * hw];
+      const a = rect[0] + ((rect[2] - rect[0]) * k) / 4,
+        b = rect[0] + ((rect[2] - rect[0]) * (k + 1)) / 4;
+      const corner = (sx, y) => [c[0] + r[0] * hw * sx, y, c[2] + r[2] * hw * sx];
+      const base = pos.length / 3;
+      pos.push(...corner(-1, yTop), ...corner(1, yTop), ...corner(1, yBot), ...corner(-1, yBot));
+      uvs.push(a, rect[1], b, rect[1], b, rect[3], a, rect[3]);
+      idx.push(base, base + 3, base + 2, base, base + 2, base + 1);
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  };
+  const legs = unwrappedLegs
+    ? [
+        tube(-0.12, [0.5, 0.4, 0.7, 0.7], ['inner', 'back', 'outer', 'front']),
+        tube(0.12, [0.75, 0.4, 0.95, 0.7], ['inner', 'front', 'outer', 'back']),
+      ]
+    : [
+        // touchingLegs: legs pressed together (the middle is filled all the way down).
+        box([0.15, 0.85, 0.15], [touchingLegs ? -0.075 : -0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),
+        box([0.15, 0.85, 0.15], [touchingLegs ? 0.075 : 0.12, 0.5, 0], [0.75, 0.4, 0.95, 0.7], 6),
+      ];
   // Shoes share one UV rect, the second one mirrored (opposite UV winding).
   const shoeL = box([0.16, 0.08, 0.25], [-0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);
   const shoeR = box([0.16, 0.08, 0.25], [0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);

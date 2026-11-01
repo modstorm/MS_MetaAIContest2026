@@ -69,7 +69,7 @@ export function triangleFacings(mesh, src) {
  * model (see FACINGS), black elsewhere. Also returns each facing's share of the part's
  * surface area, e.g. { front: 0.45, back: 0.4, left: 0.08, … }.
  */
-export function drawFacingMap(slot, part, width, height, { grow = 1 } = {}) {
+export function drawFacingMap(slot, part, width, height, { grow = 1, limbCenterX = null } = {}) {
   const c = document.createElement('canvas');
   c.width = width;
   c.height = height;
@@ -98,7 +98,14 @@ export function drawFacingMap(slot, part, width, height, { grow = 1 } = {}) {
       }
       const ou = Math.floor(Math.min(pts[0], pts[2], pts[4]));
       const ov = Math.floor(Math.min(pts[1], pts[3], pts[5]));
-      const p = paths[f.facing[t]];
+      // Limb mode: side faces are told apart as outer (facing away from the body's middle)
+      // and inner (facing the middle) instead of the model's left / right.
+      let fi = f.facing[t];
+      if (limbCenterX != null && (fi === 2 || fi === 3)) {
+        const outer = (fi === 2) === f.centroid[t * 3] > limbCenterX;
+        fi = outer ? 2 : 3;
+      }
+      const p = paths[fi];
       // Same winding for every triangle: mirrored islands stacked on top of each other
       // would otherwise cancel out under the nonzero fill rule and leave holes.
       const ccw = (pts[2] - pts[0]) * (pts[5] - pts[1]) - (pts[4] - pts[0]) * (pts[3] - pts[1]) >= 0;
@@ -107,7 +114,7 @@ export function drawFacingMap(slot, part, width, height, { grow = 1 } = {}) {
       p.lineTo((pts[i1] - ou) * width, (pts[i1 + 1] - ov) * height);
       p.lineTo((pts[i2] - ou) * width, (pts[i2 + 1] - ov) * height);
       p.closePath();
-      totals[f.facing[t]] += f.area[t];
+      totals[fi] += f.area[t];
     }
     // Strokes first (grown edges), then fills, so each triangle's own color wins inside it.
     paths.forEach((p, i) => {
@@ -361,4 +368,70 @@ export function facingShareText(share) {
     .sort((a, b) => share[b.id] - share[a.id])
     .map((f) => `${Math.round(share[f.id] * 100)}% ${f.label}`)
     .join(', ');
+}
+
+/**
+ * Left-to-right strips of an unwrapped area (sleeves, trouser legs, torso sides): which
+ * way each vertical strip faces, read from a facing map made with `limbCenterX` (so the
+ * sides read as outer / inner). Separate pieces are split by "|". Returns '' when the area
+ * is not laid out in vertical strips.
+ */
+export function facingStripsText(guide) {
+  const { width: w, height: h } = guide;
+  if (w < 8 || h < 8) return '';
+  const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
+  const names = ['front', 'back', 'outer side', 'inner side', 'top', 'bottom'];
+  const step = Math.max(1, Math.floor(h / 160));
+  const cols = [];
+  for (let x = 0; x < w; x++) {
+    const counts = new Float64Array(6);
+    let covered = 0;
+    for (let y = 0; y < h; y += step) {
+      const i = (y * w + x) * 4;
+      if (d[i] + d[i + 1] + d[i + 2] < 30) continue;
+      const f = nearestFacing(d[i], d[i + 1], d[i + 2]);
+      if (f < 0) continue;
+      counts[f]++;
+      covered++;
+    }
+    if (covered < 3) {
+      cols.push({ f: -1, purity: 1 });
+      continue;
+    }
+    let best = 0;
+    for (let k = 1; k < 6; k++) if (counts[k] > counts[best]) best = k;
+    cols.push({ f: best, purity: counts[best] / covered });
+  }
+  // Runs of the same facing; gaps split pieces; very thin runs are absorbed.
+  const runs = [];
+  for (let x = 0; x < w; x++) {
+    const c = cols[x];
+    const last = runs[runs.length - 1];
+    if (last && last.f === c.f) {
+      last.end = x;
+      last.purity += c.purity;
+    } else runs.push({ f: c.f, start: x, end: x, purity: c.purity });
+  }
+  const minW = Math.max(2, w * 0.03);
+  const kept = runs.filter((r) => r.f < 0 || r.end - r.start + 1 >= minW);
+  const pieces = [[]];
+  let purity = 0,
+    n = 0;
+  for (const r of kept) {
+    if (r.f < 0) {
+      if (pieces[pieces.length - 1].length && r.end - r.start + 1 >= minW) pieces.push([]);
+      continue;
+    }
+    const piece = pieces[pieces.length - 1];
+    if (piece[piece.length - 1] !== names[r.f]) piece.push(names[r.f]);
+    purity += r.purity;
+    n += r.end - r.start + 1;
+  }
+  const real = pieces.filter((p) => p.length);
+  const strips = real.reduce((a, p) => a + p.length, 0);
+  // Only worth saying for real strip layouts: several strips, each mostly one facing top to bottom.
+  if (strips < 3 || purity / (n || 1) < 0.7) return '';
+  return `from left to right, ${strips} vertical strips${real.length > 1 ? ` in ${real.length} separate pieces` : ''}: ${real
+    .map((p) => p.join(', '))
+    .join(' | ')}`;
 }

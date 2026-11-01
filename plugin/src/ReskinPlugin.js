@@ -14,6 +14,7 @@ import {
 import {
   drawFacingMap,
   facingGridText,
+  facingStripsText,
   facingShareText,
   facingSummary,
   splitPartRegions,
@@ -995,6 +996,8 @@ export class ReskinPlugin {
     const prev = opts.fixes || locked.size ? this.lastPartJobs.get(slot.id) : null;
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
+    const STRIP_ZONES = new Set(['torso', 'arms', 'legs', 'hands', 'shoes']);
+    const anatForStrips = regions.some((r) => STRIP_ZONES.has(r.zone)) ? this.anatomy() : null;
     for (const part of regions) {
       const mask = partMask(slot, part, W, H, grow);
       const rect = maskRect(mask, Math.round(W / 128));
@@ -1002,6 +1005,9 @@ export class ReskinPlugin {
       const t = manual ?? chooseOrientation([part]);
       const facing = drawFacingMap(slot, part, W, H, { grow });
       const job = { part, mask, rect, facing, orient: isIdentity(t) ? null : t };
+      // Body zones: which way each vertical strip faces (front / back / outer / inner).
+      if (anatForStrips && STRIP_ZONES.has(part.zone))
+        job.sides = drawFacingMap(slot, part, W, H, { grow, limbCenterX: anatForStrips.cx }).canvas;
       if (locked.has(part.name)) {
         const old = prevByName.get(part.name);
         if (old) job.reuse = old.painted;
@@ -1092,6 +1098,7 @@ export class ReskinPlugin {
       // image model copies the colors of a colored guide (side areas came out skin-toned).
       const paddedGuide = padToMuseAspect(whiteMask(guide), { fill: '#000000' });
       const layout = facingGridText(guide);
+      const strips = job.sides ? facingStripsText(transformCanvas(cropCanvas(job.sides, rect), orient)) : '';
       const rules = this.rulesFor(opts.assetClass, [part.name]);
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
@@ -1102,6 +1109,7 @@ export class ReskinPlugin {
           mask: paddedGuide.canvas,
           facing: facingShareText(facing.share),
           facingLayout: layout,
+          facingStrips: strips || undefined,
           styleRef: plain ? null : styleRef,
           subject: plain ? undefined : plan?.subject,
           paint: plain ? undefined : regionPaint(part),

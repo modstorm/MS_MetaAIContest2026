@@ -308,7 +308,7 @@ export function isFacePart(name) {
  */
 export function reskinPartPrompt(
   theme,
-  { partName, subject, paint, others, extra, facing, facingLayout, classRules, styleRef } = {},
+  { partName, subject, paint, others, extra, facing, facingLayout, facingStrips, classRules, styleRef } = {},
 ) {
   const face = isFacePart(partName);
   const lines = [
@@ -320,6 +320,9 @@ export function reskinPartPrompt(
     subject ? `The model is: ${subject}.` : '',
     facing ? `On the model this area is ${facing}.` : '',
     facingLayout ? `Where each side is in image 1 (3x3 grid): ${facingLayout}.` : '',
+    facingStrips
+      ? `Image 1 is laid out as strips that wrap around the body part (exact, from the 3D model): ${facingStrips}. "Inner side" faces the other arm or leg (or the body), "outer side" faces away. Neighbouring strips meet on the model, so the fabric continues across them; front details only on front strips.`
+      : '',
     `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
     paint ? `For the ${partName}: ${paint}` : '',
     others?.length

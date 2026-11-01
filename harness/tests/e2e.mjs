@@ -948,6 +948,42 @@ try {
     await page.context().close();
   });
 
+  await step('unwrapped legs: the strip order (inner/back/outer/front) is read from the model and sent', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      if (!isChat) edits.push(route.request().postDataJSON());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(
+          isChat
+            ? { choices: [{ message: { content: '{}' } }] }
+            : { data: [{ b64_json: makePng().toString('base64') }] },
+        ),
+      });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, unwrappedLegs: true })));
+    });
+    await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-legs' });
+      await p.postPrompt('clown', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+    }, glb);
+    const legs = edits.find((e) => /"Body \(legs\)" area/.test(e.prompt));
+    assert.ok(legs, 'legs painted');
+    assert.match(
+      legs.prompt,
+      /8 vertical strips in 2 separate pieces: inner side, back, outer side, front \| inner side, front, outer side, back/,
+      legs.prompt.split('\n').find((l) => /strips/.test(l)),
+    );
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
