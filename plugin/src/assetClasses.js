@@ -41,7 +41,7 @@ export const ASSET_CLASSES = [
       {
         match: /\bhair\b/i,
         rules: [
-          'Hair: paint it as hair (a hair color that suits the theme, with strand flow), never skin-colored. No goggles, hats or other accessories in the hair area; no face or skin here.',
+          'Hair: paint it as plain hair in one hair color that suits the theme (with strand flow), never skin-colored. No patterns, symbols, gears, logos or decorations in the hair, no goggles, hats or other accessories; no face or skin here.',
         ],
       },
       {

@@ -43,6 +43,7 @@ import {
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, padIslands } from './texture/islandPost.js';
+import { paintHairStrands } from './texture/strands.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -1124,6 +1125,21 @@ export class ReskinPlugin {
       this.emit('warning', {
         message: `"${slot.name}": could not paint ${job.part.name} (${toError(r.reason).message}); it keeps its old colors.`,
       });
+    }
+    // Hair made of strands (cards / spikes, each its own UV island) is shaded strand by
+    // strand in the painted hair color, instead of keeping a pattern painted across it.
+    if (opts.strandHair !== false) {
+      const anat = this.anatomy();
+      const center = anat ? [anat.cx, anat.neckY + (anat.maxY - anat.neckY) * 0.4, anat.cz] : null;
+      for (const [r, job] of results.map((r, i) => [r, ordered[i]])) {
+        const isHair = job.part.zone === 'hair' || /\bhair\b/i.test(job.part.name);
+        if (!isHair || job.reuse || job.keep || r.status !== 'fulfilled') continue;
+        const n = paintHairStrands(out, slot, job.part, { center });
+        if (n) {
+          this.emit('warning', { message: `${job.part.name}: shaded ${n} hair strands one by one.` });
+          if (live) live.needsUpdate = true;
+        }
+      }
     }
     const rec = { jobs, original, out, theme, plan, opts };
     const vi = opts.variantIndex ?? 0;

@@ -184,7 +184,12 @@ export async function buildPaddingTestGlb() {
  * A blocky avatar for the body-zone test: "Body" = torso + neck + head + hair (one mesh),
  * "Arms" = both arms including the hands (one mesh), "Legs". Each box has its own UV rect.
  */
-export async function buildAvatarTestGlb({ singleMesh = false, touchingLegs = false, torsoColumns = 1 } = {}) {
+export async function buildAvatarTestGlb({
+  singleMesh = false,
+  touchingLegs = false,
+  torsoColumns = 1,
+  hairStrands = 0,
+} = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
   c.width = c.height = 512;
@@ -228,9 +233,25 @@ export async function buildAvatarTestGlb({ singleMesh = false, touchingLegs = fa
   const shoeR = box([0.16, 0.08, 0.25], [0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);
   const uv = shoeR.getAttribute('uv');
   for (let i = 0; i < uv.count; i++) uv.setX(i, 0.35 - uv.getX(i));
+  // hairStrands: a separate Hair mesh of spiky cards (one UV island each) instead of a hair box.
+  const strands = [];
+  for (let i = 0; i < hairStrands; i++) {
+    const a = (i / hairStrands) * Math.PI * 2;
+    const card = new THREE.PlaneGeometry(0.06, 0.22);
+    const col = i % 4,
+      row = Math.floor(i / 4);
+    packUvs(card, [0.75 + col * 0.06, 0.22 + row * 0.09, 0.8 + col * 0.06, 0.3 + row * 0.09]);
+    card.translate(0, 0.11, 0); // root at the origin
+    card.rotateX(0.6); // lean outward…
+    card.rotateY(a); // …all around the head
+    card.translate(Math.sin(a) * 0.08, 1.83, Math.cos(a) * 0.08);
+    strands.push(card);
+  }
+  if (hairStrands) head.pop(); // no hair box
   const root = new THREE.Group();
   if (singleMesh) root.add(mesh('Body', [...torso, ...head, ...arms, ...legs]));
   else root.add(mesh('Body', [...torso, ...head]), mesh('Arms', arms), mesh('Legs', legs));
   root.add(mesh('Shoes', [shoeL, shoeR]));
+  if (strands.length) root.add(mesh('Hair', strands));
   return exportGLB(root);
 }

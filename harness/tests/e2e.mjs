@@ -825,6 +825,69 @@ try {
     await page.context().close();
   });
 
+  await step('hair made of strands is shaded strand by strand (root dark, tip light, no decals)', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Mock paint: orange with yellow "gear" blobs across everything.
+    const png = makePng(64, 64, (x, y) => ((x >> 3) % 2 && (y >> 3) % 2 ? [250, 220, 40] : [190, 90, 40])).toString(
+      'base64',
+    );
+    await page.route('https://api.meta.ai/v1/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(
+          route.request().url().endsWith('/chat/completions')
+            ? { choices: [{ message: { content: '{}' } }] }
+            : { data: [{ b64_json: png }] },
+        ),
+      }),
+    );
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, hairStrands: 8 })));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      const warnings = [];
+      p.on('warning', (e) => warnings.push(e.message));
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-hair' });
+      await p.postPrompt('steampunk', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+      const slot = p.layout.slots.find((s) => s.texture);
+      const out = p.lastPartJobs.get(slot.id).out;
+      const g = out.getContext('2d');
+      const px = (u, v) => Array.from(g.getImageData(Math.floor(u * out.width), Math.floor(v * out.height), 1, 1).data);
+      // First card: UV rect [0.75, 0.22, 0.80, 0.30]; root at the bottom of the rect.
+      const cards = [0, 1, 2, 3].map((col) => ({
+        root: px(0.775 + col * 0.06, 0.285),
+        tip: px(0.775 + col * 0.06, 0.235),
+      }));
+      const crop = document.createElement('canvas');
+      crop.width = crop.height = 256;
+      crop
+        .getContext('2d')
+        .drawImage(out, 0.74 * out.width, 0.2 * out.height, 0.26 * out.width, 0.2 * out.height, 0, 0, 256, 256);
+      return { cards, warnings, names: p.idRegions(slot).map((r) => r.name), png: crop.toDataURL() };
+    }, glb);
+    assert.ok(res.names.includes('Hair'), res.names.join(', '));
+    if (process.env.SAVE_SHOTS) writeFileSync('/tmp/hair.png', Buffer.from(res.png.split(',')[1], 'base64'));
+    assert.ok(
+      res.warnings.some((w) => /shaded 8 hair strands/.test(w)),
+      res.warnings.join(' | '),
+    );
+    const lum = (c) => c[0] + c[1] + c[2];
+    for (const c of res.cards) {
+      assert.ok(lum(c.root) < lum(c.tip) * 0.85, `root darker than tip: ${JSON.stringify(c)}`);
+      for (const p of [c.root, c.tip]) assert.ok(!(p[0] > 220 && p[1] > 190), `no yellow decal: ${p}`);
+    }
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
