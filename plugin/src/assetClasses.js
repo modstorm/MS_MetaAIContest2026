@@ -52,12 +52,20 @@ export const ASSET_CLASSES = [
       },
       {
         match: /\b(feet|foot|shoes?|boots?|sneakers?)\b/i,
-        rules: ['Shoes cover the whole area; the bottom (cyan) areas are the soles.'],
+        rules: [
+          'Shoes: this area is the whole shoe unwrapped flat (toe, both sides, heel and top), not a front view of a shoe. Cover all of it in the shoe material; laces, tongue and toe cap only on the parts the grid says are front or top, plain shoe material on the sides and heel, soles on the bottom parts.',
+        ],
+      },
+      {
+        match: /\b(torso|chest|shirt|jacket|vest|coat|upper)\b/i,
+        rules: [
+          'Torso: paint only the garment body (front, sides, back). The arms and hands are separate areas: no sleeves, cuffs, gloves, arms or hands in this area, even at its edges. The garment covers the whole area, including the side strips and the top and bottom edges.',
+        ],
       },
       {
         match: /\b(pants|trousers|legs?|skirt|shorts|lower)\b/i,
         rules: [
-          'Trousers cover each leg all the way round in the same fabric, including the outer and inner side strips; no skin shows anywhere on the legs.',
+          'Trousers cover each leg all the way round in the same fabric, including the outer and inner side strips; no skin shows anywhere on the legs. Fill the whole area edge to edge: do not draw the outline of a pair of trousers, shoes or feet.',
         ],
       },
     ],

@@ -237,6 +237,7 @@ export function reskinPartPrompt(
     'Rules:',
     '- Keep every shape at exactly the same position, size and orientation, and keep the same framing. Do not crop, zoom, rotate, mirror or add borders.',
     '- Cover the whole white-mask area edge to edge with the new material, including thin strips along the edges (these are the sides of the part). Leave no patches of the old colors or skin showing, and no black or dark gaps.',
+    '- Image 1 is a flattened (unwrapped) surface, not a picture of an object. Do not draw the outline or silhouette of a garment, shoe or body part inside it, and do not draw arms, sleeves, hands, legs, feet or a background: fill the white area with the surface material itself, as if printing fabric on a flat sheet.',
     '- Front details (buttons, plackets, pockets, collars, emblems, buckles) only where the grid says front. Back areas get the plain back of the same material with no buttons or emblems.',
     '- Keep each decoration (chains, straps, emblems) whole inside one connected area: separate areas are not next to each other on the model.',
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
