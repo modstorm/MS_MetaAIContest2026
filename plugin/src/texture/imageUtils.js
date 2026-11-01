@@ -145,8 +145,9 @@ export function drawUvGuide(slot, width, height, opts = {}) {
 
 /**
  * Part map: each part's UV area filled with its own flat color (see analysis/parts.js).
- * With `atlas`, the colors are drawn semi-transparent over it. With `labels`, each part's
- * name and an arrow showing which way is "up" on the model are drawn in its box.
+ * With `atlas`, the colors are drawn semi-transparent over it. With `labels`, the map
+ * gets a wide border on the left and right holding each part's name, with a line to
+ * every separate patch of that part (see drawCallouts).
  */
 export function drawPartMap(slot, parts, width, height, { atlas = null, labels = false, alpha = 1 } = {}) {
   const c = createCanvas(width, height);
@@ -155,23 +156,231 @@ export function drawPartMap(slot, parts, width, height, { atlas = null, labels =
   ctx.fillRect(0, 0, c.width, c.height);
   if (atlas) ctx.drawImage(atlas, 0, 0, c.width, c.height);
   ctx.globalAlpha = alpha;
+  const layers = [];
   for (const p of parts) {
-    const layer = drawUvGuide(slot, c.width, c.height, {
-      meshes: p.meshes,
-      islands: p.islands,
-      tris: p.tris,
-      fillColor: p.hex,
-      wireframe: false,
-      background: null,
-    });
+    const layer = partLayer(slot, p, c.width, c.height);
+    layers.push(layer);
     ctx.drawImage(layer, 0, 0);
   }
   ctx.globalAlpha = 1;
-  if (labels) drawPartLabels(c, parts);
+  if (!labels) return c;
+  return drawCallouts(
+    c,
+    parts.map((p, i) => ({ name: p.name, hex: p.hex, anchors: zoneAnchors(layers[i]) })),
+  );
+}
+
+/** One part's UV area filled with its color on a transparent canvas. */
+export function partLayer(slot, p, width, height) {
+  return drawUvGuide(slot, width, height, {
+    meshes: p.meshes,
+    islands: p.islands,
+    tris: p.tris,
+    fillColor: p.hex ?? '#ffffff',
+    wireframe: false,
+    background: null,
+  });
+}
+
+/**
+ * Points inside the separate patches of a part (up to `max`, biggest first): for each
+ * patch, the covered spot nearest its middle. `layer` is opaque where the part is.
+ */
+export function zoneAnchors(layer, max = 4) {
+  const W = layer.width,
+    H = layer.height;
+  const n = 64;
+  const cell = Math.max(W, H) / n;
+  const gw = Math.max(1, Math.ceil(W / cell)),
+    gh = Math.max(1, Math.ceil(H / cell));
+  const d = ctx2d(layer).getImageData(0, 0, W, H).data;
+  const on = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      let hits = 0;
+      for (const [fx, fy] of [
+        [0.5, 0.5],
+        [0.2, 0.2],
+        [0.8, 0.2],
+        [0.2, 0.8],
+        [0.8, 0.8],
+      ]) {
+        const x = Math.min(W - 1, Math.floor((gx + fx) * cell)),
+          y = Math.min(H - 1, Math.floor((gy + fy) * cell));
+        if (d[(y * W + x) * 4 + 3] > 128) hits++;
+      }
+      if (hits >= 3) on[gy * gw + gx] = 1;
+    }
+  }
+  const comp = new Int32Array(gw * gh).fill(-1);
+  const comps = [];
+  for (let i = 0; i < on.length; i++) {
+    if (!on[i] || comp[i] >= 0) continue;
+    const cells = [];
+    const stack = [i];
+    comp[i] = comps.length;
+    while (stack.length) {
+      const j = stack.pop();
+      cells.push(j);
+      const x = j % gw,
+        y = (j / gw) | 0;
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const xx = x + dx,
+          yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= gw || yy >= gh) continue;
+        const k = yy * gw + xx;
+        if (on[k] && comp[k] < 0) {
+          comp[k] = comps.length;
+          stack.push(k);
+        }
+      }
+    }
+    comps.push(cells);
+  }
+  comps.sort((a, b) => b.length - a.length);
+  const biggest = comps[0]?.length ?? 0;
+  const out = [];
+  for (const cells of comps) {
+    if (out.length >= max || cells.length < Math.max(2, biggest * 0.12)) break;
+    let mx = 0,
+      my = 0;
+    for (const j of cells) {
+      mx += j % gw;
+      my += (j / gw) | 0;
+    }
+    mx /= cells.length;
+    my /= cells.length;
+    // The covered cell nearest the middle, preferring cells with covered neighbours.
+    let best = cells[0],
+      bestD = Infinity;
+    for (const j of cells) {
+      const x = j % gw,
+        y = (j / gw) | 0;
+      const inner = [1, -1, gw, -gw].filter((o) => on[j + o]).length;
+      const dd = Math.hypot(x - mx, y - my) - inner * 0.5;
+      if (dd < bestD) {
+        bestD = dd;
+        best = j;
+      }
+    }
+    out.push({ x: ((best % gw) + 0.5) * cell, y: (((best / gw) | 0) + 0.5) * cell });
+  }
+  if (!out.length && comps.length) {
+    const j = comps[0][0];
+    out.push({ x: ((j % gw) + 0.5) * cell, y: (((j / gw) | 0) + 0.5) * cell });
+  }
+  return out;
+}
+
+/**
+ * Callout labels: returns `base` inside a wide dark border. Each item's name (with a
+ * color swatch) sits in the left or right border, nearest its patches, with a line and
+ * a dot to each of its `anchors` (pixel positions in `base`).
+ * @param {{ name: string, hex?: string, anchors: { x: number, y: number }[] }[]} items
+ */
+export function drawCallouts(base, items) {
+  const W = base.width,
+    H = base.height;
+  const fs = Math.max(13, Math.round(Math.max(W, H) / 38));
+  const probe = ctx2d(createCanvas(1, 1));
+  probe.font = `bold ${fs}px system-ui, sans-serif`;
+  const textW = Math.max(fs * 4, ...items.map((it) => probe.measureText(it.name).width));
+  const border = Math.round(Math.min(textW + fs * 3.2, W * 0.9));
+  const pad = Math.round(fs * 0.8);
+  const c = createCanvas(W + border * 2, H + pad * 2);
+  const ctx = ctx2d(c);
+  ctx.fillStyle = '#1b1f27';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(base, border, pad);
+  ctx.strokeStyle = '#ffffff55';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(border - 0.5, pad - 0.5, W + 1, H + 1);
+
+  const placed = items
+    .filter((it) => it.anchors?.length)
+    .map((it) => {
+      const ax = it.anchors.reduce((s, a) => s + a.x, 0) / it.anchors.length;
+      const ay = it.anchors.reduce((s, a) => s + a.y, 0) / it.anchors.length;
+      return { ...it, ax, ay };
+    });
+  const rowH = fs * 1.9;
+  const sides = { left: [], right: [] };
+  for (const it of placed) (it.ax < W / 2 ? sides.left : sides.right).push(it);
+  // Balance the columns if one side has far more labels than fit.
+  const fit = Math.max(1, Math.floor((H + pad * 2) / rowH));
+  while (sides.left.length > fit && sides.left.length > sides.right.length + 1) {
+    sides.left.sort((a, b) => b.ax - a.ax);
+    sides.right.push(sides.left.shift());
+  }
+  while (sides.right.length > fit && sides.right.length > sides.left.length + 1) {
+    sides.right.sort((a, b) => a.ax - b.ax);
+    sides.left.push(sides.right.shift());
+  }
+  for (const [side, list] of Object.entries(sides)) {
+    list.sort((a, b) => a.ay - b.ay);
+    // Rows as close to their patches' height as possible without overlapping.
+    let y = -Infinity;
+    for (const it of list) {
+      it.ly = Math.max(pad + it.ay, y + rowH);
+      y = it.ly;
+    }
+    const bottom = c.height - rowH / 2;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const limit = i === list.length - 1 ? bottom : list[i + 1].ly - rowH;
+      if (list[i].ly > limit) list[i].ly = limit;
+    }
+    for (const it of list) if (it.ly < rowH / 2) it.ly = rowH / 2;
+    for (const it of list) {
+      const left = side === 'left';
+      const boxW = border - fs * 1.2;
+      const bx = left ? fs * 0.6 : W + border + fs * 0.6;
+      const by = it.ly - fs * 0.8;
+      const edgeX = left ? bx + boxW : bx;
+      // Lines first (under the label boxes).
+      for (const a of it.anchors) {
+        const tx = border + a.x,
+          ty = pad + a.y;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#000000cc';
+        ctx.lineWidth = Math.max(3, fs / 4);
+        ctx.beginPath();
+        ctx.moveTo(edgeX, it.ly);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.strokeStyle = it.hex ?? '#ffffff';
+        ctx.lineWidth = Math.max(1.5, fs / 9);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(tx, ty, Math.max(3, fs / 4), 0, Math.PI * 2);
+        ctx.fillStyle = it.hex ?? '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#000000';
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#000000d9';
+      ctx.fillRect(bx, by, boxW, fs * 1.6);
+      ctx.strokeStyle = it.hex ?? '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx + 1, by + 1, boxW - 2, fs * 1.6 - 2);
+      ctx.fillStyle = it.hex ?? '#ffffff';
+      ctx.fillRect(bx + fs * 0.35, it.ly - fs * 0.4, fs * 0.8, fs * 0.8);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${fs}px system-ui, sans-serif`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText(it.name, bx + fs * 1.45, it.ly, boxW - fs * 1.7);
+    }
+  }
   return c;
 }
 
-/** Draws each part's name and an arrow toward the part's top at the center of its bbox. */
+/** Draws each part's name and an arrow toward the part's top, on the part (`anchors`) or at its bbox center. */
 export function drawPartLabels(c, parts) {
   const ctx = ctx2d(c);
   {
@@ -180,9 +389,11 @@ export function drawPartLabels(c, parts) {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     for (const p of parts) {
+      // On the part itself (its biggest patch) when known; the bbox center can fall on another part.
       const [x0, y0, x1, y1] = p.bbox.map((n, i) => (n / 1000) * (i % 2 ? c.height : c.width));
-      const cx = (x0 + x1) / 2,
-        cy = (y0 + y1) / 2;
+      const at = p.anchors?.[0];
+      const cx = at ? at.x : (x0 + x1) / 2,
+        cy = at ? at.y : (y0 + y1) / 2;
       const arrow = { up: ' ↑', down: ' ↓', left: ' ←', right: ' →' }[p.up] ?? '';
       const label = `${p.name}${arrow}`;
       const w = ctx.measureText(label).width + fs;

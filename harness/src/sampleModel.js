@@ -184,7 +184,7 @@ export async function buildPaddingTestGlb() {
  * A blocky avatar for the body-zone test: "Body" = torso + neck + head + hair (one mesh),
  * "Arms" = both arms including the hands (one mesh), "Legs". Each box has its own UV rect.
  */
-export async function buildAvatarTestGlb({ singleMesh = false } = {}) {
+export async function buildAvatarTestGlb({ singleMesh = false, touchingLegs = false, torsoColumns = 1 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
   c.width = c.height = 512;
@@ -195,8 +195,8 @@ export async function buildAvatarTestGlb({ singleMesh = false } = {}) {
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
   const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'avatar' });
-  const box = ([w, h, d], [x, y, z], rect, seg = 1) => {
-    const geom = new THREE.BoxGeometry(w, h, d, 1, seg, 1);
+  const box = ([w, h, d], [x, y, z], rect, seg = 1, cols = 1) => {
+    const geom = new THREE.BoxGeometry(w, h, d, cols, seg, 1);
     packUvs(geom, rect);
     geom.translate(x, y, z);
     return geom;
@@ -207,7 +207,7 @@ export async function buildAvatarTestGlb({ singleMesh = false } = {}) {
     return m;
   };
   const torso = [
-    box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6),
+    box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6, torsoColumns), // torsoColumns: vertex columns across (low-poly)
     box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
   ];
   const head = [
@@ -219,8 +219,9 @@ export async function buildAvatarTestGlb({ singleMesh = false } = {}) {
     box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
   ];
   const legs = [
-    box([0.15, 0.85, 0.15], [-0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),
-    box([0.15, 0.85, 0.15], [0.12, 0.5, 0], [0.75, 0.4, 0.95, 0.7], 6),
+    // touchingLegs: legs pressed together (the middle is filled all the way down).
+    box([0.15, 0.85, 0.15], [touchingLegs ? -0.075 : -0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),
+    box([0.15, 0.85, 0.15], [touchingLegs ? 0.075 : 0.12, 0.5, 0], [0.75, 0.4, 0.95, 0.7], 6),
   ];
   // Shoes share one UV rect, the second one mirrored (opposite UV winding).
   const shoeL = box([0.16, 0.08, 0.25], [-0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);

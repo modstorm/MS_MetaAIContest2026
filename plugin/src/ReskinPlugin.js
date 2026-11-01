@@ -31,6 +31,8 @@ import {
   blobToCanvas,
   drawAtlasWithUvs,
   drawPartLabels,
+  partLayer,
+  zoneAnchors,
   drawPartMap,
   drawUvGuide,
   fitSize,
@@ -249,14 +251,14 @@ export class ReskinPlugin {
     const slot = this.requireSlot(slotId);
     const { width, height } = fitSize(slot.width || 512, slot.height || 512, maxSize);
     const atlas = slot.texture ? textureToCanvas(slot.texture, maxSize) : null;
-    const parts = this.idRegions(slot);
+    const parts = this.idRegions(slot, this.areaOpts());
     const w = atlas?.width ?? width;
     const h = atlas?.height ?? height;
     return {
       atlas,
       atlasWithUvs: atlas ? drawAtlasWithUvs(atlas, slot) : drawUvGuide(slot, width, height, { fill: false }),
       uvGuide: drawUvGuide(slot, width, height),
-      // Each part (mesh name) tinted, labelled, with an arrow toward the part's top on the model.
+      // Each part tinted; names in a border with a line to each of the part's patches.
       partMap: drawPartMap(slot, parts, w, h, { atlas, alpha: atlas ? 0.45 : 1, labels: true }),
       parts: parts.map(({ meshes, ...p }) => p),
       orientation: chooseOrientation(slotParts(slot)),
@@ -376,7 +378,13 @@ export class ReskinPlugin {
                     drawPartMap(slot, rawParts, original.width, original.height, { atlas: original, alpha: 0.35 }),
                     orient,
                   ),
-                  parts,
+                  parts.map((p, i) => ({
+                    ...p,
+                    anchors: zoneAnchors(
+                      transformCanvas(partLayer(slot, rawParts[i], original.width, original.height), orient),
+                      1,
+                    ),
+                  })),
                 )
               : transformCanvas(drawAtlasWithUvs(original, slot), orient),
         };

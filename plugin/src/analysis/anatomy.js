@@ -67,12 +67,9 @@ export function avatarAnatomy(root) {
   const neckHalfW = Math.max(width[neckBin], H * 0.02);
   // Torso half width: in a chest-height slice, the arms are separated from the torso by
   // the largest gap in |x|; without a gap (arms against the body) guess from the neck.
-  const chest = [];
-  for (let i = 0; i < pts.length; i += 3) {
-    const y = pts[i + 1];
-    if (y < neckY - H * 0.16 || y > neckY - H * 0.08) continue;
-    chest.push(Math.abs(pts[i] - cx));
-  }
+  // Points are sampled across the triangle surfaces (not just vertices): a low-poly torso
+  // has few vertices, and the gaps between them looked like the torso/arm gap.
+  const chest = surfaceSlice(root, neckY - H * 0.16, neckY - H * 0.08, H * 0.004).map((x) => Math.abs(x - cx));
   chest.sort((a, b) => a - b);
   let torsoHalfW = neckHalfW * 2.8;
   let bestGap = H * 0.015;
@@ -83,6 +80,8 @@ export function avatarAnatomy(root) {
       torsoHalfW = chest[i - 1];
     }
   }
+  // A torso narrower than ~1.6 necks is a misreading (e.g. a gap inside a loose garment).
+  if (torsoHalfW < neckHalfW * 1.6) torsoHalfW = neckHalfW * 2.8;
   // Crotch: going up from the knees, the first height where the middle is filled.
   let crotchY = minY + H * 0.47;
   for (let i = Math.floor(bins * 0.25); i < Math.floor(bins * 0.65); i++) {
@@ -96,7 +95,46 @@ export function avatarAnatomy(root) {
       break;
     }
   }
+  // Legs that touch (or loose trousers with an inner seam near the middle) make the scan
+  // stop at the knees; keep the hip line within normal human proportions.
+  crotchY = Math.min(Math.max(crotchY, minY + H * 0.38), minY + H * 0.52);
   return { minY, maxY, H, cx, cz, neckY, neckHalfW, torsoHalfW, crotchY };
+}
+
+/** x of points spread over every triangle surface, where the surface is between y0 and y1 (world). */
+function surfaceSlice(root, y0, y1, spacing) {
+  const xs = [];
+  const a = new THREE.Vector3(),
+    b = new THREE.Vector3(),
+    c = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!o.isMesh || !o.visible) return;
+    const pos = o.geometry.getAttribute('position');
+    if (!pos) return;
+    const index = o.geometry.index;
+    const count = index ? index.count : pos.count;
+    for (let i = 0; i + 2 < count; i += 3) {
+      const i0 = index ? index.getX(i) : i,
+        i1 = index ? index.getX(i + 1) : i + 1,
+        i2 = index ? index.getX(i + 2) : i + 2;
+      a.fromBufferAttribute(pos, i0).applyMatrix4(o.matrixWorld);
+      b.fromBufferAttribute(pos, i1).applyMatrix4(o.matrixWorld);
+      c.fromBufferAttribute(pos, i2).applyMatrix4(o.matrixWorld);
+      if (Math.max(a.y, b.y, c.y) < y0 || Math.min(a.y, b.y, c.y) > y1) continue;
+      const edge = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
+      const n = Math.min(48, Math.max(1, Math.ceil(edge / spacing)));
+      for (let u = 0; u <= n; u++) {
+        for (let v = 0; v <= n - u; v++) {
+          const w = n - u - v;
+          const y = (a.y * u + b.y * v + c.y * w) / n;
+          if (y < y0 || y > y1) continue;
+          xs.push((a.x * u + b.x * v + c.x * w) / n);
+        }
+      }
+      if (xs.length > 400000) return;
+    }
+  });
+  return xs;
 }
 
 function emptyMasks(meshes, sizes) {
@@ -140,6 +178,34 @@ export function splitAvatarZones(slot, part, anat) {
     }
   }
 
+  // A UV island is one piece of cloth or skin: when most of it is above the neck line it is
+  // all head (the chin and the bottom of the face hang below the line), and when most of it
+  // is below, it all stays with the body (a collar). Islands holding a big share of the
+  // whole mesh (one island for everything) keep the per-triangle split.
+  for (let k = 0; k < data.length; k++) {
+    const { f, islands } = data[k];
+    const up = new Map(),
+      all = new Map();
+    for (let t = 0; t < f.area.length; t++) {
+      const id = islands[t];
+      all.set(id, (all.get(id) ?? 0) + f.area[t]);
+      if (zones[k][t] === 1) up.set(id, (up.get(id) ?? 0) + f.area[t]);
+    }
+    for (let t = 0; t < f.area.length; t++) {
+      const id = islands[t];
+      const a = all.get(id);
+      if (a > total * 0.4) continue;
+      const share = (up.get(id) ?? 0) / a;
+      if (share >= 0.6 && zones[k][t] !== 1) {
+        zones[k][t] = 1;
+        headArea += f.area[t];
+      } else if (share <= 0.4 && zones[k][t] === 1) {
+        zones[k][t] = 0;
+        headArea -= f.area[t];
+      }
+    }
+  }
+
   // The rest (below the neck) is split by UV island groups (torso, arms, legs…).
   // Below the neck, every UV island gets a body label from where it sits on the model:
   // shoes (at the floor), arms (beside the torso), legs (below the crotch) or torso.
@@ -155,27 +221,32 @@ export function splitAvatarZones(slot, part, anat) {
     const meanY = ys / (c.area || 1);
     const meanX = lat / (c.area || 1);
     c.arms = meanX > anat.torsoHalfW * 1.05 && meanY > anat.minY + anat.H * 0.3;
-    c.label = meanY < anat.minY + anat.H * 0.07 ? 'shoes' : c.arms ? 'arms' : meanY < anat.crotchY ? 'legs' : 'torso';
+    // Legs before arms: hanging arms reach the hips, but leg islands sit lower on average.
+    if (meanY < anat.minY + anat.H * 0.07) c.label = 'shoes';
+    else if (meanY < anat.crotchY) c.label = 'legs';
+    else c.label = c.arms ? 'arms' : 'torso';
+    c.arms = c.label === 'arms';
   }
 
-  // A torso island that runs into the sleeves (one piece of cloth): its triangles well
-  // beside the torso are arms.
+  // A torso island that runs into the sleeves or down the legs (one piece of cloth, e.g.
+  // a jumpsuit): its triangles well beside the torso are arms, those below the hips legs.
   for (const c of clusters.filter((x) => x.label === 'torso')) {
     const side = [];
+    const low = [];
     const keep = [];
     for (const kt of c.tris) {
       const f = data[kt[0]].f;
       const t = kt[1];
-      const lateral =
-        Math.abs(f.centroid[t * 3] - anat.cx) > anat.torsoHalfW * 1.15 &&
-        f.centroid[t * 3 + 1] > anat.minY + anat.H * 0.3;
-      (lateral ? side : keep).push(kt);
+      const y = f.centroid[t * 3 + 1];
+      const lateral = Math.abs(f.centroid[t * 3] - anat.cx) > anat.torsoHalfW * 1.15 && y > anat.minY + anat.H * 0.3;
+      (lateral ? side : y < anat.crotchY - anat.H * 0.05 ? low : keep).push(kt);
     }
-    if (!side.length) continue;
+    if (!side.length && !low.length) continue;
     c.tris = keep;
-    const area = side.reduce((sum, [k, t]) => sum + data[k].f.area[t], 0);
-    c.area -= area;
-    clusters.push({ tris: side, area, label: 'arms', arms: true });
+    const areaOf = (list) => list.reduce((sum, [k, t]) => sum + data[k].f.area[t], 0);
+    c.area = areaOf(keep);
+    if (side.length) clusters.push({ tris: side, area: areaOf(side), label: 'arms', arms: true });
+    if (low.length) clusters.push({ tris: low, area: areaOf(low), label: 'legs' });
   }
 
   // Hands: the far end of each arm, measured from the shoulder.

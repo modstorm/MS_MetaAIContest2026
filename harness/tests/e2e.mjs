@@ -692,6 +692,57 @@ try {
       ],
       ['red', 'blue', 'green', 'yellow', 'purple', 'aqua', 'pink'],
     );
+    // Legs pressed together: the trousers are still their own (green) zone, not torso.
+    const glb3 = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, touchingLegs: true })));
+    });
+    const touching = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-touching' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      return Object.fromEntries(p.idRegions(slot).map((r) => [r.name, r.share]));
+    }, glb3);
+    assert.ok(touching['Body (legs)'] > 0.25, `legs zone: ${JSON.stringify(touching)}`);
+    // Low-poly torso (3 vertex columns across): the gaps between its vertices are not the
+    // torso/arm gap, so the torso keeps its sides and the legs never become arms or hands.
+    const glb4 = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, torsoColumns: 3 })));
+    });
+    const lowPoly = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-lowpoly' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      return Object.fromEntries(p.idRegions(slot).map((r) => [r.name, r.share]));
+    }, glb4);
+    assert.deepEqual(Object.keys(lowPoly).sort(), oneNames.slice().sort(), JSON.stringify(lowPoly));
+    assert.ok(lowPoly['Body (legs)'] > lowPoly['Body (arms)'], `legs vs arms: ${JSON.stringify(lowPoly)}`);
+    assert.ok(lowPoly['Body (torso)'] > 0.15, `torso keeps its sides: ${JSON.stringify(lowPoly)}`);
+    // Area map: names sit in a border, each with lines to points inside its own patches.
+    const imageUtils = '/@fs' + fileURLToPath(new URL('../../plugin/src/texture/imageUtils.js', import.meta.url));
+    const callouts = await page.evaluate(
+      async ([bytes, modPath]) => {
+        const p = window.reskin.plugin;
+        await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-one-mesh' });
+        const slot = p.layout.slots.find((s) => s.texture);
+        const prev = p.slotPreview(slot.id, 512);
+        const { partLayer, zoneAnchors } = await import(modPath);
+        const misses = [];
+        for (const r of p.idRegions(slot)) {
+          const layer = partLayer(slot, r, 512, 512);
+          const d = layer.getContext('2d').getImageData(0, 0, 512, 512).data;
+          for (const a of zoneAnchors(layer)) {
+            if (d[(Math.floor(a.y) * 512 + Math.floor(a.x)) * 4 + 3] < 128) misses.push(r.name);
+          }
+        }
+        return { w: prev.partMap.width, atlasW: prev.atlas.width, misses, png: prev.partMap.toDataURL() };
+      },
+      [glb2, imageUtils],
+    );
+    assert.ok(callouts.w > callouts.atlasW * 1.3, `border added: ${callouts.w} vs ${callouts.atlasW}`);
+    assert.deepEqual(callouts.misses, [], 'every anchor is inside its own area');
+    if (process.env.SAVE_SHOTS) writeFileSync('/tmp/partmap.png', Buffer.from(callouts.png.split(',')[1], 'base64'));
     await page.context().close();
   });
 

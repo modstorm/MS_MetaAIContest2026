@@ -261,7 +261,7 @@ function renderLayout(layout) {
     const prev = plugin.slotPreview(slot.id, 256);
     thumbs.append(
       figure(prev.atlasWithUvs, slot.texture ? 'atlas + UVs' : 'UVs', `${slot.name}+atlas`),
-      figure(prev.partMap, 'areas (arrow = top of part)', `${slot.name} areas`),
+      figure(prev.partMap, 'areas', `${slot.name} areas`),
     );
     const o = prev.orientation;
     if (o && (o.rot || o.flipX)) {
