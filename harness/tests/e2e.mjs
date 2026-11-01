@@ -1177,10 +1177,29 @@ try {
       });
       const n = pp.plainNarrowSpans(painted, mask);
       const px = Array.from(painted.getContext('2d').getImageData(100, 50, 1, 1).data);
-      return { text, n, px, center };
+      // Face check: two eyes and a mouth on skin; one painted copy drops the mouth.
+      const faceAt = (mouth) =>
+        mk(100, 100, (g) => {
+          g.fillStyle = '#f0c8a0';
+          g.fillRect(0, 0, 100, 100);
+          g.fillStyle = '#201010';
+          g.fillRect(25, 30, 10, 10);
+          g.fillRect(65, 30, 10, 10);
+          if (mouth) g.fillRect(40, 70, 20, 6);
+        });
+      const faceMask = mk(100, 100, (g) => {
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, 100, 100);
+      });
+      const good = pp.faceFeaturesKept(faceAt(true), faceAt(true), faceMask);
+      const bad = pp.faceFeaturesKept(faceAt(true), faceAt(false), faceMask);
+      return { text, n, px, center, good, bad };
     }, root);
     assert.match(res.text, /65% of the width/);
     assert.equal(res.n, 1);
+    assert.deepEqual([res.good.total, res.good.kept], [3, 3], JSON.stringify(res.good));
+    assert.equal(res.bad.lost.length, 1);
+    assert.ok(res.bad.lost[0].y > 0.6, 'lost feature is the mouth');
     assert.deepEqual(res.center.slice(0, 3), [0x00, 0xc8, 0x53], 'wrapped front rolled to the middle');
     assert.deepEqual(res.px.slice(0, 3), [0x5a, 0x3a, 0x20]);
     await page.close();

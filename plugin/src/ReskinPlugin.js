@@ -52,6 +52,7 @@ import {
   cropCanvas,
   greyedCrop,
   fillBackgroundLeftovers,
+  faceFeaturesKept,
   fillSkinLeftovers,
   mapLimit,
   maskedMedian,
@@ -59,6 +60,7 @@ import {
   oneFaceOnly,
   paintedSkin,
   plainNarrowSpans,
+  restoreFeatures,
   rollCanvas,
   maskRect,
   padToMuseAspect,
@@ -1187,32 +1189,68 @@ export class ReskinPlugin {
         report(0.2 + (0.5 * done) / jobs.length, 'generate', `Painted ${part.name} (${done}/${jobs.length})`);
         return upright;
       }
-      const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
-        this.provider.reskinPart({
-          theme: t,
-          slotName: slot.name,
-          partName: part.name,
-          image: padded.canvas,
-          mask: paddedGuide.canvas,
-          facing: facingShareText(facing.share),
-          facingLayout: layout,
-          facingStrips: strips || undefined,
-          styleRef: plain ? null : styleRef,
-          subject: plain ? undefined : plan?.subject,
-          areaTheme: plain ? undefined : areaThemes.get(part.name),
-          paint: plain ? undefined : regionPaint(part),
-          others: names.filter((n) => n !== part.name),
-          classRules: plain ? undefined : rules,
-          extra: plain
-            ? undefined
-            : [frontLine, opts.extraInstructions, job.note].filter(Boolean).join('\n') || undefined,
-          plain,
-          signal,
-        }),
-      );
+      const paintMuse = (retryNote) =>
+        this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
+          this.provider.reskinPart({
+            theme: t,
+            slotName: slot.name,
+            partName: part.name,
+            image: padded.canvas,
+            mask: paddedGuide.canvas,
+            facing: facingShareText(facing.share),
+            facingLayout: layout,
+            facingStrips: strips || undefined,
+            styleRef: plain ? null : styleRef,
+            subject: plain ? undefined : plan?.subject,
+            areaTheme: plain ? undefined : areaThemes.get(part.name),
+            paint: plain ? undefined : regionPaint(part),
+            others: names.filter((n) => n !== part.name),
+            classRules: plain ? undefined : rules,
+            extra: plain
+              ? undefined
+              : [frontLine, opts.extraInstructions, job.note, retryNote].filter(Boolean).join('\n') || undefined,
+            plain,
+            signal,
+          }),
+        );
+      let restoreLost = null;
+      let painted = await this.toCanvas(await paintMuse());
       signal.throwIfAborted();
-      const painted = await this.toCanvas(img);
+      if (part.zone === 'face' && opts.checkFace !== false) {
+        // Muse sometimes moves the features (eyes drawn where the mouth was) or drops some.
+        // Check the original's eyes / brows / mouth still have detail; repaint once if not.
+        const where = (l) =>
+          `${l.y < 0.4 ? 'upper' : l.y > 0.6 ? 'lower' : 'middle'} ${l.x < 0.4 ? 'left' : l.x > 0.6 ? 'right' : 'centre'}`;
+        const check = (c) =>
+          faceFeaturesKept(crop, unpad(c, padded.canvas, padded.box, crop.width, crop.height), whiteMask(guide));
+        const first = check(painted);
+        if (first.lost.length) {
+          this.emit('warning', {
+            message: `${part.name}: ${first.lost.length} of ${first.total} face features missing or moved (${first.lost.map(where).join(', ')}); repainting once.`,
+          });
+          const again = await this.toCanvas(
+            await paintMuse(
+              `The last attempt lost or moved facial features (at the ${first.lost.map(where).join(', ')} of image 1). Every eye, brow and the mouth must stay exactly where the dark shapes are in image 1, at the same size.`,
+            ),
+          );
+          signal.throwIfAborted();
+          const second = check(again);
+          if (second.kept > first.kept) painted = again;
+          const best = second.kept > first.kept ? second : first;
+          if (best.lost.length) restoreLost = best.lost;
+          this.emit('warning', {
+            message: `${part.name}: repaint kept ${second.kept} of ${second.total} features (first try ${first.kept}); using the ${second.kept > first.kept ? 'repaint' : 'first try'}.`,
+          });
+        }
+      }
       const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
+      if (restoreLost) {
+        // Still missing after the repaint: draw the original's eyes / brows / mouth lines back.
+        restoreFeatures(upright, crop, restoreLost);
+        this.emit('warning', {
+          message: `${part.name}: restored ${restoreLost.length} face feature(s) from the original.`,
+        });
+      }
       if (part.zone === 'face' && opts.oneFace !== false) {
         // Small separate pieces of the face area (back of the head, ears) get the skin color,
         // so a second face can never appear on them.

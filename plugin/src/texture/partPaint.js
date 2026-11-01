@@ -538,3 +538,121 @@ export function rollCanvas(src, dx) {
   g.drawImage(src, d - w, 0);
   return c;
 }
+
+/**
+ * Face check: the dark features of the original face (eyes, brows, mouth: dark blobs inside
+ * the area, not touching its edge) must still show detail in the painted face. Returns
+ * { total, kept, lost: [{x, y}] } with blob centers as fractions of the crop size.
+ */
+export function faceFeaturesKept(original, painted, mask) {
+  const W = original.width,
+    H = original.height;
+  const s = Math.min(1, 160 / Math.max(W, H));
+  const w = Math.max(8, Math.round(W * s)),
+    h = Math.max(8, Math.round(H * s));
+  const o = ctx2d(resizeCanvas(original, w, h)).getImageData(0, 0, w, h).data;
+  const p = ctx2d(resizeCanvas(painted, w, h)).getImageData(0, 0, w, h).data;
+  const m = ctx2d(resizeCanvas(mask, w, h)).getImageData(0, 0, w, h).data;
+  const lum = (d, i) => 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  const inside = (i) => m[i * 4] >= 128;
+  const ls = [];
+  let area = 0;
+  for (let i = 0; i < w * h; i++) if (inside(i)) (ls.push(lum(o, i)), area++);
+  if (!area) return { total: 0, kept: 0, lost: [] };
+  ls.sort((a, b) => a - b);
+  const skinL = ls[ls.length >> 1];
+  const dark = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (inside(i) && lum(o, i) < skinL * 0.6) dark[i] = 1;
+  const seen = new Uint8Array(w * h);
+  let total = 0,
+    kept = 0;
+  const lost = [];
+  for (let i0 = 0; i0 < w * h; i0++) {
+    if (!dark[i0] || seen[i0]) continue;
+    const stack = [i0];
+    seen[i0] = 1;
+    let n = 0,
+      edge = false,
+      x0 = w,
+      y0 = h,
+      x1 = 0,
+      y1 = 0;
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % w,
+        y = (i / w) | 0;
+      n++;
+      x0 = Math.min(x0, x);
+      x1 = Math.max(x1, x);
+      y0 = Math.min(y0, y);
+      y1 = Math.max(y1, y);
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const nx = x + dx,
+          ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
+          edge = true;
+          continue;
+        }
+        const j = ny * w + nx;
+        if (!inside(j)) edge = true;
+        else if (dark[j] && !seen[j]) {
+          seen[j] = 1;
+          stack.push(j);
+        }
+      }
+    }
+    if (edge || n < area * 0.002 || n > area * 0.2) continue;
+    total++;
+    // Detail in the painted image over the blob's box (a little grown): its luminance spread.
+    let sum = 0,
+      sum2 = 0,
+      c = 0;
+    for (let y = Math.max(0, y0 - 1); y <= Math.min(h - 1, y1 + 1); y++)
+      for (let x = Math.max(0, x0 - 1); x <= Math.min(w - 1, x1 + 1); x++) {
+        const L = lum(p, y * w + x);
+        sum += L;
+        sum2 += L * L;
+        c++;
+      }
+    const sd = Math.sqrt(Math.max(0, sum2 / c - (sum / c) ** 2));
+    if (sd >= 16) kept++;
+    else
+      lost.push({
+        x: (x0 + x1) / 2 / w,
+        y: (y0 + y1) / 2 / h,
+        box: [(x0 - 1) / w, (y0 - 1) / h, (x1 + 2) / w, (y1 + 2) / h],
+        skinL,
+      });
+  }
+  return { total, kept, lost };
+}
+
+/**
+ * Last resort for lost face features: copies the original's dark feature pixels (eyes,
+ * brows, mouth lines) inside each lost feature's box onto the painted face.
+ */
+export function restoreFeatures(painted, original, lost) {
+  const w = painted.width,
+    h = painted.height;
+  const pg = ctx2d(painted);
+  const img = pg.getImageData(0, 0, w, h);
+  const o = ctx2d(original).getImageData(0, 0, w, h).data;
+  for (const f of lost) {
+    const [bx0, by0, bx1, by1] = f.box;
+    for (let y = Math.max(0, Math.floor(by0 * h)); y < Math.min(h, Math.ceil(by1 * h)); y++)
+      for (let x = Math.max(0, Math.floor(bx0 * w)); x < Math.min(w, Math.ceil(bx1 * w)); x++) {
+        const i = (y * w + x) * 4;
+        const L = 0.299 * o[i] + 0.587 * o[i + 1] + 0.114 * o[i + 2];
+        if (L >= f.skinL * 0.75) continue;
+        img.data[i] = o[i];
+        img.data[i + 1] = o[i + 1];
+        img.data[i + 2] = o[i + 2];
+      }
+  }
+  pg.putImageData(img, 0, 0);
+}
