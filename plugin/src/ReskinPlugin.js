@@ -1296,11 +1296,22 @@ export class ReskinPlugin {
     const hit = this.regionCache.get(key);
     if (hit) return hit;
     const regions = this.paintRegions(slot, slotParts(slot), opts);
-    const out = regions.map((r, i) => ({
-      ...r,
-      color: PART_COLORS[i % PART_COLORS.length][0],
-      hex: PART_COLORS[i % PART_COLORS.length][1],
-    }));
+    // Body zones always get the same color; other areas take the next unused one.
+    const used = new Set();
+    const fixed = regions.map((r) => {
+      const c = r.zone && ZONE_COLORS[r.zone] && PART_COLORS.find(([n]) => n === ZONE_COLORS[r.zone]);
+      if (c && !used.has(c[0])) {
+        used.add(c[0]);
+        return c;
+      }
+      return null;
+    });
+    const free = PART_COLORS.filter(([n]) => !used.has(n));
+    let next = 0;
+    const out = regions.map((r, i) => {
+      const [color, hex] = fixed[i] ?? free[next++ % free.length] ?? PART_COLORS[i % PART_COLORS.length];
+      return { ...r, color, hex };
+    });
     this.regionCache.set(key, out);
     return out;
   }
@@ -1635,6 +1646,18 @@ export function variationNote(index, count) {
   ];
   return styles[index] ?? `Variation ${index + 1}: a different palette and motifs.`;
 }
+
+/** Fixed ID colors for character body zones (as Kris asked: one unique color each). */
+export const ZONE_COLORS = {
+  face: 'red',
+  head: 'red',
+  hair: 'blue',
+  legs: 'green',
+  torso: 'yellow',
+  hands: 'purple',
+  shoes: 'aqua',
+  arms: 'pink',
+};
 
 export function slug(s) {
   return (

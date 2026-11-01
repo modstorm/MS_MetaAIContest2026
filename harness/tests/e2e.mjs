@@ -679,6 +679,19 @@ try {
       assert.ok(oneNames.includes(n), `missing ${n}: ${oneNames.join(', ')}`);
     assert.equal(one.length, 7);
     assert.equal(new Set(one.map((r) => r[1])).size, 7, 'each zone has its own color');
+    const colorOf = Object.fromEntries(one);
+    assert.deepEqual(
+      [
+        colorOf['Body (face)'],
+        colorOf['Body (hair)'],
+        colorOf['Body (legs)'],
+        colorOf['Body (torso)'],
+        colorOf['Body (hands)'],
+        colorOf['Shoes'],
+        colorOf['Body (arms)'],
+      ],
+      ['red', 'blue', 'green', 'yellow', 'purple', 'aqua', 'pink'],
+    );
     await page.context().close();
   });
 

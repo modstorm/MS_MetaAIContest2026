@@ -63,15 +63,40 @@ export function avatarAnatomy(root) {
     if (has[b] && (neckBin < 0 || width[b] < width[neckBin])) neckBin = b;
   }
   if (neckBin < 0) return null;
-  return {
-    minY,
-    maxY,
-    H,
-    cx,
-    cz,
-    neckY: minY + ((neckBin + 0.5) / bins) * H,
-    neckHalfW: Math.max(width[neckBin], H * 0.02),
-  };
+  const neckY = minY + ((neckBin + 0.5) / bins) * H;
+  const neckHalfW = Math.max(width[neckBin], H * 0.02);
+  // Torso half width: in a chest-height slice, the arms are separated from the torso by
+  // the largest gap in |x|; without a gap (arms against the body) guess from the neck.
+  const chest = [];
+  for (let i = 0; i < pts.length; i += 3) {
+    const y = pts[i + 1];
+    if (y < neckY - H * 0.16 || y > neckY - H * 0.08) continue;
+    chest.push(Math.abs(pts[i] - cx));
+  }
+  chest.sort((a, b) => a - b);
+  let torsoHalfW = neckHalfW * 2.8;
+  let bestGap = H * 0.015;
+  for (let i = 1; i < chest.length; i++) {
+    const gap = chest[i] - chest[i - 1];
+    if (gap > bestGap && chest[i - 1] > neckHalfW) {
+      bestGap = gap;
+      torsoHalfW = chest[i - 1];
+    }
+  }
+  // Crotch: going up from the knees, the first height where the middle is filled.
+  let crotchY = minY + H * 0.47;
+  for (let i = Math.floor(bins * 0.25); i < Math.floor(bins * 0.65); i++) {
+    const y0 = minY + (i / bins) * H,
+      y1 = y0 + H / bins;
+    let mid = false;
+    for (let j = 0; j < pts.length && !mid; j += 3)
+      mid = pts[j + 1] >= y0 && pts[j + 1] < y1 && Math.abs(pts[j] - cx) < neckHalfW * 0.25;
+    if (mid) {
+      crotchY = y0;
+      break;
+    }
+  }
+  return { minY, maxY, H, cx, cz, neckY, neckHalfW, torsoHalfW, crotchY };
 }
 
 function emptyMasks(meshes, sizes) {
@@ -116,44 +141,60 @@ export function splitAvatarZones(slot, part, anat) {
   }
 
   // The rest (below the neck) is split by UV island groups (torso, arms, legs…).
-  const clusters = clusterRest(data, zones, 0.02, 0.06);
-  const lateralOf = (x, y) => Math.abs(x - anat.cx) > lateralW && y > anat.minY + anat.H * 0.3;
+  // Below the neck, every UV island gets a body label from where it sits on the model:
+  // shoes (at the floor), arms (beside the torso), legs (below the crotch) or torso.
+  const clusters = clusterRest(data, zones, -1, 0); // one group per island
   for (const c of clusters) {
     let lat = 0,
-      cen = 0,
       ys = 0;
     for (const [k, t] of c.tris) {
       const f = data[k].f;
-      const x = f.centroid[t * 3],
-        y = f.centroid[t * 3 + 1],
-        a = f.area[t];
-      if (lateralOf(x, y)) lat += a;
-      if (Math.abs(x - anat.cx) < anat.neckHalfW * 1.5) cen += a;
-      ys += y * a;
+      lat += Math.abs(f.centroid[t * 3] - anat.cx) * f.area[t];
+      ys += f.centroid[t * 3 + 1] * f.area[t];
     }
     const meanY = ys / (c.area || 1);
-    c.arms = lat / c.area > 0.6 && cen / c.area < 0.05;
-    c.label = c.arms ? 'arms' : meanY < anat.minY + anat.H * 0.45 ? 'legs' : 'torso';
+    const meanX = lat / (c.area || 1);
+    c.arms = meanX > anat.torsoHalfW * 1.05 && meanY > anat.minY + anat.H * 0.3;
+    c.label = meanY < anat.minY + anat.H * 0.07 ? 'shoes' : c.arms ? 'arms' : meanY < anat.crotchY ? 'legs' : 'torso';
+  }
+
+  // A torso island that runs into the sleeves (one piece of cloth): its triangles well
+  // beside the torso are arms.
+  for (const c of clusters.filter((x) => x.label === 'torso')) {
+    const side = [];
+    const keep = [];
+    for (const kt of c.tris) {
+      const f = data[kt[0]].f;
+      const t = kt[1];
+      const lateral =
+        Math.abs(f.centroid[t * 3] - anat.cx) > anat.torsoHalfW * 1.15 &&
+        f.centroid[t * 3 + 1] > anat.minY + anat.H * 0.3;
+      (lateral ? side : keep).push(kt);
+    }
+    if (!side.length) continue;
+    c.tris = keep;
+    const area = side.reduce((sum, [k, t]) => sum + data[k].f.area[t], 0);
+    c.area -= area;
+    clusters.push({ tris: side, area, label: 'arms', arms: true });
   }
 
   // Hands: the far end of each arm, measured from the shoulder.
   const shoulderY = anat.neckY - anat.H * 0.03;
-  const shoulderX = anat.neckHalfW * 2.5;
+  const shoulderX = anat.torsoHalfW;
   const dist = (x, y, s) => Math.hypot(x - (anat.cx + s * shoulderX), y - shoulderY);
-  for (const c of clusters.filter((x) => x.arms)) {
-    for (const s of [-1, 1]) {
-      let maxD = 0;
-      for (const [k, t] of c.tris) {
-        const f = data[k].f;
-        if (Math.sign(f.centroid[t * 3] - anat.cx) === s)
-          maxD = Math.max(maxD, dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s));
-      }
-      if (!(maxD > 0)) continue;
-      for (const [k, t] of c.tris) {
-        const f = data[k].f;
-        const x = f.centroid[t * 3];
-        if (Math.sign(x - anat.cx) === s && dist(x, f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
-      }
+  const armTris = clusters.filter((x) => x.arms).flatMap((c) => c.tris);
+  for (const s of [-1, 1]) {
+    let maxD = 0;
+    for (const [k, t] of armTris) {
+      const f = data[k].f;
+      if (Math.sign(f.centroid[t * 3] - anat.cx) === s)
+        maxD = Math.max(maxD, dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s));
+    }
+    if (!(maxD > 0)) continue;
+    for (const [k, t] of armTris) {
+      const f = data[k].f;
+      const x = f.centroid[t * 3];
+      if (Math.sign(x - anat.cx) === s && dist(x, f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
     }
   }
 
@@ -176,9 +217,9 @@ export function splitAvatarZones(slot, part, anat) {
   };
 
   const out = [];
-  const add = (label, r) => {
+  const add = (label, r, zone = label) => {
     if (r.area / total < 0.01) return;
-    out.push(makeRegion(slot, part, label, r, total, data));
+    out.push({ ...makeRegion(slot, part, label, r, total, data), zone });
   };
   const head = regionOf((k, t) => zones[k][t] === 1);
   if (head.area / total > 0.01) {
@@ -200,9 +241,10 @@ export function splitAvatarZones(slot, part, anat) {
     add(
       byLabel.size > 1 ? label : '',
       regionOf((k, t) => zones[k][t] === 0 && set.has(`${k}:${t}`)),
+      label,
     );
   }
-  return out.length > 1 ? out : [part];
+  return out.length > 1 ? out : [{ ...part, zone: out[0]?.zone }];
 }
 
 /**
