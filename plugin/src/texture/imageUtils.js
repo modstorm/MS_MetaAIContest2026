@@ -166,7 +166,7 @@ export function drawPartMap(slot, parts, width, height, { atlas = null, labels =
   if (!labels) return c;
   return drawCallouts(
     c,
-    parts.map((p, i) => ({ name: p.name, hex: p.hex, anchors: zoneAnchors(layers[i]) })),
+    parts.map((p, i) => ({ name: p.name, hex: p.hex, patches: zonePatches(layers[i]) })),
   );
 }
 
@@ -182,29 +182,28 @@ export function partLayer(slot, p, width, height) {
   });
 }
 
-/**
- * Points inside the separate patches of a part (up to `max`, biggest first): for each
- * patch, the covered spot nearest its middle. `layer` is opaque where the part is.
- */
-export function zoneAnchors(layer, max = 4) {
+const GRID = 64;
+
+/** Which cells of a GRID-cells-wide grid over `layer` are covered (opaque). */
+function coverage(layer) {
   const W = layer.width,
     H = layer.height;
-  const n = 64;
-  const cell = Math.max(W, H) / n;
+  const cell = Math.max(W, H) / GRID;
   const gw = Math.max(1, Math.ceil(W / cell)),
     gh = Math.max(1, Math.ceil(H / cell));
   const d = ctx2d(layer).getImageData(0, 0, W, H).data;
   const on = new Uint8Array(gw * gh);
+  const probes = [
+    [0.5, 0.5],
+    [0.2, 0.2],
+    [0.8, 0.2],
+    [0.2, 0.8],
+    [0.8, 0.8],
+  ];
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
       let hits = 0;
-      for (const [fx, fy] of [
-        [0.5, 0.5],
-        [0.2, 0.2],
-        [0.8, 0.2],
-        [0.2, 0.8],
-        [0.8, 0.8],
-      ]) {
+      for (const [fx, fy] of probes) {
         const x = Math.min(W - 1, Math.floor((gx + fx) * cell)),
           y = Math.min(H - 1, Math.floor((gy + fy) * cell));
         if (d[(y * W + x) * 4 + 3] > 128) hits++;
@@ -212,6 +211,17 @@ export function zoneAnchors(layer, max = 4) {
       if (hits >= 3) on[gy * gw + gx] = 1;
     }
   }
+  return { on, gw, gh, cell };
+}
+
+/**
+ * The separate patches of a part (up to `max`, biggest first). Each has `x, y` (the covered
+ * spot nearest its middle), `cells` (candidate points well inside the patch, pixels) and
+ * the coverage grid (`grid`), so callouts can pick points whose lines avoid other parts.
+ */
+export function zonePatches(layer, max = 4) {
+  const grid = coverage(layer);
+  const { on, gw, gh, cell } = grid;
   const comp = new Int32Array(gw * gh).fill(-1);
   const comps = [];
   for (let i = 0; i < on.length; i++) {
@@ -244,9 +254,11 @@ export function zoneAnchors(layer, max = 4) {
   }
   comps.sort((a, b) => b.length - a.length);
   const biggest = comps[0]?.length ?? 0;
+  const center = (j) => ({ x: ((j % gw) + 0.5) * cell, y: (((j / gw) | 0) + 0.5) * cell });
+  const inner = (j) => [1, -1, gw, -gw].filter((o) => on[j + o]).length;
   const out = [];
   for (const cells of comps) {
-    if (out.length >= max || cells.length < Math.max(2, biggest * 0.12)) break;
+    if (out.length >= max || (out.length && cells.length < Math.max(2, biggest * 0.12))) break;
     let mx = 0,
       my = 0;
     for (const j of cells) {
@@ -255,33 +267,35 @@ export function zoneAnchors(layer, max = 4) {
     }
     mx /= cells.length;
     my /= cells.length;
-    // The covered cell nearest the middle, preferring cells with covered neighbours.
     let best = cells[0],
       bestD = Infinity;
     for (const j of cells) {
-      const x = j % gw,
-        y = (j / gw) | 0;
-      const inner = [1, -1, gw, -gw].filter((o) => on[j + o]).length;
-      const dd = Math.hypot(x - mx, y - my) - inner * 0.5;
+      const dd = Math.hypot((j % gw) - mx, ((j / gw) | 0) - my) - inner(j) * 0.5;
       if (dd < bestD) {
         bestD = dd;
         best = j;
       }
     }
-    out.push({ x: ((best % gw) + 0.5) * cell, y: (((best / gw) | 0) + 0.5) * cell });
-  }
-  if (!out.length && comps.length) {
-    const j = comps[0][0];
-    out.push({ x: ((j % gw) + 0.5) * cell, y: (((j / gw) | 0) + 0.5) * cell });
+    // Candidates: cells with all four neighbours covered (else any), at most ~40, spread out.
+    let cand = cells.filter((j) => inner(j) === 4);
+    if (!cand.length) cand = cells;
+    const step = Math.max(1, Math.floor(cand.length / 40));
+    out.push({ ...center(best), cells: cand.filter((_, i) => i % step === 0).map(center), grid });
   }
   return out;
 }
 
+/** A point inside each separate patch of a part, biggest patch first. */
+export function zoneAnchors(layer, max = 4) {
+  return zonePatches(layer, max).map(({ x, y }) => ({ x, y }));
+}
+
 /**
  * Callout labels: returns `base` inside a wide dark border. Each item's name (with a
- * color swatch) sits in the left or right border, nearest its patches, with a line and
- * a dot to each of its `anchors` (pixel positions in `base`).
- * @param {{ name: string, hex?: string, anchors: { x: number, y: number }[] }[]} items
+ * color swatch) sits in the left or right border, with a line and a dot to each of its
+ * patches. Sides and points are chosen so lines cross as little of the other parts as
+ * possible and points of different parts keep apart.
+ * @param {{ name: string, hex?: string, patches?: ReturnType<typeof zonePatches>, anchors?: { x: number, y: number }[] }[]} items
  */
 export function drawCallouts(base, items) {
   const W = base.width,
@@ -290,8 +304,10 @@ export function drawCallouts(base, items) {
   const probe = ctx2d(createCanvas(1, 1));
   probe.font = `bold ${fs}px system-ui, sans-serif`;
   const textW = Math.max(fs * 4, ...items.map((it) => probe.measureText(it.name).width));
-  const border = Math.round(Math.min(textW + fs * 3.2, W * 0.9));
-  const pad = Math.round(fs * 0.8);
+  const lane = Math.max(4, Math.round(fs / 3));
+  const gutter = lane * (items.length + 2); // jog columns between the labels and the map
+  const border = Math.round(Math.min(textW + fs * 2.6 + gutter, W * 0.9 + gutter));
+  const pad = Math.round(fs * 0.8 + lane * 6); // room for lines routed above / below the map
   const c = createCanvas(W + border * 2, H + pad * 2);
   const ctx = ctx2d(c);
   ctx.fillStyle = '#1b1f27';
@@ -301,26 +317,90 @@ export function drawCallouts(base, items) {
   ctx.lineWidth = 1;
   ctx.strokeRect(border - 0.5, pad - 0.5, W + 1, H + 1);
 
-  const placed = items
-    .filter((it) => it.anchors?.length)
-    .map((it) => {
-      const ax = it.anchors.reduce((s, a) => s + a.x, 0) / it.anchors.length;
-      const ay = it.anchors.reduce((s, a) => s + a.y, 0) / it.anchors.length;
-      return { ...it, ax, ay };
+  // Parts covering each grid cell (bit i = item i).
+  const g = items.find((it) => it.patches?.length)?.patches[0].grid;
+  let owner = null;
+  if (g) {
+    owner = new Uint32Array(g.gw * g.gh);
+    items.forEach((it, i) => {
+      const on = it.patches?.[0]?.grid.on;
+      if (!on) return;
+      for (let j = 0; j < on.length; j++) if (on[j]) owner[j] |= 1 << (i % 32);
     });
+  }
+  // Grid cells of other parts that the straight line (x0,y0)→(x1,y1) passes over.
+  const crossings = (i, x0, y0, x1, y1) => {
+    if (!owner) return 0;
+    const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (g.cell / 2));
+    let hits = 0;
+    for (let k = 0; k <= n; k++) {
+      const x = x0 + ((x1 - x0) * k) / n,
+        y = y0 + ((y1 - y0) * k) / n;
+      const gx = Math.floor(x / g.cell),
+        gy = Math.floor(y / g.cell);
+      if (gx < 0 || gy < 0 || gx >= g.gw || gy >= g.gh) continue;
+      const o = owner[gy * g.gw + gx];
+      if (o && !(o & (1 << (i % 32)))) hits++;
+    }
+    return hits;
+  };
+
+  // Choose a side and, per patch, a point and a route: 'level' (straight in from the side)
+  // or 'top' / 'bottom' (along the margin above or below the map, then straight down/up).
+  // Cost: other parts crossed, then lines running close to other lines, then length.
+  // Bigger parts choose first.
+  const chosen = [];
+  const order = items
+    .map((it, i) => ({ it, i, size: (it.patches ?? []).reduce((s, p) => s + p.cells.length, 0) }))
+    .sort((a, b) => b.size - a.size);
+  const near = g ? g.cell * 1.6 : 8;
+  const placed = [];
+  for (const { it, i } of order) {
+    const patches = it.patches ?? (it.anchors ?? []).map((a) => ({ ...a, cells: [a] }));
+    if (!patches.length) continue;
+    let best = null;
+    for (const side of ['left', 'right']) {
+      const edge = side === 'left' ? 0 : W;
+      let cost = 0;
+      const pts = [];
+      for (const p of patches) {
+        let pick = null,
+          pickCost = Infinity;
+        for (const q of p.cells) {
+          for (const route of ['level', 'top', 'bottom']) {
+            const cross =
+              route === 'level'
+                ? crossings(i, edge, q.y, q.x, q.y)
+                : crossings(i, q.x, route === 'top' ? 0 : H, q.x, q.y);
+            let crowd = 0;
+            for (const o of chosen) {
+              if (Math.hypot(o.x - q.x, o.y - q.y) < near * 2.5) crowd += 120;
+              if (route === 'level' && o.route === 'level' && o.side === side && Math.abs(o.y - q.y) < near)
+                crowd += 150;
+              if (route !== 'level' && o.route === route && Math.abs(o.x - q.x) < near) crowd += 150;
+            }
+            const len =
+              route === 'level' ? Math.abs(edge - q.x) : Math.abs(edge - q.x) + (route === 'top' ? q.y : H - q.y);
+            const cst = cross * 60 + crowd + len * 0.05 + (route === 'level' ? 0 : 8);
+            if (cst < pickCost) {
+              pickCost = cst;
+              pick = { x: q.x, y: q.y, route, side };
+            }
+          }
+        }
+        cost += pickCost;
+        pts.push(pick);
+      }
+      if (!best || cost < best.cost) best = { side, cost, pts };
+    }
+    chosen.push(...best.pts);
+    const ay =
+      best.pts.reduce((s, a) => s + (a.route === 'top' ? 0 : a.route === 'bottom' ? H : a.y), 0) / best.pts.length;
+    placed.push({ ...it, i, side: best.side, anchors: best.pts, ay });
+  }
+
   const rowH = fs * 1.9;
-  const sides = { left: [], right: [] };
-  for (const it of placed) (it.ax < W / 2 ? sides.left : sides.right).push(it);
-  // Balance the columns if one side has far more labels than fit.
-  const fit = Math.max(1, Math.floor((H + pad * 2) / rowH));
-  while (sides.left.length > fit && sides.left.length > sides.right.length + 1) {
-    sides.left.sort((a, b) => b.ax - a.ax);
-    sides.right.push(sides.left.shift());
-  }
-  while (sides.right.length > fit && sides.right.length > sides.left.length + 1) {
-    sides.right.sort((a, b) => a.ax - b.ax);
-    sides.left.push(sides.right.shift());
-  }
+  const sides = { left: placed.filter((p) => p.side === 'left'), right: placed.filter((p) => p.side === 'right') };
   for (const [side, list] of Object.entries(sides)) {
     list.sort((a, b) => a.ay - b.ay);
     // Rows as close to their patches' height as possible without overlapping.
@@ -330,27 +410,36 @@ export function drawCallouts(base, items) {
       y = it.ly;
     }
     const bottom = c.height - rowH / 2;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const limit = i === list.length - 1 ? bottom : list[i + 1].ly - rowH;
-      if (list[i].ly > limit) list[i].ly = limit;
+    for (let k = list.length - 1; k >= 0; k--) {
+      const limit = k === list.length - 1 ? bottom : list[k + 1].ly - rowH;
+      if (list[k].ly > limit) list[k].ly = limit;
     }
     for (const it of list) if (it.ly < rowH / 2) it.ly = rowH / 2;
-    for (const it of list) {
-      const left = side === 'left';
-      const boxW = border - fs * 1.2;
-      const bx = left ? fs * 0.6 : W + border + fs * 0.6;
-      const by = it.ly - fs * 0.8;
-      const edgeX = left ? bx + boxW : bx;
-      // Lines first (under the label boxes).
+    const left = side === 'left';
+    const boxW = border - fs * 0.6 - gutter;
+    const bx = left ? fs * 0.6 : W + border + fs * 0.6;
+    const edgeX = left ? bx + boxW : bx;
+    // Each label's lines leave it on their own lane (jog column / margin row), so lines of
+    // different labels never share a stretch.
+    list.forEach((it, k) => {
+      const ex = left ? border : border + W;
+      const jogX = ex + (left ? -1 : 1) * (lane * (k + 1));
       for (const a of it.anchors) {
         const tx = border + a.x,
           ty = pad + a.y;
+        const pts = [[edgeX, it.ly]];
+        if (a.route === 'level') {
+          pts.push([jogX, it.ly], [jogX, ty], [tx, ty]);
+        } else {
+          const my = a.route === 'top' ? pad - lane * (1 + (it.i % 5)) : pad + H + lane * (1 + (it.i % 5));
+          pts.push([jogX, it.ly], [jogX, my], [tx, my], [tx, ty]);
+        }
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        pts.forEach(([x, y], n) => (n ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
         ctx.strokeStyle = '#000000cc';
         ctx.lineWidth = Math.max(3, fs / 4);
-        ctx.beginPath();
-        ctx.moveTo(edgeX, it.ly);
-        ctx.lineTo(tx, ty);
         ctx.stroke();
         ctx.strokeStyle = it.hex ?? '#ffffff';
         ctx.lineWidth = Math.max(1.5, fs / 9);
@@ -363,6 +452,9 @@ export function drawCallouts(base, items) {
         ctx.strokeStyle = '#000000';
         ctx.stroke();
       }
+    });
+    for (const it of list) {
+      const by = it.ly - fs * 0.8;
       ctx.fillStyle = '#000000d9';
       ctx.fillRect(bx, by, boxW, fs * 1.6);
       ctx.strokeStyle = it.hex ?? '#ffffff';
