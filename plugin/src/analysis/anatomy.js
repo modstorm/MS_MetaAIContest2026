@@ -456,9 +456,23 @@ function splitHead(slot, data, zones, head) {
   const clusters = new Map();
   groups.forEach((g, i) => {
     const r = find(i);
-    if (!clusters.has(r)) clusters.set(r, { members: [], area: 0, front: 0, top: 0, y: 0 });
+    if (!clusters.has(r))
+      clusters.set(r, {
+        members: [],
+        area: 0,
+        front: 0,
+        top: 0,
+        y: 0,
+        box: [Infinity, Infinity, -Infinity, -Infinity],
+      });
     const c = clusters.get(r);
     c.members.push(g);
+    c.box = [
+      Math.min(c.box[0], g.box[0]),
+      Math.min(c.box[1], g.box[1]),
+      Math.max(c.box[2], g.box[2]),
+      Math.max(c.box[3], g.box[3]),
+    ];
     c.area += g.area;
     c.front += g.front;
     c.top += g.top;
@@ -484,10 +498,19 @@ function splitHead(slot, data, zones, head) {
   if (list.length < 2) return [['head', head]];
   // The face is the group with the most front-facing surface; the rest is hair.
   list.sort((a, b) => b.front / b.area - a.front / a.area);
-  const [face, ...others] = list;
-  const small = [...clusters.values()].filter((c) => !list.includes(c));
-  const out = [['face', pick(face.members.concat(small.flatMap((c) => c.members)))]];
-  others.forEach((c, i) => out.push([others.length > 1 ? `hair ${i + 1}` : 'hair', pick(c.members)]));
+  // Small groups (single strands, ears, bits) join the big group nearest to them in the
+  // texture: loose hair strands sit next to the hair, not the face.
+  const boxGap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
+  const members = list.map((c) => c.members.slice());
+  for (const c of clusters.values()) {
+    if (list.includes(c)) continue;
+    let best = 0;
+    for (let i = 1; i < list.length; i++) if (boxGap(c.box, list[i].box) < boxGap(c.box, list[best].box)) best = i;
+    members[best].push(...c.members);
+  }
+  const out = [['face', pick(members[0])]];
+  const others = members.slice(1);
+  others.forEach((m, i) => out.push([others.length > 1 ? `hair ${i + 1}` : 'hair', pick(m)]));
   return out;
 }
 

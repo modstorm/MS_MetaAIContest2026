@@ -51,6 +51,8 @@ import {
   fillSkinLeftovers,
   mapLimit,
   maskedMedian,
+  oneFaceOnly,
+  paintedSkin,
   maskRect,
   padToMuseAspect,
   partMask,
@@ -1062,6 +1064,8 @@ export class ReskinPlugin {
         ? maskedMedian(cropCanvas(original, faceJob.rect), cropCanvas(faceJob.mask, faceJob.rect))
         : null;
     const CLOTHED = new Set(['torso', 'arms', 'legs', 'hands', 'shoes']);
+    // Up to this share of skin is taken as leftovers; more is taken as meant (bare hands).
+    const COVERED_FRACTION = { torso: 0.6, arms: 0.6, legs: 0.6, hands: 0.35, shoes: 0.35 };
     report(
       0.2,
       'generate',
@@ -1111,8 +1115,14 @@ export class ReskinPlugin {
       signal.throwIfAborted();
       const painted = await this.toCanvas(img);
       const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
+      if (part.zone === 'face' && opts.oneFace !== false) {
+        // Small separate pieces of the face area (back of the head, ears) get the skin color,
+        // so a second face can never appear on them.
+        const n = oneFaceOnly(upright, crop, whiteMask(guide));
+        if (n) this.emit('warning', { message: `${part.name}: ${n} separate piece(s) set to the painted skin color.` });
+      }
       if (skin && CLOTHED.has(part.zone)) {
-        const f = fillSkinLeftovers(upright, whiteMask(guide), skin);
+        const f = fillSkinLeftovers(upright, whiteMask(guide), skin, { maxFraction: COVERED_FRACTION[part.zone] });
         if (f > 0.002)
           this.emit('warning', { message: `${part.name}: filled ${(f * 100).toFixed(1)}% skin-colored leftovers.` });
       }
@@ -1147,6 +1157,30 @@ export class ReskinPlugin {
       this.emit('warning', {
         message: `"${slot.name}": could not paint ${job.part.name} (${toError(r.reason).message}); it keeps its old colors.`,
       });
+    }
+    // Second skin pass with the painted skin color (a clown's white, a robot's metal): skin
+    // patches in clothing that Muse painted in the new skin color are filled too.
+    const faceDone = faceJob?.painted && !faceJob.reuse ? faceJob : null;
+    if (skin && faceDone && opts.fixSkinLeftovers !== false) {
+      const faceCrop = transformCanvas(greyedCrop(original, faceDone.mask, faceDone.rect), faceDone.orient);
+      const faceMaskU = whiteMask(transformCanvas(cropCanvas(faceDone.facing.canvas, faceDone.rect), faceDone.orient));
+      const newSkin = paintedSkin(faceDone.painted, faceCrop, faceMaskU, skin);
+      if (newSkin && Math.hypot(newSkin[0] - skin[0], newSkin[1] - skin[1], newSkin[2] - skin[2]) > 40) {
+        for (const job of jobs) {
+          if (!CLOTHED.has(job.part.zone) || job.reuse || job.keep || !job.painted) continue;
+          const piece = cropCanvas(out, job.rect);
+          const f = fillSkinLeftovers(piece, cropCanvas(job.mask, job.rect), newSkin, {
+            maxFraction: COVERED_FRACTION[job.part.zone],
+          });
+          if (f > 0.002) {
+            pasteInsideMask(out, piece, job.mask, job.rect);
+            this.emit('warning', {
+              message: `${job.part.name}: filled ${(f * 100).toFixed(1)}% patches in the new skin color.`,
+            });
+          }
+        }
+        if (live) live.needsUpdate = true;
+      }
     }
     // Hair made of strands (cards / spikes, each its own UV island) is shaded strand by
     // strand in the painted hair color, instead of keeping a pattern painted across it.

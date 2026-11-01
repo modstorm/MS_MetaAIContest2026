@@ -57,6 +57,14 @@ export const ASSET_CLASSES = [
         ],
       },
       {
+        match: /\b(arms?|sleeves?)\b/i,
+        rules: [
+          'Arms: long sleeves that cover the whole arm area from shoulder to wrist, all the way round, in the outfit fabric. No bare skin, no short sleeves, no cuffs halfway; the hands are a separate area.',
+          'The arm area is one arm unwrapped: side-by-side vertical strips (front, outer side, back, inner side) that wrap around the arm, shoulder at the top and wrist at the bottom, and the leftmost strip joins the rightmost one. Paint every strip as the same sleeve so they match where they meet; stripes go across all strips at the same heights.',
+          'Both arms often share this one piece of texture (mirrored), so keep it symmetric: no detail that belongs on only one arm, and no lettering.',
+        ],
+      },
+      {
         match: /\b(torso|chest|shirt|jacket|vest|coat|upper)\b/i,
         rules: [
           'Torso: paint only the garment body (front, sides, back). The arms and hands are separate areas: no sleeves, cuffs, gloves, arms or hands in this area, even at its edges. The garment covers the whole area, including the side strips and the top and bottom edges.',
@@ -66,6 +74,7 @@ export const ASSET_CLASSES = [
         match: /\b(pants|trousers|legs?|skirt|shorts|lower)\b/i,
         rules: [
           'Trousers cover each leg all the way round in the same fabric, including the outer and inner side strips; no skin shows anywhere on the legs. Fill the whole area edge to edge: do not draw the outline of a pair of trousers, shoes or feet.',
+          'Each leg is unwrapped as side-by-side vertical strips (front, outer side, back, inner side) that wrap around the leg, hip at the top and ankle at the bottom: paint all strips as the same fabric so they match where they meet.',
         ],
       },
     ],

@@ -339,6 +339,7 @@ export function reskinPartPrompt(
     lines.push(
       '- This part contains the face. Keep the eyes, nose and mouth exactly where they are now and repaint them in the theme.',
       '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes, never on the forehead or in the hair. Never draw a second pair of eyes or a second accessory.',
+      '- There is exactly one face: where the eyes, nose and mouth already are. Every other piece of this area (back and sides of the head, ears, neck, small separate pieces) is plain skin or hair, never a second face or a copy of the face.',
     );
   }
   if (extra) lines.push(extra);

@@ -265,3 +265,90 @@ export function fillSkinLeftovers(painted, mask, skin, { maxFraction = 0.35, tol
   ctx.putImageData(img, 0, 0);
   return frac;
 }
+
+/**
+ * One face only: in a face area made of several separate pieces (the face plus the back of
+ * the head, ears, neck…), only the biggest piece keeps the painted face. The other pieces
+ * get the painted skin color: the median of what the original skin pixels of the main piece
+ * became. `painted` and `original` are crops of the same size; `mask` is white on the area.
+ * Returns the number of pieces filled.
+ */
+export function oneFaceOnly(painted, original, mask, { tolerance = 40, maxShare = 0.6 } = {}) {
+  const w = painted.width,
+    h = painted.height;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const label = new Int32Array(w * h).fill(-1);
+  const sizes = [];
+  for (let i = 0; i < w * h; i++) {
+    if (m[i * 4] < 128 || label[i] >= 0) continue;
+    const id = sizes.length;
+    let n = 0;
+    const stack = [i];
+    label[i] = id;
+    while (stack.length) {
+      const j = stack.pop();
+      n++;
+      const x = j % w;
+      for (const k of [j - 1, j + 1, j - w, j + w]) {
+        if (k < 0 || k >= w * h) continue;
+        if ((k === j - 1 && x === 0) || (k === j + 1 && x === w - 1)) continue;
+        if (label[k] >= 0 || m[k * 4] < 128) continue;
+        label[k] = id;
+        stack.push(k);
+      }
+    }
+    sizes.push(n);
+  }
+  if (sizes.length < 2) return 0;
+  const main = sizes.indexOf(Math.max(...sizes));
+  const od = ctx2d(original).getImageData(0, 0, w, h).data;
+  const pctx = ctx2d(painted);
+  const img = pctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : 0);
+  const was = [[], [], []];
+  for (let i = 0; i < w * h; i += 2) if (label[i] === main) for (let c = 0; c < 3; c++) was[c].push(od[i * 4 + c]);
+  const skin = was.map(med);
+  const now = [[], [], []];
+  for (let i = 0; i < w * h; i += 2) {
+    if (label[i] !== main) continue;
+    if (Math.hypot(od[i * 4] - skin[0], od[i * 4 + 1] - skin[1], od[i * 4 + 2] - skin[2]) > tolerance) continue;
+    for (let c = 0; c < 3; c++) now[c].push(d[i * 4 + c]);
+  }
+  if (!now[0].length) return 0;
+  const newSkin = now.map(med);
+  const fill = new Set();
+  sizes.forEach((n, id) => {
+    if (id !== main && n < sizes[main] * maxShare) fill.add(id);
+  });
+  if (!fill.size) return 0;
+  for (let i = 0; i < w * h; i++) {
+    if (!fill.has(label[i])) continue;
+    d[i * 4] = newSkin[0];
+    d[i * 4 + 1] = newSkin[1];
+    d[i * 4 + 2] = newSkin[2];
+  }
+  pctx.putImageData(img, 0, 0);
+  return fill.size;
+}
+
+/**
+ * The skin color after painting: the median of `painted` where `original` (same size) was
+ * close to `skin` inside `mask`. Null when no skin pixels are found.
+ */
+export function paintedSkin(painted, original, mask, skin, tolerance = 40) {
+  const w = painted.width,
+    h = painted.height;
+  const d = ctx2d(painted).getImageData(0, 0, w, h).data;
+  const od = ctx2d(original).getImageData(0, 0, w, h).data;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const ch = [[], [], []];
+  const step = Math.max(1, Math.floor((w * h) / 40000));
+  for (let i = 0; i < w * h; i += step) {
+    if (m[i * 4] < 128) continue;
+    if (Math.hypot(od[i * 4] - skin[0], od[i * 4 + 1] - skin[1], od[i * 4 + 2] - skin[2]) > tolerance) continue;
+    for (let c = 0; c < 3; c++) ch[c].push(d[i * 4 + c]);
+  }
+  if (!ch[0].length) return null;
+  return ch.map((a) => a.sort((x, y) => x - y)[a.length >> 1]);
+}
