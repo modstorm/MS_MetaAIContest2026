@@ -1149,6 +1149,17 @@ try {
         g.fillRect(180, 0, 20, 100);
       });
       const text = f.frontSpanText(guide);
+      // Front split over both edges (wrap seam down the front): green 0-30 and 170-200.
+      const wrapped = mk(200, 100, (g) => {
+        g.fillStyle = '#2962ff';
+        g.fillRect(0, 0, 200, 100);
+        g.fillStyle = '#00c853';
+        g.fillRect(0, 0, 30, 100);
+        g.fillRect(170, 0, 30, 100);
+      });
+      const ws = f.frontSpan(wrapped);
+      const rolled = pp.rollCanvas(wrapped, Math.round(100 - (ws.start + ws.end + 1) / 2));
+      const center = Array.from(rolled.getContext('2d').getImageData(100, 50, 1, 1).data);
       // Two legs (0-90, 110-200) and a 10px piece between them painted gold.
       const mask = mk(200, 100, (g) => {
         g.fillStyle = '#000';
@@ -1166,10 +1177,11 @@ try {
       });
       const n = pp.plainNarrowSpans(painted, mask);
       const px = Array.from(painted.getContext('2d').getImageData(100, 50, 1, 1).data);
-      return { text, n, px };
+      return { text, n, px, center };
     }, root);
     assert.match(res.text, /65% of the width/);
     assert.equal(res.n, 1);
+    assert.deepEqual(res.center.slice(0, 3), [0x00, 0xc8, 0x53], 'wrapped front rolled to the middle');
     assert.deepEqual(res.px.slice(0, 3), [0x5a, 0x3a, 0x20]);
     await page.close();
   });

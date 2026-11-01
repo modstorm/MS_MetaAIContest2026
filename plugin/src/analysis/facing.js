@@ -462,8 +462,20 @@ export function facingStripsText(guide) {
  * Returns '' when there is no single clear front panel.
  */
 export function frontSpanText(guide) {
+  const span = frontSpan(guide);
+  if (!span) return '';
+  const w = guide.width;
+  const { start, end } = span;
+  const pct = (v) => Math.round((100 * v) / w);
+  const mid = (start + end + 1) / 2;
+  if (Math.abs(mid - w / 2) < w * 0.04) return ''; // already centered: nothing to say
+  return `The front of the body in image 1 is the band from ${pct(start)}% to ${pct(end + 1)}% of the image width (measured from the left edge). Its vertical centre line is at ${pct(mid)}% of the width, not at the middle of the image: put the garment's centre (opening, buttons, zip, placket) exactly on that line and keep the front design symmetric around it.`;
+}
+
+/** The single clear front panel of a facing map, left to right ({ start, end } in pixels), or null. */
+export function frontSpan(guide) {
   const { width: w, height: h } = guide;
-  if (w < 16 || h < 16) return '';
+  if (w < 16 || h < 16) return null;
   const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
   const step = Math.max(1, Math.floor(h / 200));
   const isFront = new Uint8Array(w);
@@ -488,11 +500,12 @@ export function frontSpanText(guide) {
     if (last && x - last.end <= gap) last.end = x;
     else runs.push({ start: x, end: x });
   }
+  // A front panel split over the left and right edges of the crop (the wrap seam runs
+  // down the front) is one panel: its end is given past the right edge (end >= w).
+  if (runs.length > 1 && runs[0].start <= gap && runs[runs.length - 1].end >= w - 1 - gap) {
+    const first = runs.shift();
+    runs[runs.length - 1].end = first.end + w;
+  }
   const big = runs.filter((r) => r.end - r.start + 1 >= w * 0.1);
-  if (big.length !== 1) return '';
-  const { start, end } = big[0];
-  const pct = (v) => Math.round((100 * v) / w);
-  const mid = (start + end + 1) / 2;
-  if (Math.abs(mid - w / 2) < w * 0.04) return ''; // already centered: nothing to say
-  return `The front of the body in image 1 is the band from ${pct(start)}% to ${pct(end + 1)}% of the image width (measured from the left edge). Its vertical centre line is at ${pct(mid)}% of the width, not at the middle of the image: put the garment's centre (opening, buttons, zip, placket) exactly on that line and keep the front design symmetric around it.`;
+  return big.length === 1 ? big[0] : null;
 }

@@ -347,6 +347,7 @@ export function reskinPartPrompt(
     lines.push(
       '- This part is the face texture itself: skin with the eyes, brows, nose and mouth exactly where they are now, at the same size. It is not a picture of the character: no portrait, body, clothes or background inside it.',
       '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes, never on the forehead or in the hair. Never draw a second pair of eyes or a second accessory.',
+      '- No hair, beard, sideburns or fur anywhere in this area: hair is a separate area. Everything around the eyes, nose and mouth is plain skin.',
       '- There is exactly one face: where the eyes, nose and mouth already are. Every other piece of this area (back and sides of the head, ears, neck, small separate pieces) is plain skin or hair, never a second face or a copy of the face.',
     );
   }

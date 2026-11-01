@@ -527,3 +527,14 @@ export function plainNarrowSpans(painted, mask, { maxRatio = 0.35 } = {}) {
   pctx.putImageData(img, 0, 0);
   return narrow.length;
 }
+
+/** Shifts a canvas horizontally by `dx` pixels, wrapping round (dx > 0 moves right). */
+export function rollCanvas(src, dx) {
+  const w = src.width;
+  const c = createCanvas(w, src.height);
+  const g = ctx2d(c);
+  const d = ((Math.round(dx) % w) + w) % w;
+  g.drawImage(src, d, 0);
+  g.drawImage(src, d - w, 0);
+  return c;
+}

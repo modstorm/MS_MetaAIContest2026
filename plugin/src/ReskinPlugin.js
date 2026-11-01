@@ -15,6 +15,7 @@ import {
   drawFacingMap,
   facingGridText,
   facingStripsText,
+  frontSpan,
   frontSpanText,
   facingShareText,
   facingSummary,
@@ -58,6 +59,7 @@ import {
   oneFaceOnly,
   paintedSkin,
   plainNarrowSpans,
+  rollCanvas,
   maskRect,
   padToMuseAspect,
   partMask,
@@ -1130,8 +1132,24 @@ export class ReskinPlugin {
         done++;
         return job.reuse;
       }
-      const crop = transformCanvas(greyedCrop(original, mask, rect), orient);
-      const guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
+      let crop = transformCanvas(greyedCrop(original, mask, rect), orient);
+      let guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
+      // Torso: the front panel is often off to one side of the crop and the image model
+      // always centers the garment, so the crop is rolled (wrapping round) to put the front
+      // in the middle, and rolled back after painting.
+      let roll = 0;
+      if (part.zone === 'torso' && opts.centerFront !== false) {
+        const fs = frontSpan(guide);
+        const d = fs ? Math.round(guide.width / 2 - (fs.start + fs.end + 1) / 2) : 0;
+        if (Math.abs(d) >= guide.width * 0.04) {
+          roll = d;
+          crop = rollCanvas(crop, roll);
+          guide = rollCanvas(guide, roll);
+        }
+        this.emit('warning', {
+          message: `${part.name}: ${fs ? (roll ? `front panel moved ${Math.round((100 * roll) / guide.width)}% to the center for painting` : 'front panel already centered') : 'no single front panel found'}.`,
+        });
+      }
       const padded = padToMuseAspect(crop);
       // Image 2 is a plain white mask; which way each area faces goes in as text, since the
       // image model copies the colors of a colored guide (side areas came out skin-toned).
@@ -1218,15 +1236,16 @@ export class ReskinPlugin {
         if (f > 0.002)
           this.emit('warning', { message: `${part.name}: filled ${(f * 100).toFixed(1)}% skin-colored leftovers.` });
       }
-      pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
-      job.painted = upright;
+      const final = roll ? rollCanvas(upright, -roll) : upright;
+      pasteInsideMask(out, untransformCanvas(final, orient), mask, rect);
+      job.painted = final;
       if (live) {
         live.needsUpdate = true;
         this.emit('partPainted', { slotId: slot.id, area: part.name, canvas: out });
       }
       done++;
       report(0.2 + (0.5 * done) / jobs.length, 'generate', `Painted ${part.name} (${done}/${jobs.length})`);
-      return upright;
+      return final;
     };
     const results = [];
     const rest = jobs.slice();
