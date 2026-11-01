@@ -731,6 +731,11 @@ export class ReskinPlugin {
   async finishSlot(slot, ctx) {
     const { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts } = ctx;
     let raw = ctx.raw;
+    const maps = []; // generated maps of this result, kept with it in the history
+    const emitMap = (kind, canvas) => {
+      maps.push({ slotId: slot.id, kind, canvas });
+      this.emit('textureUpdated', { slotId: slot.id, kind, canvas });
+    };
     signal.throwIfAborted();
     // Undo the upright transform so the texture matches the model's UVs again.
     if (orient && !isIdentity(orient)) raw = untransformCanvas(raw, orient);
@@ -758,7 +763,7 @@ export class ReskinPlugin {
       mat.color.set(0xffffff);
       mat.needsUpdate = true;
     }
-    this.emit('textureUpdated', { slotId: slot.id, kind: 'baseColor', canvas: baseColor });
+    emitMap('baseColor', baseColor);
 
     // ---- normal maps
     if (opts.normalMaps ?? true) {
@@ -775,7 +780,7 @@ export class ReskinPlugin {
           );
           tex = this.makeTexture(canvas, src ?? slot.texture, THREE.NoColorSpace, slot.uvChannel, !atlasMode);
           cache.set(key, tex);
-          this.emit('textureUpdated', { slotId: slot.id, kind: 'normal', canvas });
+          emitMap('normal', canvas);
         }
         mat.normalMap = tex;
         mat.needsUpdate = true;
@@ -798,7 +803,7 @@ export class ReskinPlugin {
           );
           tex = this.makeTexture(canvas, src ?? slot.texture, THREE.NoColorSpace, slot.uvChannel, !atlasMode);
           cache.set(key, tex);
-          this.emit('textureUpdated', { slotId: slot.id, kind: 'roughness', canvas });
+          emitMap('roughness', canvas);
         }
         const packed = snap.metalnessMap && snap.metalnessMap === snap.roughnessMap;
         mat.roughnessMap = tex;
@@ -809,7 +814,7 @@ export class ReskinPlugin {
     }
 
     report(1, 'apply', `Finished "${slot.name}"`);
-    return { slotId: slot.id, canvas: baseColor, raw, plan, prompt: usedPrompt };
+    return { slotId: slot.id, canvas: baseColor, raw, plan, prompt: usedPrompt, maps };
   }
 
   async auxMap(kind, theme, source, newBaseColor, signal, derive) {
@@ -1171,14 +1176,17 @@ export class ReskinPlugin {
     for (let vi = 0; vi < count; vi++) {
       const state = new Map(base);
       const partJobs = new Map();
+      const maps = [];
       for (const r of results) {
         const v = r.variants?.[vi] ?? r.variants?.[0] ?? r;
         for (const [mat, st] of v.state ?? []) state.set(mat, st);
         if (v.partJobs) partJobs.set(r.slotId, v.partJobs);
+        maps.push(...(v.maps ?? []));
       }
       this.applyState(state);
       const thumb = this.renderThumb();
       const entry = {
+        maps,
         id: `h${Date.now().toString(36)}${vi}`,
         prompt: theme,
         variant: vi,
@@ -1232,6 +1240,8 @@ export class ReskinPlugin {
       if (this.lastRun) this.lastRun.theme = e.prompt;
     }
     this.historyIndex = index;
+    // The generated maps of the shown result (none for the original).
+    this.emit('maps', { maps: index === -1 ? [] : this.history[index].maps });
     if (!silent) this.emit('history', this.historySummary());
     return true;
   }

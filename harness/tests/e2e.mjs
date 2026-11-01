@@ -178,7 +178,10 @@ try {
     assert.equal(h.index, 0);
     // Variations differ (different variation notes reach the provider; offline palettes hash the theme only,
     // so compare the stored states instead).
+    const mapOf = () => page.$eval('#generated [data-kind="baseColor"] canvas', (c) => c.toDataURL().length);
+    const first = await mapOf();
     await page.click('#variation-list button:nth-child(2)');
+    assert.notEqual(await mapOf(), first, 'generated maps follow the picked variation');
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 1);
     await page.screenshot({ path: `${outDir}08-variations.png` });
     await page.click('#run-cancel');
@@ -188,6 +191,7 @@ try {
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 0);
     await page.click('#history button.entry:nth-child(1)'); // original
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
+    assert.match(await page.textContent('#generated'), /Original textures/);
     await page.click('#history button.entry:nth-child(3)');
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));

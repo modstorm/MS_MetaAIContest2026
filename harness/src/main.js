@@ -104,6 +104,10 @@ plugin.onUpdate((e) => {
       localStorage.setItem(LESSONS_KEY, JSON.stringify(e.data));
       if (document.activeElement !== $('lessons')) $('lessons').value = lessonsToText(e.data);
       break;
+    case 'maps':
+      $('generated').innerHTML = e.data.maps.length ? '' : '<span class="muted">Original textures.</span>';
+      for (const m of e.data.maps) showGenerated(m.slotId, m.kind, m.canvas);
+      break;
     case 'history':
       renderHistory(e.data);
       break;
