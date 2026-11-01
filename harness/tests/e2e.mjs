@@ -1056,6 +1056,7 @@ try {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
     const edits = [];
+    const areaSplits = [];
     const chats = [];
     await page.route('https://api.meta.ai/v1/**', async (route) => {
       const req = route.request();
@@ -1068,6 +1069,10 @@ try {
           body: JSON.stringify(json),
         });
       if (req.url().endsWith('/chat/completions')) {
+        if (/Each texture area below is painted separately/.test(body.messages[0].content[0].text)) {
+          areaSplits.push(body);
+          return ok({ choices: [{ message: { content: '{"areas": {"Body": "brass-riveted brown leather"}}' } }] });
+        }
         chats.push(body);
         return ok({
           choices: [
@@ -1099,6 +1104,11 @@ try {
       return { repainted: r.passes[0].repainted, sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height] };
     }, glb);
     assert.equal(chats.length, 1);
+    assert.equal(areaSplits.length, 1, 'theme split per area once');
+    assert.ok(
+      edits.some((e) => /brass-riveted brown leather/.test(e.prompt)),
+      'area theme reaches the paint prompt',
+    );
     const images = chats[0].messages[0].content.filter((x) => x.type === 'image_url');
     assert.equal(images.length, 1, 'one combined review image');
     assert.match(chats[0].messages[0].content[0].text, /front 45°/);

@@ -346,7 +346,7 @@ export function splitAvatarZones(slot, part, anat) {
     torso: ['arms', 'legs'],
   };
   pending.sort((x, y) => x.r.area - y.r.area);
-  for (let i = 0; i < pending.length;) {
+  for (let i = 0; i < pending.length; ) {
     const z = pending[i];
     if (z.r.area / total >= 0.01 || pending.length === 1) {
       i++;

@@ -1,6 +1,8 @@
 import { MuseApiError, MuseClient, isContentPolicyError } from '../muse/MuseClient.js';
 import {
+  areaThemesPrompt,
   normalMapPrompt,
+  parseAreaThemes,
   parseLayoutPlan,
   reskinAtlasPrompt,
   roughnessMapPrompt,
@@ -104,6 +106,18 @@ export class MuseProvider {
       }
       throw err;
     }
+  }
+
+  /** One short surface description per area for the theme (see areaThemesPrompt). */
+  async areaThemes(req) {
+    const text = await this.client.chat({
+      reasoningEffort: this.fast ? 'minimal' : 'low',
+      signal: req.signal,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: areaThemesPrompt(req.theme, req.areas, req.subject) }] },
+      ],
+    });
+    return parseAreaThemes(text, req.areas);
   }
 
   async planLayout(req) {

@@ -986,6 +986,34 @@ export class ReskinPlugin {
    * (slightly grown) UV area, on top of a copy of the original atlas. Returns that canvas,
    * in the atlas's own orientation.
    */
+  /** Per-area theme descriptions (cached per theme + area list; failures fall back to the theme). */
+  async areaThemesFor(theme, names, plan, signal) {
+    if (!this.provider.areaThemes) return new Map();
+    this.areaThemeCache ??= new Map();
+    const key = `${theme}|${names.join(',')}`;
+    if (!this.areaThemeCache.has(key)) {
+      const p = this.timed('split theme per area', null, () =>
+        this.provider.areaThemes({ theme, areas: names, subject: plan?.subject, signal }),
+      ).then(
+        (m) => {
+          if (m.size)
+            this.emit('warning', { message: `Area themes: ${[...m].map(([n, d]) => `${n}: ${d}`).join(' | ')}` });
+          return m;
+        },
+        (err) => {
+          this.areaThemeCache.delete(key);
+          if (signal?.aborted) throw err;
+          this.emit('warning', {
+            message: `Could not split the theme per area (${err.message}); using the whole theme.`,
+          });
+          return new Map();
+        },
+      );
+      this.areaThemeCache.set(key, p);
+    }
+    return this.areaThemeCache.get(key);
+  }
+
   async paintByParts(slot, theme, parts, original, plan, opts, signal, report) {
     const W = original.width,
       H = original.height;
@@ -1052,6 +1080,9 @@ export class ReskinPlugin {
           .join(' ') || undefined
       );
     };
+    // One short surface description per area, so no area prompt describes the whole
+    // character (Muse then draws little portraits inside the areas). Shared by variations.
+    const areaThemes = opts.areaThemes === false ? new Map() : await this.areaThemesFor(theme, names, plan, signal);
     const out = copyCanvas(original);
     let done = 0;
     let styleRef = null;
@@ -1119,6 +1150,7 @@ export class ReskinPlugin {
           facingStrips: strips || undefined,
           styleRef: plain ? null : styleRef,
           subject: plain ? undefined : plan?.subject,
+          areaTheme: plain ? undefined : areaThemes.get(part.name),
           paint: plain ? undefined : regionPaint(part),
           others: names.filter((n) => n !== part.name),
           classRules: plain ? undefined : rules,

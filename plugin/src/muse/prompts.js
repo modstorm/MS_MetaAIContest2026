@@ -308,7 +308,7 @@ export function isFacePart(name) {
  */
 export function reskinPartPrompt(
   theme,
-  { partName, subject, paint, others, extra, facing, facingLayout, facingStrips, classRules, styleRef } = {},
+  { partName, subject, paint, others, extra, facing, facingLayout, facingStrips, classRules, styleRef, areaTheme } = {},
 ) {
   const face = isFacePart(partName);
   const lines = [
@@ -317,14 +317,16 @@ export function reskinPartPrompt(
     styleRef
       ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette and level of detail, but paint what belongs in this area (do not copy its garment or details here).'
       : '',
-    subject ? `The model is: ${subject}.` : '',
+    subject && !areaTheme ? `The model is: ${subject}.` : '',
     facing ? `On the model this area is ${facing}.` : '',
     facingLayout ? `Where each side is in image 1 (3x3 grid): ${facingLayout}.` : '',
     facingStrips
       ? `Image 1 is laid out as strips that wrap around the body part (exact, from the 3D model): ${facingStrips}. "Inner side" faces the other arm or leg (or the body), "outer side" faces away. Each strip is one straight column covering the full height of the area: fill every column edge to edge (no gaps, wedges or curved trouser-leg shapes between them). Neighbouring strips meet on the model, so the fabric continues across them; pockets, buttons and other front details go only inside front strips and never span two strips.`
       : '',
-    `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
-    "The theme may describe the whole character or object: use only what belongs on this area, at this area's scale.",
+    areaTheme
+      ? `Repaint every white-mask pixel of image 1 as: "${areaTheme}".`
+      : `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
+    "The theme may describe the whole character or object: use only what belongs on this area, at this area's scale. Never draw the character, a person, a figure or a portrait inside this area.",
     paint ? `For the ${partName}: ${paint}` : '',
     others?.length
       ? `The other areas (${others.slice(0, 8).join(', ')}) are painted separately in the same theme, so use one consistent palette and style.`
@@ -348,6 +350,37 @@ export function reskinPartPrompt(
   }
   if (extra) lines.push(extra);
   return lines.filter(Boolean).join('\n');
+}
+
+/**
+ * Splits a whole-model theme into one short surface description per texture area, so each
+ * area's image prompt never mentions the whole character (Muse otherwise draws a small
+ * portrait of the character inside the area).
+ */
+export function areaThemesPrompt(theme, areas, subject) {
+  return [
+    `A 3D model${subject ? ` (${subject})` : ''} is being repainted in this theme: "${theme}".`,
+    'Each texture area below is painted separately by an image model that only sees that area as a flat, unwrapped surface.',
+    'For each area write one short description (at most 20 words) of the surface material, colors and pattern that belong on that area only, in this theme.',
+    'Never mention the character, a person, a figure, a body or a scene. Describe only the material and details of that area (for the face: skin tone, makeup, facial features; for hair: hair color and texture).',
+    'Areas:',
+    ...areas.map((a) => `- ${a}`),
+    'Reply with JSON only: {"areas": {"exact area name": "description", ...}}',
+  ].join('\n');
+}
+
+/** Parses the area-theme reply into a Map of area name -> description. */
+export function parseAreaThemes(text, names) {
+  const o = looseJson(text);
+  const src = o && typeof o.areas === 'object' && o.areas ? o.areas : o;
+  const out = new Map();
+  if (!src || typeof src !== 'object') return out;
+  const lower = new Map(Object.entries(src).map(([k, v]) => [k.toLowerCase().trim(), v]));
+  for (const n of names) {
+    const v = lower.get(n.toLowerCase().trim());
+    if (typeof v === 'string' && v.trim()) out.set(n, v.trim().slice(0, 300));
+  }
+  return out;
 }
 
 /** Plain per-part fallback after a content-filter rejection. */

@@ -30,3 +30,26 @@ describe('looseJson', () => {
     expect(s.assetClass).toBe('avatar');
   });
 });
+
+import { parseAreaThemes, reskinPartPrompt } from '../src/muse/prompts.js';
+
+describe('parseAreaThemes', () => {
+  it('maps area names case-insensitively and drops unknown ones', () => {
+    const m = parseAreaThemes('```json\n{"areas": {"skin (Legs)": "brown tweed trousers", "other": "x"}}\n```', [
+      'Skin (legs)',
+      'Skin (face)',
+    ]);
+    expect(m.get('Skin (legs)')).toBe('brown tweed trousers');
+    expect(m.has('Skin (face)')).toBe(false);
+  });
+  it('part prompt uses the area theme and drops the whole-model subject', () => {
+    const p = reskinPartPrompt('steampunk boy with goggles', {
+      partName: 'legs',
+      subject: 'chibi boy',
+      areaTheme: 'brown tweed',
+    });
+    expect(p).toContain('"brown tweed"');
+    expect(p).not.toContain('chibi boy');
+    expect(p).not.toContain('goggles');
+  });
+});
