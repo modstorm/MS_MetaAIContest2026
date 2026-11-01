@@ -719,6 +719,21 @@ try {
     assert.deepEqual(Object.keys(lowPoly).sort(), oneNames.slice().sort(), JSON.stringify(lowPoly));
     assert.ok(lowPoly['Body (legs)'] > lowPoly['Body (arms)'], `legs vs arms: ${JSON.stringify(lowPoly)}`);
     assert.ok(lowPoly['Body (torso)'] > 0.15, `torso keeps its sides: ${JSON.stringify(lowPoly)}`);
+    // Hands that are their own UV islands are hands as a whole (palm and back too, not just the fingertips).
+    const glb5 = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, separateHands: true })));
+    });
+    const hands = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-hands' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      const r = p.idRegions(slot);
+      const share = Object.fromEntries(r.map((x) => [x.name, x.share]));
+      return { share, ratio: share['Body (hands)'] / (share['Body (hands)'] + share['Body (arms)']) };
+    }, glb5);
+    // Hand boxes are 0.35 of the 0.65 arm length (~53% of the arm area).
+    assert.ok(hands.ratio > 0.5, `whole hands: ${JSON.stringify(hands)}`);
     // Area map: names sit in a border, each with lines to points inside its own patches.
     const imageUtils = '/@fs' + fileURLToPath(new URL('../../plugin/src/texture/imageUtils.js', import.meta.url));
     const callouts = await page.evaluate(
@@ -885,6 +900,51 @@ try {
       assert.ok(lum(c.root) < lum(c.tip) * 0.85, `root darker than tip: ${JSON.stringify(c)}`);
       for (const p of [c.root, c.tip]) assert.ok(!(p[0] > 220 && p[1] > 190), `no yellow decal: ${p}`);
     }
+    await page.context().close();
+  });
+
+  await step('skin swatches keep their color unless the face skin changes', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    let faceColor = [204, 153, 153]; // the face keeps its skin…
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      const face = !isChat && /"Body \(face\)" area/.test(route.request().postDataJSON().prompt);
+      const png = makePng(32, 32, () => (face ? faceColor : [240, 210, 30])).toString('base64'); // …the rest goes yellow
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: png }] }),
+      });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, skinSwatch: true })));
+    });
+    const run = (theme) =>
+      page.evaluate(async (theme) => {
+        const p = window.reskin.plugin;
+        const warnings = [];
+        p.on('warning', (e) => warnings.push(e.message));
+        await p.postPrompt(theme, { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+        const slot = p.layout.slots.find((s) => s.texture);
+        const img = slot.materials[0].map.image;
+        const c = document.createElement('canvas');
+        c.width = img.width;
+        c.height = img.height;
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        return { swatch: Array.from(g.getImageData(0.345 * c.width, 0.115 * c.height, 1, 1).data), warnings };
+      }, theme);
+    await page.evaluate(async (bytes) => {
+      await window.reskin.plugin.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-swatch' });
+    }, glb);
+    const a = await run('steampunk');
+    const near = (p, c) => Math.abs(p[0] - c[0]) + Math.abs(p[1] - c[1]) + Math.abs(p[2] - c[2]) < 40;
+    assert.ok(near(a.swatch, [204, 153, 153]), `swatch kept skin: ${a.swatch} | ${a.warnings.join(' | ')}`);
+    faceColor = [60, 200, 90]; // a full head mask: the face skin turns green
+    const b = await run('green alien mask');
+    assert.ok(near(b.swatch, [60, 200, 90]), `swatch took the new skin color: ${b.swatch} | ${b.warnings.join(' | ')}`);
     await page.context().close();
   });
 

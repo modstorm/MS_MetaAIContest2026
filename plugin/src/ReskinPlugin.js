@@ -42,7 +42,7 @@ import {
   untransformCanvas,
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
-import { flattenTinyIslands, islandIdMap, padIslands } from './texture/islandPost.js';
+import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
 import {
   copyCanvas,
@@ -736,7 +736,11 @@ export class ReskinPlugin {
     const ctx = { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts };
     const done = [];
     for (let vi = 0; vi < raws.length; vi++) {
-      const r = await this.finishSlot(slot, { ...ctx, raw: raws[vi] });
+      const r = await this.finishSlot(slot, {
+        ...ctx,
+        raw: raws[vi],
+        partJobs: this.variantJobs[okIdx[vi]]?.get(slot.id),
+      });
       r.variant = vi;
       r.state = this.captureMaterials(slot.materials);
       r.partJobs = this.variantJobs[okIdx[vi]]?.get(slot.id);
@@ -765,6 +769,24 @@ export class ReskinPlugin {
       // Fingers, buttons and other tiny packed islands: one solid color each, no stray patterns.
       const n = flattenTinyIslands(baseColor, islandMap, opts.tinyIslandFraction ?? 0.002);
       if (n) this.emit('warning', { message: `"${slot.name}": cleaned up ${n} tiny island(s) to solid colors.` });
+    }
+    // Skin swatches (tiny skin-colored squares that color the rest of the head) keep their
+    // color unless the face's skin color changed.
+    const faceJob = ctx.partJobs?.jobs.find((j) => j.part.zone === 'face');
+    if (islandMap && original && faceJob && opts.keepSkinSwatches !== false) {
+      const sw = keepSkinSwatches(
+        baseColor,
+        resizeCanvas(original, width, height),
+        islandMap,
+        resizeCanvas(faceJob.mask, width, height),
+        { maxFraction: opts.tinyIslandFraction ?? 0.002 },
+      );
+      if (sw.swatches)
+        this.emit('warning', {
+          message: sw.recolored
+            ? `"${slot.name}": the skin color changed, so ${sw.swatches} skin swatch(es) took the new skin color.`
+            : `"${slot.name}": kept ${sw.swatches} skin swatch(es) at their original color.`,
+        });
     }
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);

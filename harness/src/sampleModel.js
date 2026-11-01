@@ -189,6 +189,8 @@ export async function buildAvatarTestGlb({
   touchingLegs = false,
   torsoColumns = 1,
   hairStrands = 0,
+  skinSwatch = false,
+  separateHands = false,
 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
@@ -215,14 +217,24 @@ export async function buildAvatarTestGlb({
     box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6, torsoColumns), // torsoColumns: vertex columns across (low-poly)
     box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
   ];
+  // skinSwatch: a small box on the upper back whose UVs are one tiny square (a color swatch).
+  if (skinSwatch) torso.push(box([0.1, 0.1, 0.02], [0, 1.4, -0.14], [0.33, 0.1, 0.36, 0.13]));
   const head = [
     box([0.24, 0.25, 0.24], [0, 1.725, 0], [0.5, 0.02, 0.7, 0.2], 4), // face
     box([0.26, 0.15, 0.26], [0, 1.925, 0], [0.75, 0.02, 0.98, 0.2], 2), // hair
   ];
-  const arms = [
-    box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
-    box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
-  ];
+  // separateHands: each hand (a long one: the last 0.35 of the arm) is its own UV island.
+  const arms = separateHands
+    ? [
+        box([0.1, 0.3, 0.1], [-0.35, 1.3, 0], [0.02, 0.4, 0.2, 0.6], 10),
+        box([0.1, 0.3, 0.1], [0.35, 1.3, 0], [0.25, 0.4, 0.43, 0.6], 10),
+        box([0.1, 0.35, 0.1], [-0.35, 0.975, 0], [0.02, 0.62, 0.2, 0.7], 6),
+        box([0.1, 0.35, 0.1], [0.35, 0.975, 0], [0.25, 0.62, 0.43, 0.7], 6),
+      ]
+    : [
+        box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
+        box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
+      ];
   const legs = [
     // touchingLegs: legs pressed together (the middle is filled all the way down).
     box([0.15, 0.85, 0.15], [touchingLegs ? -0.075 : -0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),

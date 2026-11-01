@@ -221,9 +221,11 @@ export function splitAvatarZones(slot, part, anat) {
     const meanY = ys / (c.area || 1);
     const meanX = lat / (c.area || 1);
     c.arms = meanX > anat.torsoHalfW * 1.05 && meanY > anat.minY + anat.H * 0.3;
-    // Legs before arms: hanging arms reach the hips, but leg islands sit lower on average.
+    // Below the hips it is a leg, unless it hangs well outside the torso (a hand or
+    // forearm at hip height); legs sit within the hip width.
+    const wide = meanX > anat.torsoHalfW * 1.15 && meanY > anat.minY + anat.H * 0.3;
     if (meanY < anat.minY + anat.H * 0.07) c.label = 'shoes';
-    else if (meanY < anat.crotchY) c.label = 'legs';
+    else if (meanY < anat.crotchY && !wide) c.label = 'legs';
     else c.label = c.arms ? 'arms' : 'torso';
     c.arms = c.label === 'arms';
   }
@@ -262,10 +264,27 @@ export function splitAvatarZones(slot, part, anat) {
         maxD = Math.max(maxD, dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s));
     }
     if (!(maxD > 0)) continue;
-    for (const [k, t] of armTris) {
-      const f = data[k].f;
-      const x = f.centroid[t * 3];
-      if (Math.sign(x - anat.cx) === s && dist(x, f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
+    // A UV island that starts past the forearm (or sits mostly at the far end) is a hand
+    // piece: the whole island is hand, so the back of the hand and the palm come with the
+    // fingers. Arms that are one island with their hand fall back to the far 20%.
+    for (const c of clusters.filter((x) => x.arms)) {
+      let lo = Infinity,
+        sum = 0,
+        area = 0;
+      const mine = c.tris.filter(([k, t]) => Math.sign(data[k].f.centroid[t * 3] - anat.cx) === s);
+      for (const [k, t] of mine) {
+        const f = data[k].f;
+        const dd = dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s);
+        lo = Math.min(lo, dd);
+        sum += dd * f.area[t];
+        area += f.area[t];
+      }
+      if (!mine.length) continue;
+      const whole = lo > maxD * 0.55 || sum / (area || 1) > maxD * 0.72;
+      for (const [k, t] of mine) {
+        const f = data[k].f;
+        if (whole || dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
+      }
     }
   }
 

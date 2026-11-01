@@ -195,3 +195,60 @@ export function padIslands(canvas, map, radius = 12, inset = true) {
   }
   ctx.putImageData(img, 0, 0);
 }
+
+/**
+ * Skin swatches: tiny islands that were skin-colored in the original (often little squares
+ * next to the face that give the rest of the head, ears or neck their skin color). They
+ * keep their original color unless the face's skin color itself changed (a full head mask,
+ * a clown, a robot): then they all take the new skin color, so the head stays one color.
+ * `faceMask` (white = face area) and `original` are the same size as `canvas`.
+ * Returns { swatches, recolored } (recolored: the new skin color, or null if kept).
+ */
+export function keepSkinSwatches(canvas, original, map, faceMask, { maxFraction = 0.002, tolerance = 40 } = {}) {
+  const { ids, counts, width, height } = map;
+  const limit = Math.max(4, Math.round(width * height * maxFraction));
+  const od = ctx2d(original).getImageData(0, 0, width, height).data;
+  const md = ctx2d(faceMask).getImageData(0, 0, width, height).data;
+  const ctx = ctx2d(canvas);
+  const img = ctx.getImageData(0, 0, width, height);
+  const d = img.data;
+  const median = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : 0);
+  const med3 = (ch) => ch.map(median);
+  const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < tolerance;
+
+  // Skin color of the original face, and what those skin pixels became.
+  const was = [[], [], []];
+  for (let i = 0; i < ids.length; i += 3) {
+    if (md[i * 4] < 128) continue;
+    for (let c = 0; c < 3; c++) was[c].push(od[i * 4 + c]);
+  }
+  if (!was[0].length) return { swatches: 0, recolored: null };
+  const skin = med3(was);
+  const now = [[], [], []];
+  for (let i = 0; i < ids.length; i += 3) {
+    if (md[i * 4] < 128) continue;
+    if (!near([od[i * 4], od[i * 4 + 1], od[i * 4 + 2]], skin)) continue;
+    for (let c = 0; c < 3; c++) now[c].push(d[i * 4 + c]);
+  }
+  const newSkin = now[0].length ? med3(now) : skin;
+  const changed = !near(newSkin, skin);
+
+  // Tiny islands that were skin-colored.
+  const samples = new Map();
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (!id || counts[id] > limit) continue;
+    let s = samples.get(id);
+    if (!s) samples.set(id, (s = [[], [], []]));
+    for (let c = 0; c < 3; c++) s[c].push(od[i * 4 + c]);
+  }
+  const swatch = new Set();
+  for (const [id, s] of samples) if (near(med3(s), skin)) swatch.add(id);
+  if (!swatch.size) return { swatches: 0, recolored: null };
+  for (let i = 0; i < ids.length; i++) {
+    if (!swatch.has(ids[i])) continue;
+    for (let c = 0; c < 3; c++) d[i * 4 + c] = changed ? newSkin[c] : od[i * 4 + c];
+  }
+  ctx.putImageData(img, 0, 0);
+  return { swatches: swatch.size, recolored: changed ? newSkin : null };
+}
