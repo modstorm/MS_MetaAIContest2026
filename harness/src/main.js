@@ -181,6 +181,8 @@ async function load(input, name) {
   try {
     const { model } = await plugin.postModel(input, { name });
     viewer.setContent(model.scene, model.gltf.animations);
+    if (viewer.clip)
+      log(`Playing animation "${viewer.clip.name || 'unnamed'}" (${model.gltf.animations.length} in file)`);
     $('empty-state').hidden = true;
     $('generated').innerHTML = '<span class="muted">Nothing generated yet.</span>';
     setLoaded(true);

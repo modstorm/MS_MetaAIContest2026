@@ -47,15 +47,17 @@ export class Viewer {
     this.renderer.setAnimationLoop(() => this.tick());
   }
 
+  /** Shows `obj`, playing its idle animation if it has one, else the first (kept in `this.clip`). */
   setContent(obj, animations = []) {
     if (this.content) this.scene.remove(this.content);
     this.mixer?.stopAllAction();
     this.content = obj;
     this.scene.add(obj);
     this.mixer = null;
-    if (animations.length) {
+    this.clip = pickIdleClip(animations);
+    if (this.clip) {
       this.mixer = new THREE.AnimationMixer(obj);
-      this.mixer.clipAction(animations[0]).play();
+      this.mixer.clipAction(this.clip).play();
     }
     this.frame(obj);
     this.setSpin(true);
@@ -117,4 +119,19 @@ export class Viewer {
     this.renderer.render(this.scene, this.camera);
     this.renderer.setScissorTest(false);
   }
+}
+
+/**
+ * The clip to play on load: one named idle (exactly "idle" first, then any name with
+ * "idle"), else a standing / breathing loop, else the first clip.
+ */
+export function pickIdleClip(animations = []) {
+  if (!animations.length) return null;
+  const name = (c) => (c.name ?? '').toLowerCase();
+  return (
+    animations.find((c) => /^(idle|anim[_ ]?idle|idle[_ ]?0*1?)$/.test(name(c).replace(/^.*[|:]/, ''))) ??
+    animations.find((c) => /idle/.test(name(c))) ??
+    animations.find((c) => /\b(stand(ing)?|breath(e|ing)?|rest)\b/.test(name(c))) ??
+    animations[0]
+  );
 }
