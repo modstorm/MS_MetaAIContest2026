@@ -50,6 +50,6 @@ describe('parseAreaThemes', () => {
     });
     expect(p).toContain('"brown tweed"');
     expect(p).not.toContain('chibi boy');
-    expect(p).not.toContain('goggles');
+    expect(p).not.toContain('steampunk boy');
   });
 });
