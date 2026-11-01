@@ -263,6 +263,12 @@ export function oneFaceOnly(painted, original, mask, { tolerance = 40, maxShare 
   }
   if (!now[0].length) return 0;
   const newSkin = now.map(med);
+  // Only when the face was painted as a face: most of its skin is now one color. (When the
+  // image model drew a picture instead, the "skin" is many colors and nothing is spread.)
+  let same = 0;
+  for (let k = 0; k < now[0].length; k++)
+    if (Math.hypot(now[0][k] - newSkin[0], now[1][k] - newSkin[1], now[2][k] - newSkin[2]) < tolerance) same++;
+  if (same / now[0].length < 0.6) return 0;
   const fill = new Set();
   sizes.forEach((n, id) => {
     if (id !== main && n < sizes[main] * maxShare) fill.add(id);

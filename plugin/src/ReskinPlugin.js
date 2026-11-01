@@ -999,7 +999,9 @@ export class ReskinPlugin {
     const prev = opts.fixes || locked.size ? this.lastPartJobs.get(slot.id) : null;
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
-    const STRIP_ZONES = new Set(['torso', 'arms', 'legs', 'hands', 'shoes']);
+    // Strip layouts are only read for limbs (sleeves, trouser legs); torso, hands and shoes
+    // are not laid out as clean wrap-around strips.
+    const STRIP_ZONES = new Set(['arms', 'legs']);
     const anatForStrips = regions.some((r) => STRIP_ZONES.has(r.zone)) ? this.anatomy() : null;
     for (const part of regions) {
       const mask = partMask(slot, part, W, H, grow);
@@ -1180,7 +1182,8 @@ export class ReskinPlugin {
     // Second skin pass with the painted skin color (a clown's white, a robot's metal): skin
     // patches in clothing that Muse painted in the new skin color are filled too.
     const faceDone = faceJob?.painted && !faceJob.reuse ? faceJob : null;
-    if (skin && faceDone && opts.fixSkinLeftovers !== false) {
+    // Off by default: when Muse paints the face wrongly, the "new skin" color is wrong too.
+    if (skin && faceDone && opts.fillNewSkin === true) {
       const faceCrop = transformCanvas(greyedCrop(original, faceDone.mask, faceDone.rect), faceDone.orient);
       const faceMaskU = whiteMask(transformCanvas(cropCanvas(faceDone.facing.canvas, faceDone.rect), faceDone.orient));
       const newSkin = paintedSkin(faceDone.painted, faceCrop, faceMaskU, skin);

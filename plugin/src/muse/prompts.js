@@ -324,6 +324,7 @@ export function reskinPartPrompt(
       ? `Image 1 is laid out as strips that wrap around the body part (exact, from the 3D model): ${facingStrips}. "Inner side" faces the other arm or leg (or the body), "outer side" faces away. Each strip is one straight column covering the full height of the area: fill every column edge to edge (no gaps, wedges or curved trouser-leg shapes between them). Neighbouring strips meet on the model, so the fabric continues across them; pockets, buttons and other front details go only inside front strips and never span two strips.`
       : '',
     `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
+    "The theme may describe the whole character or object: use only what belongs on this area, at this area's scale.",
     paint ? `For the ${partName}: ${paint}` : '',
     others?.length
       ? `The other areas (${others.slice(0, 8).join(', ')}) are painted separately in the same theme, so use one consistent palette and style.`
@@ -340,7 +341,7 @@ export function reskinPartPrompt(
   for (const r of classRules ?? []) lines.push(`- ${r}`);
   if (face) {
     lines.push(
-      '- This part contains the face. Keep the eyes, nose and mouth exactly where they are now and repaint them in the theme.',
+      '- This part is the face texture itself: skin with the eyes, brows, nose and mouth exactly where they are now, at the same size. It is not a picture of the character: no portrait, body, clothes or background inside it.',
       '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes, never on the forehead or in the hair. Never draw a second pair of eyes or a second accessory.',
       '- There is exactly one face: where the eyes, nose and mouth already are. Every other piece of this area (back and sides of the head, ears, neck, small separate pieces) is plain skin or hair, never a second face or a copy of the face.',
     );

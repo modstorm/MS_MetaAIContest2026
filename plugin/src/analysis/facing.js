@@ -430,7 +430,10 @@ export function facingStripsText(guide) {
   // A piece that repeats a direction is several limbs side by side (two trouser legs):
   // split it where a direction comes round again.
   const real = [];
-  for (const p of pieces.filter((x) => x.length)) {
+  const sides = new Set(['front', 'back', 'outer side', 'inner side']);
+  for (const p0 of pieces.filter((x) => x.length)) {
+    // Caps (top / bottom faces of cuffs) are not strips.
+    const p = p0.filter((x) => sides.has(x)).filter((x, i, a) => i === 0 || a[i - 1] !== x);
     let cur = [];
     for (const name of p) {
       if (cur.includes(name) && cur.length >= 3) {
@@ -444,6 +447,9 @@ export function facingStripsText(guide) {
   const strips = real.reduce((a, p) => a + p.length, 0);
   // Only worth saying for real strip layouts: several strips, each mostly one facing top to bottom.
   if (strips < 3 || purity / (n || 1) < 0.55) return '';
+  // Only clean layouts: one or two limbs, each 3-4 different sides. Anything else would
+  // mislead the image model more than it helps.
+  if (real.length > 2 || real.some((g) => g.length < 3 || g.length > 4 || new Set(g).size !== g.length)) return '';
   return `from left to right, ${strips} vertical strips${real.length > 1 ? ` in ${real.length} groups (one per limb), each wrapping all the way round` : ''}: ${real
     .map((p) => p.join(', '))
     .join(' | ')}`;

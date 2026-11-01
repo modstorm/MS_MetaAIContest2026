@@ -231,7 +231,12 @@ export function keepSkinSwatches(canvas, original, map, faceMask, { maxFraction 
     for (let c = 0; c < 3; c++) now[c].push(d[i * 4 + c]);
   }
   const newSkin = now[0].length ? med3(now) : skin;
-  const changed = !near(newSkin, skin);
+  // A changed skin counts only when the face skin became one consistent color (not a
+  // picture painted over the face).
+  let same = 0;
+  for (let k = 0; k < now[0].length; k++) if (near([now[0][k], now[1][k], now[2][k]], newSkin)) same++;
+  const consistent = now[0].length > 0 && same / now[0].length >= 0.6;
+  const changed = consistent && !near(newSkin, skin);
 
   // Tiny islands that were skin-colored.
   const samples = new Map();
