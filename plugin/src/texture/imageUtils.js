@@ -106,9 +106,12 @@ export function drawUvGuide(slot, width, height, opts = {}) {
     // Optional: only some UV islands of this mesh (a region of a part).
     const keep = opts.islands?.get(mesh);
     const islandOf = keep ? islandIdPerTriangle(src) : null;
+    const triKeep = opts.tris?.get(mesh);
+    if (opts.tris && !triKeep) continue;
     const path = new Path2D();
     for (let t = 0; t < tris; t++) {
       if (keep && !keep.has(islandOf[t])) continue;
+      if (triKeep && !triKeep[t]) continue;
       const pts = [];
       for (let k = 0; k < 3; k++) {
         const v = src.index ? src.index[t * 3 + k] : t * 3 + k;
@@ -152,6 +155,7 @@ export function drawPartMap(slot, parts, width, height, { atlas = null, labels =
     const layer = drawUvGuide(slot, c.width, c.height, {
       meshes: p.meshes,
       islands: p.islands,
+      tris: p.tris,
       fillColor: p.hex,
       wireframe: false,
       background: null,

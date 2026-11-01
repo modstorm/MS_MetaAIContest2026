@@ -81,8 +81,8 @@
  * @property {boolean} [useVisionPlanning] Ask the vision model to describe atlas regions first. Default true.
  * @property {number} [maxTextureSize] Longest side of generated textures. Default: source size, capped at 2048.
  * @property {string} [extraInstructions] Free text appended to the model prompt.
- * @property {boolean} [normalMaps] Regenerate / create normal maps. Default true.
- * @property {boolean} [roughnessMaps] Regenerate / create roughness maps. Default true.
+ * @property {boolean | 'always'} [normalMaps] Regenerate normal maps the model already has (default true); 'always' also adds them where missing.
+ * @property {boolean | 'always'} [roughnessMaps] Regenerate roughness maps the model already has (default true); 'always' also adds them where missing.
  * @property {number} [normalStrength] Strength of derived normal maps. Default 2.
  * @property {boolean} [fast] Provider speed mode (Muse: no web/image search, low reasoning, smaller uploads). Default: provider's setting (on).
  * @property {boolean} [localSmallParts] Tint small untextured parts from the new palette instead of a model call. Default true.

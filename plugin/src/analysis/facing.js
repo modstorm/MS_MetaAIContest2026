@@ -85,9 +85,12 @@ export function drawFacingMap(slot, part, width, height, { grow = 1 } = {}) {
     if (!f) continue;
     const keep = part.islands?.get(mesh);
     const islandOf = keep ? islandIdPerTriangle(src) : null;
+    const triKeep = part.tris?.get(mesh);
+    if (part.tris && !triKeep) continue;
     const paths = FACINGS.map(() => new Path2D());
     for (let t = 0; t < f.facing.length; t++) {
       if (keep && !keep.has(islandOf[t])) continue;
+      if (triKeep && !triKeep[t]) continue;
       const pts = [];
       for (let k = 0; k < 3; k++) {
         const v = vertexIndex(src, t, k);

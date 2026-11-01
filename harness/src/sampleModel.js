@@ -179,3 +179,49 @@ export async function buildPaddingTestGlb() {
   for (let i = 0; i < 10; i++) quad('Finger', [0.5 + i * 0.045, 0.45, 0.53 + i * 0.045, 0.48], 0.3 + i * 0.25);
   return exportGLB(root);
 }
+
+/**
+ * A blocky avatar for the body-zone test: "Body" = torso + neck + head + hair (one mesh),
+ * "Arms" = both arms including the hands (one mesh), "Legs". Each box has its own UV rect.
+ */
+export async function buildAvatarTestGlb() {
+  const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#c99';
+  g.fillRect(0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'avatar' });
+  const box = ([w, h, d], [x, y, z], rect, seg = 1) => {
+    const geom = new THREE.BoxGeometry(w, h, d, 1, seg, 1);
+    packUvs(geom, rect);
+    geom.translate(x, y, z);
+    return geom;
+  };
+  const mesh = (name, geoms) => {
+    const m = new THREE.Mesh(mergeGeometries(geoms), mat);
+    m.name = name;
+    return m;
+  };
+  const root = new THREE.Group();
+  root.add(
+    mesh('Body', [
+      box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6), // torso
+      box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
+      box([0.24, 0.25, 0.24], [0, 1.725, 0], [0.5, 0.02, 0.7, 0.2], 4), // head (face)
+      box([0.26, 0.15, 0.26], [0, 1.925, 0], [0.75, 0.02, 0.98, 0.2], 2), // hair
+    ]),
+    mesh('Arms', [
+      box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
+      box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
+    ]),
+    mesh('Legs', [
+      box([0.15, 0.9, 0.15], [-0.12, 0.45, 0], [0.5, 0.4, 0.7, 0.7], 6),
+      box([0.15, 0.9, 0.15], [0.12, 0.45, 0], [0.75, 0.4, 0.95, 0.7], 6),
+    ]),
+  );
+  return exportGLB(root);
+}

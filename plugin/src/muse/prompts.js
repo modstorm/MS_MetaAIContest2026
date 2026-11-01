@@ -205,6 +205,7 @@ export function parseSuggestion(text) {
 
 /** True for part names that hold a face (eyes, nose, mouth). */
 export function isFacePart(name) {
+  if (/\b(hair|hands?|body)\)/i.test(name ?? '')) return false; // a non-face zone of a head mesh
   return /\b(head|face|skull|helmet)\b/i.test(name ?? '');
 }
 

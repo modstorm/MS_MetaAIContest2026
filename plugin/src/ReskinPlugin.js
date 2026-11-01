@@ -19,6 +19,7 @@ import {
   splitPartRegions,
   whiteMask,
 } from './analysis/facing.js';
+import { avatarAnatomy, splitAvatarZones } from './analysis/anatomy.js';
 import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
@@ -202,6 +203,7 @@ export class ReskinPlugin {
       this.suggestionCache.clear();
       this.lastPartJobs.clear();
       this.regionCache.clear();
+      this.anatomyCache = undefined;
       this.idMapSaved = null;
       this.history = [];
       this.historyIndex = -1;
@@ -771,6 +773,8 @@ export class ReskinPlugin {
       const cache = new Map();
       for (const mat of slot.materials) {
         const src = this.snapshots.get(mat).normalMap;
+        // Only regenerate maps the model already has ('always' also creates new ones).
+        if (!src && opts.normalMaps !== 'always') continue;
         const key = src?.uuid ?? 'none';
         let tex = cache.get(key);
         if (!tex) {
@@ -794,6 +798,7 @@ export class ReskinPlugin {
       for (const mat of slot.materials) {
         const snap = this.snapshots.get(mat);
         const src = snap.roughnessMap;
+        if (!src && opts.roughnessMaps !== 'always') continue;
         const key = src?.uuid ?? 'none';
         let tex = cache.get(key);
         if (!tex) {
@@ -1026,7 +1031,7 @@ export class ReskinPlugin {
       // image model copies the colors of a colored guide (side areas came out skin-toned).
       const paddedGuide = padToMuseAspect(whiteMask(guide), { fill: '#000000' });
       const layout = facingGridText(guide);
-      const rules = this.rulesFor(opts.assetClass, [part.baseName ?? part.name]);
+      const rules = this.rulesFor(opts.assetClass, [part.name]);
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
           theme: t,
@@ -1273,13 +1278,21 @@ export class ReskinPlugin {
     return !this.busy;
   }
 
+  /** Neck height etc. of the loaded model (cached; see analysis/anatomy.js). */
+  anatomy() {
+    if (this.anatomyCache === undefined) this.anatomyCache = this.model ? avatarAnatomy(this.model.scene) : null;
+    return this.anatomyCache;
+  }
+
   /**
    * The areas of an atlas slot, each with its own color: every part, split into regions
    * when its UV islands sit in clearly separate groups. These are the areas painted one by
    * one, shown in the ID map, and named in the suggestion and review prompts.
    */
   idRegions(slot, opts = {}) {
-    const key = `${slot.id}|${opts.splitRegions !== false}|${opts.maxPaintAreas ?? 12}`;
+    const assetClass = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    opts = { ...opts, assetClass };
+    const key = `${slot.id}|${opts.splitRegions !== false}|${opts.maxPaintAreas ?? 12}|${assetClass}`;
     const hit = this.regionCache.get(key);
     if (hit) return hit;
     const regions = this.paintRegions(slot, slotParts(slot), opts);
@@ -1476,7 +1489,13 @@ export class ReskinPlugin {
     let left = max;
     parts.forEach((p, i) => {
       const remainingParts = parts.length - i - 1;
-      const split = left - remainingParts > 1 ? splitPartRegions(slot, p) : [p];
+      let split = [p];
+      if (left - remainingParts > 1) {
+        // Characters: body zones (head → face / hair, hands) from the 3D shape first.
+        const zones = opts.assetClass === 'avatar' ? splitAvatarZones(slot, p, this.anatomy()) : [p];
+        // Avatars keep each mesh whole apart from those zones (legs stay one "pants" area).
+        split = zones.length > 1 || opts.assetClass === 'avatar' ? zones : splitPartRegions(slot, p);
+      }
       const take = split.length <= left - remainingParts ? split : [p];
       out.push(...take);
       left -= take.length;

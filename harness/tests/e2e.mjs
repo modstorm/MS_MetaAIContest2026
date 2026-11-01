@@ -91,9 +91,10 @@ async function exportAndCheck(page, file) {
   const json = parseGlb(buf);
   const robot = json.materials.find((m) => m.name === 'robot_body');
   assert.ok(robot?.pbrMetallicRoughness?.baseColorTexture, 'base color texture exported');
-  assert.ok(robot.normalTexture, 'normal map exported');
-  assert.ok(robot.pbrMetallicRoughness.metallicRoughnessTexture, 'roughness map exported');
-  assert.ok(json.images.length >= 3, `expected >= 3 images, got ${json.images.length}`);
+  // The sample has no normal / roughness maps, so only the base color is regenerated.
+  assert.ok(!robot.normalTexture, 'no normal map added');
+  assert.ok(!robot.pbrMetallicRoughness.metallicRoughnessTexture, 'no roughness map added');
+  assert.ok(json.images.length >= 1, `expected >= 1 image, got ${json.images.length}`);
   return { buf, json, name: download.suggestedFilename() };
 }
 
@@ -154,7 +155,7 @@ try {
     await page.screenshot({ path: `${outDir}01-loaded.png` });
     await reskinViaPopup(page, 'molten lava rock with glowing magma veins');
     const kinds = await page.$$eval('#generated figure', (f) => f.map((x) => x.dataset.kind));
-    assert.ok(kinds.includes('baseColor') && kinds.includes('normal') && kinds.includes('roughness'), `maps: ${kinds}`);
+    assert.deepEqual(kinds, ['baseColor'], `maps: ${kinds}`); // no normal/roughness in the sample to regenerate
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${outDir}02-reskinned-offline.png` });
     exported = await exportAndCheck(page, 'offline.glb');
@@ -629,6 +630,27 @@ try {
     await page.context().close();
   });
 
+  await step('avatar body zones: face, hair and hands get their own areas', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb()));
+    });
+    const names = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-test' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      return { cls: p.resolveAssetClass({}), areas: p.idRegions(slot).map((r) => r.name) };
+    }, glb);
+    assert.equal(names.cls, 'avatar');
+    for (const n of ['Body (face)', 'Body (hair)', 'Body', 'Arms (hands)', 'Arms', 'Legs'])
+      assert.ok(names.areas.includes(n), `missing ${n}: ${names.areas.join(', ')}`);
+    await page.evaluate(() => window.reskin.plugin.showIdMap(true));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${outDir}10-avatar-zones.png` });
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
@@ -763,10 +785,8 @@ try {
     assert.equal(await page.evaluate(() => window.reskin.plugin.model.name), 'dropped-robot');
     // The reskinned export re-imports with its new textures intact.
     const slots = await page.evaluate(() => window.reskin.plugin.layout.slots.map((s) => s.otherMaps));
-    assert.ok(
-      slots.some((m) => m.includes('normalMap')),
-      'normal map survived round trip',
-    );
+    // The sample has no normal / roughness maps, so none are added (only existing ones are regenerated).
+    assert.ok(!slots.some((m) => m.includes('normalMap')), 'no normal map added');
     await page.context().close();
   });
 } finally {

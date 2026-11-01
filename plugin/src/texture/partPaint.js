@@ -16,6 +16,7 @@ export function partMask(slot, part, width, height, grow = 2) {
   return drawUvGuide(slot, width, height, {
     meshes: part.meshes,
     islands: part.islands,
+    tris: part.tris,
     fill: true,
     wireframe: false,
     fillColor: '#ffffff',
