@@ -15,6 +15,7 @@ import {
   drawFacingMap,
   facingGridText,
   facingStripsText,
+  frontSpanText,
   facingShareText,
   facingSummary,
   splitPartRegions,
@@ -53,8 +54,10 @@ import {
   fillSkinLeftovers,
   mapLimit,
   maskedMedian,
+  materialFill,
   oneFaceOnly,
   paintedSkin,
+  plainNarrowSpans,
   maskRect,
   padToMuseAspect,
   partMask,
@@ -1138,6 +1141,34 @@ export class ReskinPlugin {
       if (job.sides)
         this.emit('warning', { message: `${part.name} layout: ${strips || 'no clear vertical strips found'}.` });
       const rules = this.rulesFor(opts.assetClass, [part.name]);
+      const frontLine = part.zone === 'torso' ? frontSpanText(guide) : '';
+      if (frontLine) this.emit('warning', { message: `${part.name} front: ${frontLine.split(':')[0]}.` });
+      if (part.zone === 'hands' && opts.handsAsMaterial === true && this.provider.generateTexture) {
+        // Hand islands are tiny and look like little figures to the image model (it drew a
+        // shirt and trousers in them), so hands get a plain material: a seamless texture of
+        // the area theme, shaded by the original's light and dark (finger lines, nails).
+        const tex = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
+          this.provider.generateTexture({
+            theme: plain ? t : (areaThemes.get(part.name) ?? `${t}, hands (gloves or skin)`),
+            materialName: 'hand surface (glove material or skin)',
+            extraInstructions: 'Plain material only: no hands, fingers, clothes, figures or objects drawn on it.',
+            width: 256,
+            height: 256,
+            signal,
+          }),
+        );
+        signal.throwIfAborted();
+        const upright = materialFill(crop, whiteMask(guide), await this.toCanvas(tex));
+        pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
+        job.painted = upright;
+        if (live) {
+          live.needsUpdate = true;
+          this.emit('partPainted', { slotId: slot.id, area: part.name, canvas: out });
+        }
+        done++;
+        report(0.2 + (0.5 * done) / jobs.length, 'generate', `Painted ${part.name} (${done}/${jobs.length})`);
+        return upright;
+      }
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
           theme: t,
@@ -1154,7 +1185,9 @@ export class ReskinPlugin {
           paint: plain ? undefined : regionPaint(part),
           others: names.filter((n) => n !== part.name),
           classRules: plain ? undefined : rules,
-          extra: plain ? undefined : [opts.extraInstructions, job.note].filter(Boolean).join('\n') || undefined,
+          extra: plain
+            ? undefined
+            : [frontLine, opts.extraInstructions, job.note].filter(Boolean).join('\n') || undefined,
           plain,
           signal,
         }),
@@ -1167,6 +1200,12 @@ export class ReskinPlugin {
         // so a second face can never appear on them.
         const n = oneFaceOnly(upright, crop, whiteMask(guide));
         if (n) this.emit('warning', { message: `${part.name}: ${n} separate piece(s) set to the painted skin color.` });
+      }
+      if (STRIP_ZONES.has(part.zone) && opts.plainNarrowStrips !== false) {
+        // A narrow extra piece between two limbs (crotch / inseam strip) is plain fabric;
+        // Muse tends to paint it as a separate trim (a gold bar between the trouser legs).
+        const n = plainNarrowSpans(upright, whiteMask(guide));
+        if (n) this.emit('warning', { message: `${part.name}: ${n} narrow piece(s) set to the plain fabric color.` });
       }
       if (CLOTHED.has(part.zone) && part.zone !== 'hands' && opts.fixBackgroundLeftovers !== false) {
         // Dark wedges / background blobs Muse leaves inside clothing (e.g. between trouser legs).

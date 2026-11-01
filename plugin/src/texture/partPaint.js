@@ -435,3 +435,95 @@ export function fillBackgroundLeftovers(painted, mask, { maxFraction = 0.3, minS
   ctx.putImageData(img, 0, 0);
   return frac;
 }
+
+/**
+ * Fills the mask of `crop` with a tiled material texture, shaded by the original's
+ * light and dark (relative to its median), so creases and finger lines stay visible.
+ */
+export function materialFill(crop, mask, tex) {
+  const w = crop.width,
+    h = crop.height;
+  const out = createCanvas(w, h);
+  const octx = ctx2d(out);
+  const tile = Math.max(64, Math.round(Math.max(w, h) / 2));
+  const t = resizeCanvas(tex, tile, tile);
+  for (let y = 0; y < h; y += tile) for (let x = 0; x < w; x += tile) octx.drawImage(t, x, y);
+  const o = octx.getImageData(0, 0, w, h);
+  const src = ctx2d(crop).getImageData(0, 0, w, h).data;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const lum = (i) => 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
+  const ls = [];
+  for (let i = 0; i < w * h; i += 7) if (m[i * 4] >= 128) ls.push(lum(i * 4));
+  ls.sort((a, b) => a - b);
+  const med = Math.max(1, ls[ls.length >> 1] ?? 128);
+  for (let p = 0; p < w * h; p++) {
+    const i = p * 4;
+    if (m[i] < 128) {
+      o.data[i] = src[i];
+      o.data[i + 1] = src[i + 1];
+      o.data[i + 2] = src[i + 2];
+      o.data[i + 3] = src[i + 3];
+      continue;
+    }
+    const k = Math.min(1.35, Math.max(0.55, lum(i) / med));
+    for (let c = 0; c < 3; c++) o.data[i + c] = Math.min(255, o.data[i + c] * k);
+    o.data[i + 3] = 255;
+  }
+  octx.putImageData(o, 0, 0);
+  return out;
+}
+
+/**
+ * Narrow pieces between wider ones (e.g. a crotch / inseam strip between two trouser legs,
+ * laid out as its own column) are set to the median color of the wider pieces. Works on
+ * column spans of the mask. Returns the number of pieces changed.
+ */
+export function plainNarrowSpans(painted, mask, { maxRatio = 0.35 } = {}) {
+  const w = painted.width,
+    h = painted.height;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const pctx = ctx2d(painted);
+  const img = pctx.getImageData(0, 0, w, h);
+  const covered = (x) => {
+    let n = 0;
+    for (let y = 0; y < h; y++) if (m[(y * w + x) * 4] >= 128 && ++n >= 2) return true;
+    return false;
+  };
+  const spans = [];
+  for (let x = 0; x < w; x++) {
+    if (!covered(x)) continue;
+    const last = spans[spans.length - 1];
+    if (last && last.end === x - 1) last.end = x;
+    else spans.push({ start: x, end: x });
+  }
+  if (spans.length < 3) return 0;
+  const width = (s) => s.end - s.start + 1;
+  const maxW = Math.max(...spans.map(width));
+  const narrow = spans.filter((s, i) => i > 0 && i < spans.length - 1 && width(s) < maxW * maxRatio);
+  // Only between two wide pieces (two limbs side by side).
+  if (!narrow.length || spans.filter((s) => width(s) >= maxW * 0.6).length < 2) return 0;
+  const ch = [[], [], []];
+  for (const s of spans) {
+    if (narrow.includes(s)) continue;
+    for (let y = 0; y < h; y += 2)
+      for (let x = s.start; x <= s.end; x += 2) {
+        const i = (y * w + x) * 4;
+        if (m[i] < 128) continue;
+        for (let c = 0; c < 3; c++) ch[c].push(img.data[i + c]);
+      }
+  }
+  if (!ch[0].length) return 0;
+  const med = ch.map((a) => a.sort((x, y) => x - y)[a.length >> 1]);
+  for (const s of narrow)
+    for (let y = 0; y < h; y++)
+      for (let x = s.start; x <= s.end; x++) {
+        const i = (y * w + x) * 4;
+        if (m[i] < 128) continue;
+        img.data[i] = med[0];
+        img.data[i + 1] = med[1];
+        img.data[i + 2] = med[2];
+        img.data[i + 3] = 255;
+      }
+  pctx.putImageData(img, 0, 0);
+  return narrow.length;
+}

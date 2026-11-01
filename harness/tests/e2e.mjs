@@ -1126,6 +1126,54 @@ try {
     await page.context().close();
   });
 
+  await step('torso front line is found off-center; narrow middle piece between legs gets plain fabric', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const root = '/@fs' + fileURLToPath(new URL('../../plugin/src/', import.meta.url));
+    const res = await page.evaluate(async (root) => {
+      const f = await import(root + 'analysis/facing.js');
+      const pp = await import(root + 'texture/partPaint.js');
+      const mk = (w, h, draw) => {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        draw(c.getContext('2d'));
+        return c;
+      };
+      // Facing map: back (blue) 0-40%, front (green) 40-90%, side (yellow) 90-100%.
+      const guide = mk(200, 100, (g) => {
+        g.fillStyle = '#2962ff';
+        g.fillRect(0, 0, 80, 100);
+        g.fillStyle = '#00c853';
+        g.fillRect(80, 0, 100, 100);
+        g.fillStyle = '#ffd600';
+        g.fillRect(180, 0, 20, 100);
+      });
+      const text = f.frontSpanText(guide);
+      // Two legs (0-90, 110-200) and a 10px piece between them painted gold.
+      const mask = mk(200, 100, (g) => {
+        g.fillStyle = '#000';
+        g.fillRect(0, 0, 200, 100);
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, 90, 100);
+        g.fillRect(95, 0, 10, 100);
+        g.fillRect(110, 0, 90, 100);
+      });
+      const painted = mk(200, 100, (g) => {
+        g.fillStyle = '#5a3a20';
+        g.fillRect(0, 0, 200, 100);
+        g.fillStyle = '#d4a017';
+        g.fillRect(95, 0, 10, 100);
+      });
+      const n = pp.plainNarrowSpans(painted, mask);
+      const px = Array.from(painted.getContext('2d').getImageData(100, 50, 1, 1).data);
+      return { text, n, px };
+    }, root);
+    assert.match(res.text, /65% of the width/);
+    assert.equal(res.n, 1);
+    assert.deepEqual(res.px.slice(0, 3), [0x5a, 0x3a, 0x20]);
+    await page.close();
+  });
+
   await step('edge padding removes dark gaps; tiny islands become one solid color', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     // Mock paint: black background, red over the arm area, 1-texel red/yellow stripes elsewhere (64px -> 16px stripes).

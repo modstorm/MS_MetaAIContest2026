@@ -454,3 +454,45 @@ export function facingStripsText(guide) {
     .map((p) => p.join(', '))
     .join(' | ')}`;
 }
+
+/**
+ * Where the front of an area is, left to right, read from a facing map (green = front).
+ * Used for torsos, whose front panel is often not centered in the crop: the image model
+ * otherwise centers the garment opening in the image and it lands off the body's middle.
+ * Returns '' when there is no single clear front panel.
+ */
+export function frontSpanText(guide) {
+  const { width: w, height: h } = guide;
+  if (w < 16 || h < 16) return '';
+  const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
+  const step = Math.max(1, Math.floor(h / 200));
+  const isFront = new Uint8Array(w);
+  for (let x = 0; x < w; x++) {
+    let front = 0,
+      covered = 0;
+    for (let y = 0; y < h; y += step) {
+      const i = (y * w + x) * 4;
+      if (d[i] + d[i + 1] + d[i + 2] < 30) continue;
+      const f = nearestFacing(d[i], d[i + 1], d[i + 2]);
+      if (f < 0) continue;
+      covered++;
+      if (f === 0) front++;
+    }
+    isFront[x] = covered >= 3 && front / covered >= 0.6 ? 1 : 0;
+  }
+  const runs = [];
+  const gap = Math.max(2, Math.round(w * 0.01));
+  for (let x = 0; x < w; x++) {
+    if (!isFront[x]) continue;
+    const last = runs[runs.length - 1];
+    if (last && x - last.end <= gap) last.end = x;
+    else runs.push({ start: x, end: x });
+  }
+  const big = runs.filter((r) => r.end - r.start + 1 >= w * 0.1);
+  if (big.length !== 1) return '';
+  const { start, end } = big[0];
+  const pct = (v) => Math.round((100 * v) / w);
+  const mid = (start + end + 1) / 2;
+  if (Math.abs(mid - w / 2) < w * 0.04) return ''; // already centered: nothing to say
+  return `The front of the body in image 1 is the band from ${pct(start)}% to ${pct(end + 1)}% of the image width (measured from the left edge). Its vertical centre line is at ${pct(mid)}% of the width, not at the middle of the image: put the garment's centre (opening, buttons, zip, placket) exactly on that line and keep the front design symmetric around it.`;
+}

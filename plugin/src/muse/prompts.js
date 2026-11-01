@@ -341,6 +341,8 @@ export function reskinPartPrompt(
     '- Ignore the grey areas; they will be discarded.',
   ];
   for (const r of classRules ?? []) lines.push(`- ${r}`);
+  if (!face && !/hair/i.test(partName ?? ''))
+    lines.push('- No head accessories here (goggles, glasses, hats, headbands): they belong on the head only.');
   if (face) {
     lines.push(
       '- This part is the face texture itself: skin with the eyes, brows, nose and mouth exactly where they are now, at the same size. It is not a picture of the character: no portrait, body, clothes or background inside it.',
@@ -362,6 +364,7 @@ export function areaThemesPrompt(theme, areas, subject) {
     `A 3D model${subject ? ` (${subject})` : ''} is being repainted in this theme: "${theme}".`,
     'Each texture area below is painted separately by an image model that only sees that area as a flat, unwrapped surface.',
     'For each area write one short description (at most 20 words) of the surface material, colors and pattern that belong on that area only, in this theme.',
+    'Head accessories (goggles, glasses, hats, headbands) belong to the face area only: never put them in another area.',
     'Never mention the character, a person, a figure, a body or a scene. Describe only the material and details of that area (for the face: skin tone, makeup, facial features; for hair: hair color and texture).',
     'Areas:',
     ...areas.map((a) => `- ${a}`),
