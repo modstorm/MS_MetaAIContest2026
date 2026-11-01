@@ -1020,6 +1020,38 @@ try {
     await page.context().close();
   });
 
+  await step('an avatar that is one single mesh is still painted zone by zone', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      if (!isChat) edits.push(route.request().postDataJSON());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(
+          isChat
+            ? { choices: [{ message: { content: '{}' } }] }
+            : { data: [{ b64_json: makePng().toString('base64') }] },
+        ),
+      });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ oneMesh: true })));
+    });
+    await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-one' });
+      await p.postPrompt('clown', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+    }, glb);
+    const areas = edits.map((e) => (e.prompt.match(/"([^"]+)" area/) ?? [])[1]).filter(Boolean);
+    assert.ok(areas.length >= 6, `painted zone by zone: ${areas.join(', ')} (${edits.length} calls)`);
+    assert.ok(areas.includes('Body (legs)') && areas.includes('Body (shoes)'), areas.join(', '));
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');

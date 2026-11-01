@@ -306,13 +306,12 @@ export function splitAvatarZones(slot, part, anat) {
     return { tris, area };
   };
 
-  const out = [];
+  const pending = [];
   const add = (label, r, zone = label) => {
-    if (r.area / total < 0.01) return;
-    out.push({ ...makeRegion(slot, part, label, r, total, data), zone });
+    if (r.area > 0) pending.push({ label, r, zone });
   };
   const head = regionOf((k, t) => zones[k][t] === 1);
-  if (head.area / total > 0.01) {
+  if (head.area > 0) {
     // Face vs hair: separate UV island groups inside the head zone.
     for (const [label, r] of splitHead(slot, data, zones, head)) add(label, r);
   }
@@ -334,6 +333,65 @@ export function splitAvatarZones(slot, part, anat) {
       label,
     );
   }
+  // Zones under 1% of the part are merged into a neighbouring zone (a wrist cuff into the
+  // hands or arms), so no triangle is left without a zone.
+  const NEXT = {
+    arms: ['torso', 'hands'],
+    hands: ['arms', 'torso'],
+    face: ['head', 'hair', 'torso'],
+    hair: ['head', 'face'],
+    head: ['face', 'hair'],
+    shoes: ['legs'],
+    legs: ['torso', 'shoes'],
+    torso: ['arms', 'legs'],
+  };
+  pending.sort((x, y) => x.r.area - y.r.area);
+  for (let i = 0; i < pending.length;) {
+    const z = pending[i];
+    if (z.r.area / total >= 0.01 || pending.length === 1) {
+      i++;
+      continue;
+    }
+    const others = pending.filter((o) => o !== z);
+    // Best: the zone that shares UV islands with it (the same piece of cloth, e.g. the rest
+    // of an arm column); else a neighbouring body zone; else the biggest.
+    const islandsOf = (r) => {
+      const set = new Set();
+      data.forEach((d, k) => {
+        const m = r.tris.get(d.mesh);
+        if (m) for (let t = 0; t < m.length; t++) if (m[t]) set.add(`${k}:${d.islands[t]}`);
+      });
+      return set;
+    };
+    const mine = islandsOf(z.r);
+    let shared = null,
+      sharedN = 0;
+    for (const o of others) {
+      let n = 0;
+      for (const id of islandsOf(o.r)) if (mine.has(id)) n++;
+      if (n > sharedN) {
+        sharedN = n;
+        shared = o;
+      }
+    }
+    const base = String(z.zone ?? '').replace(/ \d+$/, '');
+    const target =
+      shared ??
+      (NEXT[base] ?? [])
+        .map((n) => others.find((o) => String(o.zone ?? '').replace(/ \d+$/, '') === n))
+        .find(Boolean) ??
+      others.reduce((a, b) => (b.r.area > a.r.area ? b : a));
+    for (const [mesh, m] of z.r.tris) {
+      const t = target.r.tris.get(mesh);
+      if (!t) target.r.tris.set(mesh, m);
+      else for (let j = 0; j < m.length; j++) if (m[j]) t[j] = 1;
+    }
+    target.r.area += z.r.area;
+    pending.splice(i, 1);
+    pending.sort((x, y) => x.r.area - y.r.area);
+    i = 0;
+  }
+  const out = pending.map(({ label, r, zone }) => ({ ...makeRegion(slot, part, label, r, total, data), zone }));
   return out.length > 1 ? out : [{ ...part, zone: out[0]?.zone }];
 }
 

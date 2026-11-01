@@ -616,10 +616,12 @@ export class ReskinPlugin {
         original = textureToCanvas(slot.texture, maxSize);
         // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
         const rawParts = slotParts(slot);
+        // Part by part when the atlas has several areas: several named meshes, or one mesh
+        // whose islands form separate areas (an avatar's body zones in a single skin mesh).
         const byParts =
           (opts.paintMode ?? 'auto') !== 'atlas' &&
           typeof this.provider.reskinPart === 'function' &&
-          rawParts.length > 1;
+          (rawParts.length > 1 || this.idRegions(slot, opts).length > 1);
         if (byParts) {
           // Per-part mode: each part is painted on its own, upright, and pasted back inside its islands.
           parts = rawParts;

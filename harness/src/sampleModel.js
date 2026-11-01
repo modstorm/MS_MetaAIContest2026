@@ -193,6 +193,7 @@ export async function buildAvatarTestGlb({
   separateHands = false,
   unwrappedLegs = false,
   hairSharedUv = false,
+  oneMesh = false,
 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
@@ -304,9 +305,11 @@ export async function buildAvatarTestGlb({
   }
   if (hairStrands) head.pop(); // no hair box
   const root = new THREE.Group();
-  if (singleMesh) root.add(mesh('Body', [...torso, ...head, ...arms, ...legs]));
+  // oneMesh: everything, shoes included, in one mesh (like a single "ROOT SKIN" avatar).
+  if (oneMesh) root.add(mesh('Body', [...torso, ...head, ...arms, ...legs, shoeL, shoeR]));
+  else if (singleMesh) root.add(mesh('Body', [...torso, ...head, ...arms, ...legs]));
   else root.add(mesh('Body', [...torso, ...head]), mesh('Arms', arms), mesh('Legs', legs));
-  root.add(mesh('Shoes', [shoeL, shoeR]));
+  if (!oneMesh) root.add(mesh('Shoes', [shoeL, shoeR]));
   if (strands.length) root.add(mesh('Hair', strands));
   return exportGLB(root);
 }
