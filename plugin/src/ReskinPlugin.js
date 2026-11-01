@@ -1251,6 +1251,66 @@ export class ReskinPlugin {
           message: `${part.name}: restored ${restoreLost.length} face feature(s) from the original.`,
         });
       }
+      if (part.zone === 'torso' && opts.frontPanelPass !== false) {
+        // Muse centers a garment in whatever image it gets, and the torso crop holds front,
+        // side, back and side. The front panel is painted again on its own (matching the
+        // whole-torso paint as style reference), so the opening can only land on its middle.
+        const fs = frontSpan(guide);
+        if (fs && fs.end < guide.width && fs.end - fs.start + 1 < guide.width * 0.8) {
+          const fr = { x: fs.start, y: 0, width: fs.end - fs.start + 1, height: guide.height };
+          const fCrop = cropCanvas(crop, fr);
+          const fPad = padToMuseAspect(fCrop);
+          const fGuide = padToMuseAspect(whiteMask(cropCanvas(guide, fr)), { fill: '#000000' });
+          try {
+            const img = await this.withFilterRetry(`paint ${part.name} front`, slot, theme, (plain, t) =>
+              this.provider.reskinPart({
+                theme: t,
+                slotName: slot.name,
+                partName: `${part.name} (front panel)`,
+                image: fPad.canvas,
+                mask: fGuide.canvas,
+                facing: 'the front of the body, seen straight on',
+                styleRef: plain ? null : upright,
+                areaTheme: plain ? undefined : areaThemes.get(part.name),
+                classRules: plain ? undefined : rules,
+                extra: plain
+                  ? undefined
+                  : [
+                      'Image 1 is only the front of the torso (chest and belly), seen straight on, from shoulder line to waist. Image 3 is the whole torso already painted: use the same garment, material and colors.',
+                      "Paint the garment's front centred: its opening, buttons or zip exactly on the vertical centre line of image 1, symmetric left and right.",
+                      opts.extraInstructions,
+                      job.note,
+                    ]
+                      .filter(Boolean)
+                      .join('\n'),
+                plain,
+                signal,
+              }),
+            );
+            signal.throwIfAborted();
+            const fp = unpad(await this.toCanvas(img), fPad.canvas, fPad.box, fCrop.width, fCrop.height);
+            {
+              const ug = upright.getContext('2d');
+              const dst = ug.getImageData(fr.x, 0, fr.width, fr.height);
+              const src = fp.getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
+              const mk = whiteMask(cropCanvas(guide, fr)).getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
+              for (let i = 0; i < src.length; i += 4) {
+                if (mk[i] < 128) continue;
+                dst.data[i] = src[i];
+                dst.data[i + 1] = src[i + 1];
+                dst.data[i + 2] = src[i + 2];
+              }
+              ug.putImageData(dst, fr.x, 0);
+            }
+            this.emit('warning', { message: `${part.name}: front panel painted on its own, centred.` });
+          } catch (err) {
+            if (signal.aborted) throw err;
+            this.emit('warning', {
+              message: `${part.name}: front panel pass failed (${toError(err).message}); keeping the whole-torso paint.`,
+            });
+          }
+        }
+      }
       if (part.zone === 'face' && opts.oneFace !== false) {
         // Small separate pieces of the face area (back of the head, ears) get the skin color,
         // so a second face can never appear on them.
