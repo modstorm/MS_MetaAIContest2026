@@ -38,10 +38,17 @@ export const ASSET_CLASSES = [
           'Face: eyes, nose and mouth stay exactly where they are. Glasses, goggles or a mask are drawn once, over the existing eyes.',
         ],
       },
-      { match: /\bhair\b/i, rules: ['Hair: keep the strand flow and shape; no face or skin here.'] },
+      {
+        match: /\bhair\b/i,
+        rules: [
+          'Hair: paint it as hair (a hair color that suits the theme, with strand flow), never skin-colored. No goggles, hats or other accessories in the hair area; no face or skin here.',
+        ],
+      },
       {
         match: /\b(hands?|gloves?|fingers?)\b/i,
-        rules: ['Hands: if they get gloves, the gloves cover the whole hand area, front, back, sides and fingers.'],
+        rules: [
+          'Hands: if they get gloves, the gloves cover the whole hand area including the back of the hand, both sides, the palm and every finger.',
+        ],
       },
       {
         match: /\b(feet|foot|shoes?|boots?|sneakers?)\b/i,
@@ -49,7 +56,9 @@ export const ASSET_CLASSES = [
       },
       {
         match: /\b(pants|trousers|legs?|skirt|shorts|lower)\b/i,
-        rules: ['Trousers cover each leg all the way round; seams run down the sides.'],
+        rules: [
+          'Trousers cover each leg all the way round in the same fabric, including the outer and inner side strips; no skin shows anywhere on the legs.',
+        ],
       },
     ],
   },

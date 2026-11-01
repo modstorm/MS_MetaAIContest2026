@@ -278,3 +278,80 @@ export function splitPartRegions(slot, part, { gap = 0.02, minShare = 0.08, maxR
     };
   });
 }
+
+function nearestFacing(r, g, b) {
+  let best = -1,
+    bestD = 60 * 60 * 3; // only clear matches; antialiased edge pixels are skipped
+  FACINGS.forEach((f, i) => {
+    const n = parseInt(f.hex.slice(1), 16);
+    const d = (r - (n >> 16)) ** 2 + (g - ((n >> 8) & 255)) ** 2 + (b - (n & 255)) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  return best;
+}
+
+/**
+ * Describes a (cropped, upright) facing map in words on a 3×3 grid, e.g.
+ * "top-left: back; middle: front; right column: the model's left side". Sent as text
+ * instead of a colored guide image, because image models copy guide colors into the paint.
+ */
+export function facingGridText(guide, grid = 3) {
+  const { width: w, height: h } = guide;
+  const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
+  const counts = Array.from({ length: grid * grid }, () => new Float64Array(FACINGS.length));
+  const covered = new Float64Array(grid * grid);
+  const step = Math.max(1, Math.floor(Math.min(w, h) / 200)); // sample, fast enough at any size
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const i = (y * w + x) * 4;
+      if (d[i] + d[i + 1] + d[i + 2] < 30) continue;
+      const f = nearestFacing(d[i], d[i + 1], d[i + 2]);
+      if (f < 0) continue;
+      const c = Math.min(grid - 1, Math.floor((y / h) * grid)) * grid + Math.min(grid - 1, Math.floor((x / w) * grid));
+      counts[c][f]++;
+      covered[c]++;
+    }
+  }
+  const total = covered.reduce((a, b) => a + b, 0) || 1;
+  const rows = ['top', 'middle', 'bottom'];
+  const cols = ['left', 'center', 'right'];
+  const cells = [];
+  for (let c = 0; c < grid * grid; c++) {
+    if (covered[c] / total < 0.03) continue;
+    const ranked = [...counts[c]].map((n, i) => [n, i]).sort((a, b) => b[0] - a[0]);
+    const main = FACINGS[ranked[0][1]].label;
+    const second = ranked[1][0] / covered[c] > 0.3 ? ` and ${FACINGS[ranked[1][1]].label}` : '';
+    const where =
+      grid === 3 ? `${rows[Math.floor(c / 3)]}-${cols[c % 3]}`.replace('middle-center', 'center') : `cell ${c}`;
+    cells.push(`${where}: ${main}${second}`);
+  }
+  return cells.join('; ');
+}
+
+/** The facing map as a plain white-on-black mask (no colors for the image model to copy). */
+export function whiteMask(guide) {
+  const c = document.createElement('canvas');
+  c.width = guide.width;
+  c.height = guide.height;
+  const g = c.getContext('2d');
+  g.drawImage(guide, 0, 0);
+  const img = g.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] + d[i + 1] + d[i + 2] > 30 ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+/** "45% front, 40% back, 15% the model's left side" (no colors). */
+export function facingShareText(share) {
+  return FACINGS.filter((f) => share[f.id] >= 0.03)
+    .sort((a, b) => share[b.id] - share[a.id])
+    .map((f) => `${Math.round(share[f.id] * 100)}% ${f.label}`)
+    .join(', ');
+}

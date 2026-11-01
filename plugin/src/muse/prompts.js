@@ -216,35 +216,36 @@ export function isFacePart(name) {
  */
 export function reskinPartPrompt(
   theme,
-  { partName, subject, paint, others, extra, facing, classRules, styleRef } = {},
+  { partName, subject, paint, others, extra, facing, facingLayout, classRules, styleRef } = {},
 ) {
   const face = isFacePart(partName);
   const lines = [
     `Image 1 is the "${partName}" area of a 3D model's UV texture (base color / albedo), cut out on its own and shown upright. Flat grey (#808080) is not part of it.`,
-    "Image 2 is its facing map: each area is colored by which way it faces on the model. Green = front, blue = back, yellow = the model's left side, orange = the model's right side, magenta = top, cyan = bottom. Black = not part of this area.",
+    'Image 2 is its mask: white = this area, black = not part of it.',
     styleRef
       ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette, materials and level of detail exactly.'
       : '',
     subject ? `The model is: ${subject}.` : '',
-    facing ? `This area is ${facing}.` : '',
-    `Repaint the colored areas of image 2 (the non-grey areas of image 1) in this theme: "${theme}".`,
+    facing ? `On the model this area is ${facing}.` : '',
+    facingLayout ? `Where each side is in image 1 (3x3 grid): ${facingLayout}.` : '',
+    `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
     paint ? `For the ${partName}: ${paint}` : '',
     others?.length
       ? `The other areas (${others.slice(0, 8).join(', ')}) are painted separately in the same theme, so use one consistent palette and style.`
       : '',
     'Rules:',
     '- Keep every shape at exactly the same position, size and orientation, and keep the same framing. Do not crop, zoom, rotate, mirror or add borders.',
-    '- Cover the whole area edge to edge with the new design. Leave no patches of the old colors or skin showing, and no black or dark gaps.',
-    '- Front details (buttons, pockets, collars, emblems, buckles) only on front (green) areas. Back (blue) areas get the plain back of the same design.',
+    '- Cover the whole white-mask area edge to edge with the new material, including thin strips along the edges (these are the sides of the part). Leave no patches of the old colors or skin showing, and no black or dark gaps.',
+    '- Front details (buttons, plackets, pockets, collars, emblems, buckles) only where the grid says front. Back areas get the plain back of the same material with no buttons or emblems.',
     '- Keep each decoration (chains, straps, emblems) whole inside one connected area: separate areas are not next to each other on the model.',
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
-    '- Ignore the grey areas; they will be discarded. Do not draw the facing colors.',
+    '- Ignore the grey areas; they will be discarded.',
   ];
   for (const r of classRules ?? []) lines.push(`- ${r}`);
   if (face) {
     lines.push(
       '- This part contains the face. Keep the eyes, nose and mouth exactly where they are now and repaint them in the theme.',
-      '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes. Never draw a second pair of eyes or a second accessory.',
+      '- Draw any face accessory (goggles, glasses, mask) only once, directly over the existing eyes, never on the forehead or in the hair. Never draw a second pair of eyes or a second accessory.',
     );
   }
   if (extra) lines.push(extra);

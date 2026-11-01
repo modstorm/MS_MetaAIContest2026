@@ -11,7 +11,14 @@ import {
   slotParts,
   transformParts,
 } from './analysis/parts.js';
-import { drawFacingMap, facingSummary, splitPartRegions } from './analysis/facing.js';
+import {
+  drawFacingMap,
+  facingGridText,
+  facingShareText,
+  facingSummary,
+  splitPartRegions,
+  whiteMask,
+} from './analysis/facing.js';
 import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
@@ -1010,7 +1017,10 @@ export class ReskinPlugin {
       const crop = transformCanvas(greyedCrop(original, mask, rect), orient);
       const guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
       const padded = padToMuseAspect(crop);
-      const paddedGuide = padToMuseAspect(guide, { fill: '#000000' });
+      // Image 2 is a plain white mask; which way each area faces goes in as text, since the
+      // image model copies the colors of a colored guide (side areas came out skin-toned).
+      const paddedGuide = padToMuseAspect(whiteMask(guide), { fill: '#000000' });
+      const layout = facingGridText(guide);
       const rules = this.rulesFor(opts.assetClass, [part.baseName ?? part.name]);
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
@@ -1019,7 +1029,8 @@ export class ReskinPlugin {
           partName: part.name,
           image: padded.canvas,
           mask: paddedGuide.canvas,
-          facing: facingSummary(facing.share),
+          facing: facingShareText(facing.share),
+          facingLayout: layout,
           styleRef: plain ? null : styleRef,
           subject: plain ? undefined : plan?.subject,
           paint: plain ? undefined : regionPaint(part),
