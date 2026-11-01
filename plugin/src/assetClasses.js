@@ -74,6 +74,7 @@ export const ASSET_CLASSES = [
         match: /\b(pants|trousers|legs?|skirt|shorts|lower)\b/i,
         rules: [
           'Trousers cover each leg all the way round in the same fabric, including the outer and inner side strips; no skin shows anywhere on the legs. Fill the whole area edge to edge: do not draw the outline of a pair of trousers, shoes or feet.',
+          'Shoes are a separate area: the trouser fabric runs all the way to the bottom edge of every strip, with at most a hem. No shoes, boots, laces, soles, feet, faces or creatures anywhere on the legs.',
           'Each leg is unwrapped as side-by-side vertical strips (front, outer side, back, inner side) that wrap around the leg, hip at the top and ankle at the bottom: paint all strips as the same fabric so they match where they meet.',
         ],
       },

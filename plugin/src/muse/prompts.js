@@ -397,6 +397,7 @@ export function areaThemesPrompt(theme, areas, subject) {
     'Each texture area below is painted separately by an image model that only sees that area as a flat, unwrapped surface.',
     'For each area write one short description (at most 20 words) of the surface material, colors and pattern that belong on that area only, in this theme.',
     'Head accessories (goggles, glasses, hats, headbands) belong to the face area only: never put them in another area.',
+    'Never describe something that belongs to another listed area (for example no shoes or boots in the legs area, no gloves in the arms area, no shirt in the hands area).',
     'Never mention the character, a person, a figure, a body or a scene. Describe only the material and details of that area (for the face: skin tone, makeup, facial features; for hair: hair color and texture).',
     'Areas:',
     ...areas.map((a) => `- ${a}`),
