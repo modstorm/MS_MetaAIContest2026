@@ -1253,60 +1253,103 @@ export class ReskinPlugin {
       }
       if (part.zone === 'torso' && opts.frontPanelPass !== false) {
         // Muse centers a garment in whatever image it gets, and the torso crop holds front,
-        // side, back and side. The front panel is painted again on its own (matching the
-        // whole-torso paint as style reference), so the opening can only land on its middle.
-        const fs = frontSpan(guide);
-        if (fs && fs.end < guide.width && fs.end - fs.start + 1 < guide.width * 0.8) {
-          const fr = { x: fs.start, y: 0, width: fs.end - fs.start + 1, height: guide.height };
-          const fCrop = cropCanvas(crop, fr);
+        // side, back and side. The front and the back panel are each painted again on their
+        // own (matching the whole-torso paint as style reference): the opening can only land
+        // on the front's middle, and the back gets the plain back of the garment.
+        const skinShare = (c) => {
+          if (!skin) return 0;
+          const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          let n = 0,
+            t = 0;
+          for (let i = 0; i < d.length; i += 16) {
+            t++;
+            if (Math.hypot(d[i] - skin[0], d[i + 1] - skin[1], d[i + 2] - skin[2]) < 40) n++;
+          }
+          return n / (t || 1);
+        };
+        const panels = [
+          {
+            facing: 0,
+            label: 'front',
+            lines: [
+              'Image 1 is only the front of the torso (chest and belly), seen straight on, from shoulder line to waist. Image 3 is the whole torso already painted: use the same garment, material and colors.',
+              "Paint the garment's front centred: its opening, buttons or zip exactly on the vertical centre line of image 1, symmetric left and right.",
+            ],
+          },
+          {
+            facing: 1,
+            label: 'back',
+            lines: [
+              'Image 1 is only the back of the torso, seen straight from behind, from shoulder line to waist. Image 3 is the whole torso already painted: use the same garment, material and colors.',
+              'Paint the plain back of that garment: no opening, no buttons, no zip, no lapels, no pockets, no collar front and no shirt showing through. At most a centre back seam or a belt.',
+            ],
+          },
+        ];
+        for (const panel of panels) {
+          const w = guide.width;
+          const sp0 = frontSpan(guide, panel.facing);
+          if (!sp0 || sp0.end - sp0.start + 1 >= w * 0.8) continue;
+          // Roll so the panel sits in the middle (a back panel is often split over the edges).
+          const d = Math.round(w / 2 - (sp0.start + sp0.end + 1) / 2);
+          const rCrop = d ? rollCanvas(crop, d) : crop;
+          const rGuide = d ? rollCanvas(guide, d) : guide;
+          const rUp = d ? rollCanvas(upright, d) : upright;
+          const sp = frontSpan(rGuide, panel.facing);
+          if (!sp || sp.end >= w) continue;
+          const fr = { x: sp.start, y: 0, width: sp.end - sp.start + 1, height: rGuide.height };
+          const fCrop = cropCanvas(rCrop, fr);
           const fPad = padToMuseAspect(fCrop);
-          const fGuide = padToMuseAspect(whiteMask(cropCanvas(guide, fr)), { fill: '#000000' });
+          const fGuide = padToMuseAspect(whiteMask(cropCanvas(rGuide, fr)), { fill: '#000000' });
           try {
-            const img = await this.withFilterRetry(`paint ${part.name} front`, slot, theme, (plain, t) =>
+            const img = await this.withFilterRetry(`paint ${part.name} ${panel.label}`, slot, theme, (plain, t) =>
               this.provider.reskinPart({
                 theme: t,
                 slotName: slot.name,
-                partName: `${part.name} (front panel)`,
+                partName: `${part.name} (${panel.label} panel)`,
                 image: fPad.canvas,
                 mask: fGuide.canvas,
-                facing: 'the front of the body, seen straight on',
-                styleRef: plain ? null : upright,
+                facing:
+                  panel.facing === 0
+                    ? 'the front of the body, seen straight on'
+                    : 'the back of the body, seen from behind',
+                styleRef: plain ? null : rUp,
                 areaTheme: plain ? undefined : areaThemes.get(part.name),
                 classRules: plain ? undefined : rules,
                 extra: plain
                   ? undefined
-                  : [
-                      'Image 1 is only the front of the torso (chest and belly), seen straight on, from shoulder line to waist. Image 3 is the whole torso already painted: use the same garment, material and colors.',
-                      "Paint the garment's front centred: its opening, buttons or zip exactly on the vertical centre line of image 1, symmetric left and right.",
-                      opts.extraInstructions,
-                      job.note,
-                    ]
-                      .filter(Boolean)
-                      .join('\n'),
+                  : [...panel.lines, opts.extraInstructions, job.note].filter(Boolean).join('\n'),
                 plain,
                 signal,
               }),
             );
             signal.throwIfAborted();
             const fp = unpad(await this.toCanvas(img), fPad.canvas, fPad.box, fCrop.width, fCrop.height);
-            {
-              const ug = upright.getContext('2d');
-              const dst = ug.getImageData(fr.x, 0, fr.width, fr.height);
-              const src = fp.getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
-              const mk = whiteMask(cropCanvas(guide, fr)).getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
-              for (let i = 0; i < src.length; i += 4) {
-                if (mk[i] < 128) continue;
-                dst.data[i] = src[i];
-                dst.data[i + 1] = src[i + 1];
-                dst.data[i + 2] = src[i + 2];
-              }
-              ug.putImageData(dst, fr.x, 0);
+            // A drawn face or person shows up as new skin-colored pixels: reject the pass then.
+            const added = skinShare(fp) - skinShare(fCrop);
+            if (added > 0.02)
+              throw new Error(`it drew ${(added * 100).toFixed(0)}% new skin-colored area (a face or person)`);
+            const ug = rUp.getContext('2d');
+            const dst = ug.getImageData(fr.x, 0, fr.width, fr.height);
+            const src = fp.getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
+            const mk = whiteMask(cropCanvas(rGuide, fr)).getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
+            for (let i = 0; i < src.length; i += 4) {
+              if (mk[i] < 128) continue;
+              dst.data[i] = src[i];
+              dst.data[i + 1] = src[i + 1];
+              dst.data[i + 2] = src[i + 2];
             }
-            this.emit('warning', { message: `${part.name}: front panel painted on its own, centred.` });
+            ug.putImageData(dst, fr.x, 0);
+            if (d) {
+              const back = rollCanvas(rUp, -d);
+              upright
+                .getContext('2d')
+                .putImageData(back.getContext('2d').getImageData(0, 0, back.width, back.height), 0, 0);
+            }
+            this.emit('warning', { message: `${part.name}: ${panel.label} panel painted on its own.` });
           } catch (err) {
             if (signal.aborted) throw err;
             this.emit('warning', {
-              message: `${part.name}: front panel pass failed (${toError(err).message}); keeping the whole-torso paint.`,
+              message: `${part.name}: ${panel.label} panel pass skipped (${toError(err).message}); keeping the whole-torso paint there.`,
             });
           }
         }

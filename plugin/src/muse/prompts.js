@@ -342,7 +342,10 @@ export function reskinPartPrompt(
   ];
   for (const r of classRules ?? []) lines.push(`- ${r}`);
   if (!face && !/hair/i.test(partName ?? ''))
-    lines.push('- No head accessories here (goggles, glasses, hats, headbands): they belong on the head only.');
+    lines.push(
+      '- No head accessories here (goggles, glasses, hats, headbands): they belong on the head only.',
+      '- No faces, heads, people, characters or portraits anywhere in this area: only the surface material and its details.',
+    );
   if (face) {
     lines.push(
       '- This part is the face texture itself: skin with the eyes, brows, nose and mouth exactly where they are now, at the same size. It is not a picture of the character: no portrait, body, clothes or background inside it.',

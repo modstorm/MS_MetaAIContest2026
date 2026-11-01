@@ -473,7 +473,7 @@ export function frontSpanText(guide) {
 }
 
 /** The single clear front panel of a facing map, left to right ({ start, end } in pixels), or null. */
-export function frontSpan(guide) {
+export function frontSpan(guide, facing = 0) {
   const { width: w, height: h } = guide;
   if (w < 16 || h < 16) return null;
   const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
@@ -488,7 +488,7 @@ export function frontSpan(guide) {
       const f = nearestFacing(d[i], d[i + 1], d[i + 2]);
       if (f < 0) continue;
       covered++;
-      if (f === 0) front++;
+      if (f === facing) front++;
     }
     isFront[x] = covered >= 3 && front / covered >= 0.6 ? 1 : 0;
   }
