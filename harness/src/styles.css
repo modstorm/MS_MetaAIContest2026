@@ -608,3 +608,44 @@ button.on {
 .history button.entry {
   min-width: 0;
 }
+
+.zones {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.zone {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.zone .swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex: none;
+  border: 1px solid #0006;
+}
+.zone .zone-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zone .zone-lock {
+  padding: 0 6px;
+  background: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.zone.locked .zone-name {
+  opacity: 0.6;
+}
+.zone.locked .zone-lock {
+  border-color: #fff3;
+}
+.small {
+  font-size: 11px;
+  font-weight: normal;
+}

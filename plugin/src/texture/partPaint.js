@@ -155,3 +155,113 @@ export async function mapLimit(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
+
+/** Median color of `src` pixels where `mask` (same size, white = in) is set; null if none. */
+export function maskedMedian(src, mask) {
+  const w = src.width,
+    h = src.height;
+  const d = ctx2d(src).getImageData(0, 0, w, h).data;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const ch = [[], [], []];
+  const step = Math.max(1, Math.floor((w * h) / 40000));
+  for (let i = 0; i < w * h; i += step) {
+    if (m[i * 4] < 128 || m[i * 4 + 3] < 128) continue;
+    ch[0].push(d[i * 4]);
+    ch[1].push(d[i * 4 + 1]);
+    ch[2].push(d[i * 4 + 2]);
+  }
+  if (!ch[0].length) return null;
+  return ch.map((a) => a.sort((x, y) => x - y)[a.length >> 1]);
+}
+
+/**
+ * Skin leftovers: in a clothing area, pixels that came back skin-colored (close to `skin`)
+ * are refilled from the surrounding paint, when they are only a small part of the area
+ * (below `maxFraction`; more than that is taken as intended, e.g. short sleeves).
+ * `mask` is white where the area is; `halo` pixels around each patch are refilled too. Returns the fraction of pixels refilled.
+ */
+export function fillSkinLeftovers(painted, mask, skin, { maxFraction = 0.35, tolerance = 48, halo = 2 } = {}) {
+  const w = painted.width,
+    h = painted.height;
+  const ctx = ctx2d(painted);
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const inside = new Uint8Array(w * h);
+  const bad = new Uint8Array(w * h);
+  let n = 0,
+    nBad = 0;
+  const tol2 = tolerance * tolerance;
+  for (let i = 0; i < w * h; i++) {
+    if (m[i * 4] < 128) continue;
+    inside[i] = 1;
+    n++;
+    const dr = d[i * 4] - skin[0],
+      dg = d[i * 4 + 1] - skin[1],
+      db = d[i * 4 + 2] - skin[2];
+    if (dr * dr + dg * dg + db * db < tol2) {
+      bad[i] = 1;
+      nBad++;
+    }
+  }
+  if (!n || !nBad) return 0;
+  const frac = nBad / n;
+  if (frac > maxFraction) return 0;
+  // Also refill a ring of `halo` pixels around each patch: its blended edge is skin-tinted too.
+  for (let ring = 0; ring < halo; ring++) {
+    const grow = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!inside[i] || bad[i]) continue;
+        if ((x > 0 && bad[i - 1]) || (x < w - 1 && bad[i + 1]) || (y > 0 && bad[i - w]) || (y < h - 1 && bad[i + w]))
+          grow.push(i);
+      }
+    }
+    for (const i of grow) bad[i] = 1;
+    nBad += grow.length;
+  }
+  // Grow the good paint into the bad pixels, one ring per pass.
+  const good = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) good[i] = inside[i] && !bad[i] ? 1 : 0;
+  let left = nBad;
+  for (let pass = 0; pass < 400 && left > 0; pass++) {
+    const add = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!bad[i] || good[i]) continue;
+        let r = 0,
+          g = 0,
+          b = 0,
+          c = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const j = yy * w + xx;
+            if (!good[j]) continue;
+            r += d[j * 4];
+            g += d[j * 4 + 1];
+            b += d[j * 4 + 2];
+            c++;
+          }
+        }
+        if (c) add.push(i, r / c, g / c, b / c);
+      }
+    }
+    if (!add.length) break;
+    for (let k = 0; k < add.length; k += 4) {
+      const i = add[k];
+      d[i * 4] = add[k + 1];
+      d[i * 4 + 1] = add[k + 2];
+      d[i * 4 + 2] = add[k + 3];
+      good[i] = 1;
+      left--;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return frac;
+}

@@ -98,6 +98,7 @@ plugin.onUpdate((e) => {
       log(`Asset type: ${e.data.label ?? e.data.id}`);
       break;
     case 'regions':
+      refreshZones();
       log(`Painting ${e.data.regions.length} areas: ${e.data.regions.map((r) => r.name).join(', ')}`);
       break;
     case 'lessons':
@@ -129,8 +130,51 @@ plugin.onUpdate((e) => {
     case 'loaded':
       renderLayout(e.data.layout);
       break;
+    case 'locks':
+      renderZones(e.data.areas);
+      break;
   }
 });
+
+// ------------------------------------------------------------------ zones + locks
+// Each paint area with its ID-map color. Locked zones keep their current paint when you
+// run a new prompt; only the unlocked ones are repainted.
+function refreshZones() {
+  try {
+    renderZones(plugin.listAreas());
+  } catch (err) {
+    log(`Zones unavailable: ${err.message}`, 'warn');
+  }
+}
+
+function renderZones(areas) {
+  const box = $('zones');
+  box.innerHTML = '';
+  $('zones-section').hidden = !areas.length;
+  const n = areas.filter((a) => a.locked).length;
+  $('zones-note').textContent = n ? `${n} locked, ${areas.length - n} will repaint` : 'click 🔓 to keep a zone';
+  for (const a of areas) {
+    const row = document.createElement('div');
+    row.className = `zone${a.locked ? ' locked' : ''}`;
+    row.dataset.name = a.name;
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = a.hex;
+    sw.title = a.color;
+    const label = document.createElement('span');
+    label.className = 'zone-name';
+    label.textContent = a.name;
+    const btn = document.createElement('button');
+    btn.className = 'zone-lock';
+    btn.textContent = a.locked ? '🔒' : '🔓';
+    btn.title = a.locked
+      ? 'Locked: keeps its paint. Click to unlock.'
+      : 'Click to lock: keeps its paint on the next prompt.';
+    btn.onclick = () => plugin.setLocked(a.name, !a.locked);
+    row.append(sw, label, btn);
+    box.append(row);
+  }
+}
 
 // ------------------------------------------------------------------ loading
 async function load(input, name) {
@@ -140,6 +184,7 @@ async function load(input, name) {
     $('empty-state').hidden = true;
     $('generated').innerHTML = '<span class="muted">Nothing generated yet.</span>';
     setLoaded(true);
+    refreshZones();
     openPrompt(); // the prompt pops up as soon as a model is in
   } catch (err) {
     log(`Load failed: ${err.message}`, 'err');

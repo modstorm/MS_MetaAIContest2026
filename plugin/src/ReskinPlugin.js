@@ -45,7 +45,9 @@ import {
   copyCanvas,
   cropCanvas,
   greyedCrop,
+  fillSkinLeftovers,
   mapLimit,
+  maskedMedian,
   maskRect,
   padToMuseAspect,
   partMask,
@@ -115,6 +117,8 @@ export class ReskinPlugin {
   /** Painted results, newest last: { id, prompt, variant, of, state, partJobs, thumb }. */
   history = [];
   historyIndex = -1;
+  /** Locked areas (by area name): a new prompt keeps their current paint and repaints only the rest. */
+  locked = new Set();
   /**
    * Learned tips: general lessons from review passes, per asset class ('all' = every
    * class). They are added to future paint and suggestion prompts. Persist them with
@@ -203,6 +207,8 @@ export class ReskinPlugin {
       this.suggestionCache.clear();
       this.lastPartJobs.clear();
       this.regionCache.clear();
+      this.locked.clear();
+      this.areaClass = undefined;
       this.anatomyCache = undefined;
       this.idMapSaved = null;
       this.history = [];
@@ -449,6 +455,7 @@ export class ReskinPlugin {
       this.variantJobs = [];
 
       opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
+      this.areaClass = opts.assetClass;
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
 
       const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
@@ -950,7 +957,9 @@ export class ReskinPlugin {
       opts.orientation != null && opts.orientation !== 'auto' ? resolveOrientation(opts.orientation, parts) : null;
     const regions = this.idRegions(slot, opts);
     // Review & fix: areas Muse did not flag reuse their last painted image.
-    const prev = opts.fixes ? this.lastPartJobs.get(slot.id) : null;
+    // Locked areas keep their current paint (or the original colors if never painted).
+    const locked = new Set(opts.locked ?? this.locked);
+    const prev = opts.fixes || locked.size ? this.lastPartJobs.get(slot.id) : null;
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
     for (const part of regions) {
@@ -960,7 +969,12 @@ export class ReskinPlugin {
       const t = manual ?? chooseOrientation([part]);
       const facing = drawFacingMap(slot, part, W, H, { grow });
       const job = { part, mask, rect, facing, orient: isIdentity(t) ? null : t };
-      if (opts.fixes) {
+      if (locked.has(part.name)) {
+        const old = prevByName.get(part.name);
+        if (old) job.reuse = old.painted;
+        else job.keep = true;
+        job.locked = true;
+      } else if (opts.fixes) {
         const fix = opts.fixes[part.name];
         const old = prevByName.get(part.name);
         if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
@@ -1008,7 +1022,15 @@ export class ReskinPlugin {
         mat.needsUpdate = true;
       }
     }
-    const toPaint = jobs.filter((j) => !j.reuse).length;
+    const toPaint = jobs.filter((j) => !j.reuse && !j.keep).length;
+    if (!toPaint && locked.size) throw new Error(`Every area of "${slot.name}" is locked; unlock one to repaint it.`);
+    // Skin reference for leftover cleanup: the original face color (avatars only).
+    const faceJob = jobs.find((j) => j.part.zone === 'face') ?? jobs.find((j) => j.part.zone === 'head');
+    const skin =
+      faceJob && opts.fixSkinLeftovers !== false
+        ? maskedMedian(cropCanvas(original, faceJob.rect), cropCanvas(faceJob.mask, faceJob.rect))
+        : null;
+    const CLOTHED = new Set(['torso', 'arms', 'legs', 'hands', 'shoes']);
     report(
       0.2,
       'generate',
@@ -1018,6 +1040,10 @@ export class ReskinPlugin {
     );
     const paintOne = async (job) => {
       const { part, mask, rect, orient, facing } = job;
+      if (job.keep) {
+        done++;
+        return null;
+      }
       if (job.reuse) {
         pasteInsideMask(out, untransformCanvas(job.reuse, orient), mask, rect);
         job.painted = job.reuse;
@@ -1054,6 +1080,11 @@ export class ReskinPlugin {
       signal.throwIfAborted();
       const painted = await this.toCanvas(img);
       const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
+      if (skin && CLOTHED.has(part.zone)) {
+        const f = fillSkinLeftovers(upright, whiteMask(guide), skin);
+        if (f > 0.002)
+          this.emit('warning', { message: `${part.name}: filled ${(f * 100).toFixed(1)}% skin-colored leftovers.` });
+      }
       pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
       job.painted = upright;
       if (live) {
@@ -1322,12 +1353,12 @@ export class ReskinPlugin {
     for (const slot of this.layout?.slots ?? []) {
       if (!slot.texture || slot.tiled) continue;
       const { width, height } = fitSize(slot.width || size, slot.height || size, size);
-      const c = drawPartMap(slot, this.idRegions(slot), width, height);
+      const c = drawPartMap(slot, this.idRegions(slot, this.areaOpts()), width, height);
       const tex = new THREE.CanvasTexture(c);
       tex.flipY = false;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.channel = slot.uvChannel;
-      out.set(slot.id, { canvas: c, texture: tex, regions: this.idRegions(slot) });
+      out.set(slot.id, { canvas: c, texture: tex, regions: this.idRegions(slot, this.areaOpts()) });
     }
     return out;
   }
@@ -1421,6 +1452,44 @@ export class ReskinPlugin {
       await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, variants: 1, fixes, signal: opts.signal });
     }
     return { passes: out };
+  }
+
+  /** Region options matching the last run's asset class (so names and colors agree). */
+  areaOpts() {
+    return this.areaClass ? { assetClass: this.areaClass } : {};
+  }
+
+  /**
+   * All paint areas of the loaded model with their ID colors and lock state:
+   * [{ slotId, slotName, name, zone, color, hex, locked }].
+   */
+  listAreas() {
+    const out = [];
+    for (const slot of this.layout?.slots ?? []) {
+      if (!slot.texture || slot.tiled) continue;
+      for (const r of this.idRegions(slot, this.areaOpts())) {
+        out.push({
+          slotId: slot.id,
+          slotName: slot.name,
+          name: r.name,
+          zone: r.zone,
+          color: r.color,
+          hex: r.hex,
+          locked: this.locked.has(r.name),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Locks (or unlocks) areas by name; locked areas keep their paint on the next prompt. */
+  setLocked(names, on = true) {
+    for (const n of [].concat(names)) {
+      if (on) this.locked.add(n);
+      else this.locked.delete(n);
+    }
+    this.emit('locks', { locked: [...this.locked], areas: this.listAreas() });
+    return [...this.locked];
   }
 
   /** Names of all areas painted one by one in the last run. */

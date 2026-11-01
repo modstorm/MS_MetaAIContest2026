@@ -695,6 +695,85 @@ try {
     await page.context().close();
   });
 
+  await step('avatar: skin leftovers in clothing are filled; locked zones keep their paint', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Mock paint: dark blue (then red) with thin skin-colored (#c99) vertical stripes.
+    let fill = [20, 30, 120];
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      if (!isChat) edits.push(route.request().postDataJSON());
+      const png = makePng(64, 64, (x) => (x % 16 < 2 ? [204, 153, 153] : fill)).toString('base64');
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: png }] }),
+      });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true })));
+    });
+    // Counts skin-colored and fill-colored pixels inside a UV rect of the last painted atlas.
+    const probe = (rect) =>
+      page.evaluate((r) => {
+        const p = window.reskin.plugin;
+        const slot = p.layout.slots.find((s) => s.texture && s.name !== 'Shoes' && !/shoe/i.test(s.name));
+        const out = p.lastPartJobs.get(slot.id).out;
+        const [x0, y0, x1, y1] = r.map((v, i) => Math.round(v * (i % 2 ? out.height : out.width)));
+        const d = out.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data;
+        let skin = 0,
+          blue = 0,
+          red = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const near = (c) => Math.abs(d[i] - c[0]) + Math.abs(d[i + 1] - c[1]) + Math.abs(d[i + 2] - c[2]) < 40;
+          if (near([204, 153, 153])) skin++;
+          if (d[i + 2] > 90 && d[i] < 70) blue++;
+          if (d[i] > 150 && d[i + 1] < 80 && d[i + 2] < 80) red++;
+        }
+        return { skin, blue, red, n: d.length / 4 };
+      }, rect);
+    await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-skin' });
+      await p.postPrompt('cyberpunk', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+    }, glb);
+    const legsRect = [0.52, 0.42, 0.68, 0.68];
+    const torsoRect = [0.04, 0.04, 0.28, 0.28];
+    const legs1 = await probe(legsRect);
+    assert.equal(legs1.skin, 0, `legs still show skin: ${JSON.stringify(legs1)}`);
+    assert.ok(legs1.blue > legs1.n * 0.9, `legs painted: ${JSON.stringify(legs1)}`);
+    // Zones list in the side panel; lock the legs there and repaint in red.
+    await page.waitForSelector('#zones .zone[data-name="Body (legs)"]');
+    assert.equal(await page.locator('#zones .zone').count(), 7);
+    await page.click('#zones .zone[data-name="Body (legs)"] .zone-lock');
+    assert.deepEqual(await page.evaluate(() => [...window.reskin.plugin.locked]), ['Body (legs)']);
+    assert.match(await page.textContent('#zones-note'), /1 locked/);
+    fill = [200, 20, 20];
+    const before = edits.length;
+    await page.evaluate(() =>
+      window.reskin.plugin.postPrompt('lava', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+      }),
+    );
+    assert.equal(edits.length - before, 6, 'the locked zone is not sent to Muse');
+    assert.ok(!edits.slice(before).some((e) => /"Body \(legs\)" area/.test(e.prompt)));
+    const legs2 = await probe(legsRect);
+    const torso2 = await probe(torsoRect);
+    assert.ok(legs2.blue > legs2.n * 0.9 && legs2.red === 0, `locked legs kept: ${JSON.stringify(legs2)}`);
+    assert.ok(torso2.red > torso2.n * 0.9, `torso repainted: ${JSON.stringify(torso2)}`);
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
