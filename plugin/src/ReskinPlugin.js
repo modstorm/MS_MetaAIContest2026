@@ -219,6 +219,7 @@ export class ReskinPlugin {
       this.snapshots.clear();
       this.planCache.clear();
       this.suggestionCache.clear();
+      this.modelAnalysis = null;
       this.lastPartJobs.clear();
       this.regionCache.clear();
       this.locked.clear();
@@ -361,64 +362,104 @@ export class ReskinPlugin {
     const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
     try {
       if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
-      this.restoreSnapshots(); // study the original look
-      this.status('analyzing', 'Rendering six views of the model…');
-      this.emit('progress', { stage: 'plan', message: 'Rendering six views of the model', progress: 0.1 });
-      const { views, sheet } = renderAxisViews(this.model.scene, { size: opts.viewSize ?? 384 });
-      // The same views with every area in its own flat color (matching the atlas part map).
-      const idSheet = this.renderIdSheet({ size: Math.round((opts.viewSize ?? 384) * 0.75) });
-      this.emit('views', { views, sheet, idSheet });
+      // A model Muse already studied: reuse what it saw (subject, parts, regions, renders)
+      // and only ask for the new theme, text only.
+      const reuse = this.modelAnalysis && opts.reuseAnalysis !== false && this.provider.suggestFromAnalysis;
+      let raw, sheet, idSheet, views, atlasSlots;
+      if (reuse) {
+        const an = this.modelAnalysis;
+        ({ sheet, idSheet, views, atlasSlots } = an);
+        this.emit('views', { views, sheet, idSheet });
+        this.status('analyzing', `Reusing what Muse saw (${an.subject || 'this model'}); writing the new prompt…`);
+        this.emit('progress', {
+          stage: 'plan',
+          message: 'Writing the prompt from the earlier analysis',
+          progress: 0.3,
+        });
+        raw = await this.timed('suggest prompt (reused analysis)', null, () =>
+          this.provider.suggestFromAnalysis({
+            theme,
+            analysis: an,
+            lessons: this.lessonsFor(this.resolveAssetClass({ ...opts, suggestion: an })),
+            signal,
+          }),
+        );
+        raw.subject ||= an.subject;
+        raw.assetClass ||= an.assetClass;
+        if (!raw.parts?.length) raw.parts = an.parts;
+        if (!raw.atlases?.length) raw.atlases = an.atlases;
+      } else {
+        this.restoreSnapshots(); // study the original look
+        this.status('analyzing', 'Rendering six views of the model…');
+        this.emit('progress', { stage: 'plan', message: 'Rendering six views of the model', progress: 0.1 });
+        ({ views, sheet } = renderAxisViews(this.model.scene, { size: opts.viewSize ?? 384 }));
+        // The same views with every area in its own flat color (matching the atlas part map).
+        idSheet = this.renderIdSheet({ size: Math.round((opts.viewSize ?? 384) * 0.75) });
+        this.emit('views', { views, sheet, idSheet });
 
-      const atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
-      const atlases = atlasSlots.map((slot) => {
-        const original = textureToCanvas(slot.texture, 1024);
-        const rawParts = this.idRegions(slot);
-        // Same upright transform as the whole-atlas paint step, so region boxes line up.
-        const orient = resolveOrientation(opts.orientation, slotParts(slot));
-        const parts = transformParts(rawParts, orient);
-        const atlas = transformCanvas(original, orient);
-        return {
-          slotId: slot.id,
-          name: slot.name,
-          meshNames: slot.meshes.map((m) => m.name),
-          parts,
-          // Atlas with each part tinted + labelled (name and an arrow to the part's top).
-          atlasWithUvs:
-            parts.length > 1
-              ? drawPartLabels(
-                  transformCanvas(
-                    drawPartMap(slot, rawParts, original.width, original.height, { atlas: original, alpha: 0.35 }),
-                    orient,
-                  ),
-                  parts.map((p, i) => ({
-                    ...p,
-                    anchors: zoneAnchors(
-                      transformCanvas(partLayer(slot, rawParts[i], original.width, original.height), orient),
-                      1,
+        atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
+        const atlases = atlasSlots.map((slot) => {
+          const original = textureToCanvas(slot.texture, 1024);
+          const rawParts = this.idRegions(slot);
+          // Same upright transform as the whole-atlas paint step, so region boxes line up.
+          const orient = resolveOrientation(opts.orientation, slotParts(slot));
+          const parts = transformParts(rawParts, orient);
+          const atlas = transformCanvas(original, orient);
+          return {
+            slotId: slot.id,
+            name: slot.name,
+            meshNames: slot.meshes.map((m) => m.name),
+            parts,
+            // Atlas with each part tinted + labelled (name and an arrow to the part's top).
+            atlasWithUvs:
+              parts.length > 1
+                ? drawPartLabels(
+                    transformCanvas(
+                      drawPartMap(slot, rawParts, original.width, original.height, { atlas: original, alpha: 0.35 }),
+                      orient,
                     ),
-                  })),
-                )
-              : transformCanvas(drawAtlasWithUvs(original, slot), orient),
-        };
-      });
+                    parts.map((p, i) => ({
+                      ...p,
+                      anchors: zoneAnchors(
+                        transformCanvas(partLayer(slot, rawParts[i], original.width, original.height), orient),
+                        1,
+                      ),
+                    })),
+                  )
+                : transformCanvas(drawAtlasWithUvs(original, slot), orient),
+          };
+        });
 
-      this.status('analyzing', 'Muse is studying the model…');
-      this.emit('progress', {
-        stage: 'plan',
-        message: 'Muse is studying the model and the texture layout',
-        progress: 0.3,
-      });
-      const raw = await this.timed('suggest prompt', null, () =>
-        this.provider.suggestPrompt({
-          theme,
+        this.status('analyzing', 'Muse is studying the model…');
+        this.emit('progress', {
+          stage: 'plan',
+          message: 'Muse is studying the model and the texture layout',
+          progress: 0.3,
+        });
+        raw = await this.timed('suggest prompt', null, () =>
+          this.provider.suggestPrompt({
+            theme,
+            sheet,
+            idSheet,
+            atlases,
+            lessons: this.lessonsFor(this.resolveAssetClass(opts)),
+            signal,
+          }),
+        );
+        this.modelAnalysis = {
+          subject: raw.subject,
+          assetClass: raw.assetClass,
+          parts: raw.parts,
+          atlases: (raw.atlases ?? []).map((a) => ({
+            index: a.index,
+            regions: (a.regions ?? []).map((r) => ({ name: r.name, bbox: r.bbox })),
+          })),
           sheet,
           idSheet,
-          atlases,
-          lessons: this.lessonsFor(this.resolveAssetClass(opts)),
-          signal,
-        }),
-      );
-
+          views,
+          atlasSlots,
+        };
+      }
       const plans = {};
       for (const a of raw.atlases ?? []) {
         const slot = atlasSlots[a.index - 1];

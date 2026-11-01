@@ -15,6 +15,7 @@ import {
   plainSeamlessTexturePrompt,
   seamlessTexturePrompt,
   suggestPrompt as suggestPromptText,
+  suggestFromAnalysisPrompt,
   visionPlanPrompt,
 } from '../muse/prompts.js';
 import { canvasToDataUrl, fitSize, museSizeFor, resizeCanvas } from '../texture/imageUtils.js';
@@ -186,6 +187,32 @@ export class MuseProvider {
         throw new Error(`Muse returned a suggestion that could not be read (twice). Reply started: "${snippet}"`);
       }
     }
+    return s;
+  }
+
+  /** Art-director step reusing an earlier analysis of the same model (text only, no images). */
+  async suggestFromAnalysis(req) {
+    const ask = (strict) =>
+      this.client.chat({
+        reasoningEffort: this.fast ? 'low' : 'medium',
+        signal: req.signal,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  suggestFromAnalysisPrompt(req.theme, req.analysis, req.lessons) +
+                  (strict ? '\n\nIMPORTANT: reply with one complete JSON object only, no prose, no code fences.' : ''),
+              },
+            ],
+          },
+        ],
+      });
+    let s = parseSuggestion((await ask(false)) ?? '');
+    if (!s || !s.prompt) s = parseSuggestion((await ask(true)) ?? '');
+    if (!s || !s.prompt) throw new Error('Muse returned a suggestion that could not be read (twice).');
     return s;
   }
 

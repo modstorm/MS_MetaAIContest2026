@@ -341,6 +341,18 @@ try {
     assert.match(edit.prompt, /Add tiny snowflakes/);
     assert.match(edit.prompt, /frosted ice face plate/);
     assert.match(edit.prompt, /cartoon toy robot/);
+    // A new theme on the same model reuses what Muse saw: one text-only call, no renders.
+    const n0 = calls.length;
+    const again = await page.evaluate(async () => {
+      const s = await window.reskin.plugin.postSuggest('lava');
+      return { subject: s.subject, regions: Object.values(s.plans).map((p) => p.regions.length) };
+    });
+    assert.equal(calls.length, n0 + 1);
+    const reuseBody = calls[n0].body.messages[0].content;
+    assert.equal(reuseBody.filter((p) => p.type === 'image_url').length, 0, 'no images on reuse');
+    assert.match(reuseBody[0].text, /already studied/);
+    assert.match(reuseBody[0].text, /"lava"/);
+    assert.equal(again.subject, suggestion.subject);
     await page.context().close();
   });
 

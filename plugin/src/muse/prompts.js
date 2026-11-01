@@ -264,6 +264,34 @@ export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = fals
     .join('\n');
 }
 
+/**
+ * Art-director step for a model Muse has already studied: text only, reusing what it saw
+ * (subject, parts, atlas regions), so a new theme needs no renders or images.
+ */
+export function suggestFromAnalysisPrompt(theme, analysis, lessons = []) {
+  return [
+    'You are the art director for retexturing a 3D game asset you have already studied.',
+    `The model is: ${analysis.subject || 'unknown'}${analysis.assetClass ? ` (asset class: ${analysis.assetClass})` : ''}.`,
+    analysis.parts?.length ? 'Visible parts:' : '',
+    ...(analysis.parts ?? []).map((p) => `- ${p.name}${p.description ? `: ${p.description}` : ''}`),
+    'Texture atlas regions (keep these names and boxes exactly):',
+    ...(analysis.atlases ?? []).flatMap((a) =>
+      a.regions.map((r) => `- atlas ${a.index}: "${r.name}"${r.bbox ? ` bbox [${r.bbox.join(', ')}]` : ''}`),
+    ),
+    `The user wants to retheme the model as: "${theme}".`,
+    lessons.length ? 'Lessons learned from reviews of earlier results (follow them):' : '',
+    ...lessons.map((l) => `- ${l}`),
+    'Write the best possible instruction for an image model that will repaint each region in this theme.',
+    'Reply with JSON only, no prose, in this shape:',
+    '{"prompt": "2-4 sentences: the improved theme prompt, naming concrete colors, materials and motifs for each part, flat unlit albedo, no text",',
+    ' "atlases": [{"index": 1, "regions": [{"name": "exact region name", "bbox": [x0, y0, x1, y1], "paint": "what to paint there in the new theme"}]}],',
+    ' "tips": "optional one-line note for the user"}',
+    'Keep it family friendly: no blood, gore, injuries, weapons, real people or brands. Express dark or scary themes through color, pattern and costume.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** Parses the art-director reply. Returns null if it is not usable JSON. */
 export function parseSuggestion(text) {
   const o = looseJson(text);
