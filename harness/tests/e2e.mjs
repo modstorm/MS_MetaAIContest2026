@@ -645,9 +645,40 @@ try {
     assert.equal(names.cls, 'avatar');
     for (const n of ['Body (face)', 'Body (hair)', 'Body', 'Arms (hands)', 'Arms', 'Legs'])
       assert.ok(names.areas.includes(n), `missing ${n}: ${names.areas.join(', ')}`);
-    await page.evaluate(() => window.reskin.plugin.showIdMap(true));
-    await page.waitForTimeout(300);
-    await page.screenshot({ path: `${outDir}10-avatar-zones.png` });
+    // Mirrored shoes stacked in one UV rect are filled (opposite windings must not cancel).
+    const shoe = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      const t = [...p.idMapTextures(256).values()][0];
+      return Array.from(
+        t.canvas.getContext('2d').getImageData(Math.round(0.175 * 256), Math.round(0.875 * 256), 1, 1).data,
+      );
+    });
+    assert.ok(shoe[0] + shoe[1] + shoe[2] > 60, `shoe area filled, got ${shoe}`);
+
+    // One mesh holding the whole body (like Kris's avatar): 7 zones, each its own color.
+    const glb2 = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true })));
+    });
+    const one = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-one-mesh' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      return p.idRegions(slot).map((r) => [r.name, r.color]);
+    }, glb2);
+    const oneNames = one.map((r) => r[0]);
+    for (const n of [
+      'Body (face)',
+      'Body (hair)',
+      'Body (hands)',
+      'Body (torso)',
+      'Body (arms)',
+      'Body (legs)',
+      'Shoes',
+    ])
+      assert.ok(oneNames.includes(n), `missing ${n}: ${oneNames.join(', ')}`);
+    assert.equal(one.length, 7);
+    assert.equal(new Set(one.map((r) => r[1])).size, 7, 'each zone has its own color');
     await page.context().close();
   });
 

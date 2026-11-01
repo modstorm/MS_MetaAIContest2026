@@ -184,7 +184,7 @@ export async function buildPaddingTestGlb() {
  * A blocky avatar for the body-zone test: "Body" = torso + neck + head + hair (one mesh),
  * "Arms" = both arms including the hands (one mesh), "Legs". Each box has its own UV rect.
  */
-export async function buildAvatarTestGlb() {
+export async function buildAvatarTestGlb({ singleMesh = false } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
   c.width = c.height = 512;
@@ -206,22 +206,30 @@ export async function buildAvatarTestGlb() {
     m.name = name;
     return m;
   };
+  const torso = [
+    box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6),
+    box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
+  ];
+  const head = [
+    box([0.24, 0.25, 0.24], [0, 1.725, 0], [0.5, 0.02, 0.7, 0.2], 4), // face
+    box([0.26, 0.15, 0.26], [0, 1.925, 0], [0.75, 0.02, 0.98, 0.2], 2), // hair
+  ];
+  const arms = [
+    box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
+    box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
+  ];
+  const legs = [
+    box([0.15, 0.85, 0.15], [-0.12, 0.5, 0], [0.5, 0.4, 0.7, 0.7], 6),
+    box([0.15, 0.85, 0.15], [0.12, 0.5, 0], [0.75, 0.4, 0.95, 0.7], 6),
+  ];
+  // Shoes share one UV rect, the second one mirrored (opposite UV winding).
+  const shoeL = box([0.16, 0.08, 0.25], [-0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);
+  const shoeR = box([0.16, 0.08, 0.25], [0.12, 0.04, 0.04], [0.05, 0.8, 0.3, 0.95]);
+  const uv = shoeR.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) uv.setX(i, 0.35 - uv.getX(i));
   const root = new THREE.Group();
-  root.add(
-    mesh('Body', [
-      box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6), // torso
-      box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
-      box([0.24, 0.25, 0.24], [0, 1.725, 0], [0.5, 0.02, 0.7, 0.2], 4), // head (face)
-      box([0.26, 0.15, 0.26], [0, 1.925, 0], [0.75, 0.02, 0.98, 0.2], 2), // hair
-    ]),
-    mesh('Arms', [
-      box([0.1, 0.65, 0.1], [-0.35, 1.125, 0], [0.02, 0.4, 0.2, 0.7], 20),
-      box([0.1, 0.65, 0.1], [0.35, 1.125, 0], [0.25, 0.4, 0.43, 0.7], 20),
-    ]),
-    mesh('Legs', [
-      box([0.15, 0.9, 0.15], [-0.12, 0.45, 0], [0.5, 0.4, 0.7, 0.7], 6),
-      box([0.15, 0.9, 0.15], [0.12, 0.45, 0], [0.75, 0.4, 0.95, 0.7], 6),
-    ]),
-  );
+  if (singleMesh) root.add(mesh('Body', [...torso, ...head, ...arms, ...legs]));
+  else root.add(mesh('Body', [...torso, ...head]), mesh('Arms', arms), mesh('Legs', legs));
+  root.add(mesh('Shoes', [shoeL, shoeR]));
   return exportGLB(root);
 }

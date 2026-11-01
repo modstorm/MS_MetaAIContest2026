@@ -38,9 +38,13 @@ export function islandIdMap(slot, width, height) {
       }
       const ou = Math.floor(Math.min(pts[0], pts[2], pts[4]));
       const ov = Math.floor(Math.min(pts[1], pts[3], pts[5]));
+      // Same winding for every triangle: mirrored islands stacked on top of each other
+      // would otherwise cancel out under the nonzero fill rule and leave holes.
+      const ccw = (pts[2] - pts[0]) * (pts[5] - pts[1]) - (pts[4] - pts[0]) * (pts[3] - pts[1]) >= 0;
+      const [i1, i2] = ccw ? [2, 4] : [4, 2];
       p.moveTo((pts[0] - ou) * width, (pts[1] - ov) * height);
-      p.lineTo((pts[2] - ou) * width, (pts[3] - ov) * height);
-      p.lineTo((pts[4] - ou) * width, (pts[5] - ov) * height);
+      p.lineTo((pts[i1] - ou) * width, (pts[i1 + 1] - ov) * height);
+      p.lineTo((pts[i2] - ou) * width, (pts[i2 + 1] - ov) * height);
       p.closePath();
     }
     for (const p of paths.values()) {

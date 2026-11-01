@@ -115,29 +115,45 @@ export function splitAvatarZones(slot, part, anat) {
     }
   }
 
-  // Arm-like part (mostly beside the body, above the knees): its far ends are the hands.
-  // Arms: beside the body, nothing in the middle, no head.
-  if (lateralArea / total > 0.6 && centralArea / total < 0.05 && headArea / total < 0.01) {
-    const shoulderY = anat.neckY - anat.H * 0.03;
-    const shoulderX = anat.neckHalfW * 2.5;
-    const dist = (x, y, s) => Math.hypot(x - (anat.cx + s * shoulderX), y - shoulderY);
+  // The rest (below the neck) is split by UV island groups (torso, arms, legs…).
+  const clusters = clusterRest(data, zones, 0.02, 0.06);
+  const lateralOf = (x, y) => Math.abs(x - anat.cx) > lateralW && y > anat.minY + anat.H * 0.3;
+  for (const c of clusters) {
+    let lat = 0,
+      cen = 0,
+      ys = 0;
+    for (const [k, t] of c.tris) {
+      const f = data[k].f;
+      const x = f.centroid[t * 3],
+        y = f.centroid[t * 3 + 1],
+        a = f.area[t];
+      if (lateralOf(x, y)) lat += a;
+      if (Math.abs(x - anat.cx) < anat.neckHalfW * 1.5) cen += a;
+      ys += y * a;
+    }
+    const meanY = ys / (c.area || 1);
+    c.arms = lat / c.area > 0.6 && cen / c.area < 0.05;
+    c.label = c.arms ? 'arms' : meanY < anat.minY + anat.H * 0.45 ? 'legs' : 'torso';
+  }
+
+  // Hands: the far end of each arm, measured from the shoulder.
+  const shoulderY = anat.neckY - anat.H * 0.03;
+  const shoulderX = anat.neckHalfW * 2.5;
+  const dist = (x, y, s) => Math.hypot(x - (anat.cx + s * shoulderX), y - shoulderY);
+  for (const c of clusters.filter((x) => x.arms)) {
     for (const s of [-1, 1]) {
       let maxD = 0;
-      for (const { f } of data) {
-        for (let t = 0; t < f.area.length; t++) {
-          const x = f.centroid[t * 3];
-          if (Math.sign(x - anat.cx) !== s) continue;
-          maxD = Math.max(maxD, dist(x, f.centroid[t * 3 + 1], s));
-        }
+      for (const [k, t] of c.tris) {
+        const f = data[k].f;
+        if (Math.sign(f.centroid[t * 3] - anat.cx) === s)
+          maxD = Math.max(maxD, dist(f.centroid[t * 3], f.centroid[t * 3 + 1], s));
       }
       if (!(maxD > 0)) continue;
-      data.forEach(({ f }, k) => {
-        for (let t = 0; t < f.area.length; t++) {
-          const x = f.centroid[t * 3];
-          if (Math.sign(x - anat.cx) !== s || zones[k][t] === 1) continue;
-          if (dist(x, f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
-        }
-      });
+      for (const [k, t] of c.tris) {
+        const f = data[k].f;
+        const x = f.centroid[t * 3];
+        if (Math.sign(x - anat.cx) === s && dist(x, f.centroid[t * 3 + 1], s) > maxD * 0.8) zones[k][t] = 2;
+      }
     }
   }
 
@@ -165,21 +181,102 @@ export function splitAvatarZones(slot, part, anat) {
     out.push(makeRegion(slot, part, label, r, total, data));
   };
   const head = regionOf((k, t) => zones[k][t] === 1);
-  const hands = regionOf((k, t) => zones[k][t] === 2);
-  const rest = regionOf((k, t) => zones[k][t] === 0);
-  const headShare = head.area / total;
-
-  if (headShare > 0.01) {
+  if (head.area / total > 0.01) {
     // Face vs hair: separate UV island groups inside the head zone.
     for (const [label, r] of splitHead(slot, data, zones, head)) add(label, r);
   }
-  add('hands', hands);
-  if (out.length) add(restLabel(), rest);
-  return out.length > 1 || (out.length === 1 && out[0].share < 0.99) ? out : [part];
+  add(
+    'hands',
+    regionOf((k, t) => zones[k][t] === 2),
+  );
+  // Groups with the same label are one zone (both legs, both arms). A single remaining
+  // zone keeps the part's own name; several get torso / arms / legs labels.
+  const byLabel = new Map();
+  for (const c of clusters) {
+    if (!byLabel.has(c.label)) byLabel.set(c.label, new Set());
+    for (const [k, t] of c.tris) byLabel.get(c.label).add(`${k}:${t}`);
+  }
+  for (const [label, set] of byLabel) {
+    add(
+      byLabel.size > 1 ? label : '',
+      regionOf((k, t) => zones[k][t] === 0 && set.has(`${k}:${t}`)),
+    );
+  }
+  return out.length > 1 ? out : [part];
 }
 
-function restLabel() {
-  return ''; // the rest keeps the part's own name
+/**
+ * Groups the triangles of zone 0 (below the neck) by their UV islands: islands whose UV
+ * boxes are within `gap` of each other form a group; groups under `minShare` of the area
+ * join the nearest big group. Returns [{ tris: [[k, t]…], area }], biggest first.
+ */
+function clusterRest(data, zones, gap, minShare) {
+  const groups = [];
+  data.forEach((d, k) => {
+    const byIsland = new Map();
+    for (let t = 0; t < d.f.area.length; t++) {
+      if (zones[k][t] !== 0) continue;
+      let g = byIsland.get(d.islands[t]);
+      if (!g) byIsland.set(d.islands[t], (g = { tris: [], area: 0, box: [Infinity, Infinity, -Infinity, -Infinity] }));
+      g.tris.push([k, t]);
+      g.area += d.f.area[t];
+      for (let j = 0; j < 3; j++) {
+        const v = d.src.index ? d.src.index[t * 3 + j] : t * 3 + j;
+        const u = d.src.uvs[v * 2],
+          w = d.src.uvs[v * 2 + 1];
+        g.box[0] = Math.min(g.box[0], u);
+        g.box[1] = Math.min(g.box[1], w);
+        g.box[2] = Math.max(g.box[2], u);
+        g.box[3] = Math.max(g.box[3], w);
+      }
+    }
+    groups.push(...byIsland.values());
+  });
+  if (!groups.length) return [];
+  const parent = groups.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < groups.length; i++)
+    for (let j = i + 1; j < groups.length; j++) {
+      const a = groups[i].box,
+        b = groups[j].box;
+      if (a[0] - gap <= b[2] && b[0] - gap <= a[2] && a[1] - gap <= b[3] && b[1] - gap <= a[3])
+        parent[find(i)] = find(j);
+    }
+  const merged = new Map();
+  groups.forEach((g, i) => {
+    const r = find(i);
+    if (!merged.has(r)) merged.set(r, { tris: [], area: 0, box: [Infinity, Infinity, -Infinity, -Infinity] });
+    const c = merged.get(r);
+    c.tris.push(...g.tris);
+    c.area += g.area;
+    for (let q = 0; q < 2; q++) c.box[q] = Math.min(c.box[q], g.box[q]);
+    for (let q = 2; q < 4; q++) c.box[q] = Math.max(c.box[q], g.box[q]);
+  });
+  const all = [...merged.values()].sort((a, b) => b.area - a.area);
+  const total = all.reduce((s, c) => s + c.area, 0) || 1;
+  const big = all.filter((c) => c.area / total >= minShare);
+  if (!big.length)
+    return [
+      all.reduce((acc, c) => ({ tris: acc.tris.concat(c.tris), area: acc.area + c.area }), { tris: [], area: 0 }),
+    ];
+  const center = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+  for (const c of all) {
+    if (big.includes(c)) continue;
+    const [x, y] = center(c.box);
+    let best = big[0],
+      bestD = Infinity;
+    for (const b of big) {
+      const [bx, by] = center(b.box);
+      const dd = (bx - x) ** 2 + (by - y) ** 2;
+      if (dd < bestD) {
+        bestD = dd;
+        best = b;
+      }
+    }
+    best.tris.push(...c.tris);
+    best.area += c.area;
+  }
+  return big;
 }
 
 /** Splits the head zone into face and hair using UV island groups and which way they face. */

@@ -119,9 +119,13 @@ export function drawUvGuide(slot, width, height, opts = {}) {
       }
       const ou = Math.floor(Math.min(pts[0], pts[2], pts[4]));
       const ov = Math.floor(Math.min(pts[1], pts[3], pts[5]));
+      // Same winding for every triangle: mirrored islands stacked on top of each other
+      // would otherwise cancel out under the nonzero fill rule and leave holes.
+      const ccw = (pts[2] - pts[0]) * (pts[5] - pts[1]) - (pts[4] - pts[0]) * (pts[3] - pts[1]) >= 0;
+      const [i1, i2] = ccw ? [2, 4] : [4, 2];
       path.moveTo((pts[0] - ou) * c.width, (pts[1] - ov) * c.height);
-      path.lineTo((pts[2] - ou) * c.width, (pts[3] - ov) * c.height);
-      path.lineTo((pts[4] - ou) * c.width, (pts[5] - ov) * c.height);
+      path.lineTo((pts[i1] - ou) * c.width, (pts[i1 + 1] - ov) * c.height);
+      path.lineTo((pts[i2] - ou) * c.width, (pts[i2 + 1] - ov) * c.height);
       path.closePath();
     }
     if (fill) {
