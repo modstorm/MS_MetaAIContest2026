@@ -105,13 +105,106 @@ export function roughnessMapPrompt(theme) {
   ].join('\n');
 }
 
+/**
+ * Reads a JSON object out of a model reply: tolerates code fences, prose around it,
+ * smart quotes, trailing commas, // comments and a reply cut off before it closed.
+ * Returns the object or null.
+ */
+export function looseJson(text) {
+  if (typeof text !== 'string') return null;
+  let t = text
+    .replace(/```(?:json)?/gi, '')
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+  const start = t.indexOf('{');
+  if (start < 0) return null;
+  t = t.slice(start);
+  // Find where the first object closes (string-aware), else keep everything (truncated reply).
+  let depth = 0,
+    inStr = false,
+    esc = false,
+    end = -1;
+  const stack = [];
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') {
+      depth++;
+      stack.push(ch === '{' ? '}' : ']');
+    } else if (ch === '}' || ch === ']') {
+      depth--;
+      stack.pop();
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const tries = [];
+  if (end >= 0) tries.push(t.slice(0, end + 1));
+  else {
+    // Cut off: close what is open, after dropping the last partial entry if needed
+    // (cut back to each of the last few commas until something parses).
+    tries.push(closeOpen(t));
+    let cut = t.length;
+    for (let n = 0; n < 12; n++) {
+      cut = t.lastIndexOf(',', cut - 1);
+      if (cut <= 0) break;
+      tries.push(closeOpen(t.slice(0, cut)));
+    }
+  }
+  for (const raw of tries) {
+    for (const fix of [
+      (x) => x,
+      (x) => x.replace(/,\s*([}\]])/g, '$1'),
+      (x) =>
+        x
+          .replace(/^\s*\/\/.*$/gm, '')
+          .replace(/,\s*([}\]])/g, '$1')
+          .replace(/([{,]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":'),
+    ]) {
+      try {
+        const o = JSON.parse(fix(raw));
+        if (o && typeof o === 'object') return o;
+      } catch {
+        // try the next repair
+      }
+    }
+  }
+  return null;
+}
+
+/** Closes the strings, arrays and objects left open at the end of `t`. */
+function closeOpen(t) {
+  let inStr = false,
+    esc = false;
+  const stack = [];
+  for (const ch of t) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+  return t + (inStr ? '"' : '') + stack.reverse().join('');
+}
+
 /** Parses the vision model's reply into a LayoutPlan, tolerating code fences and prose. */
 export function parseLayoutPlan(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
+  const obj = looseJson(text);
+  if (!obj) return null;
   try {
-    const obj = JSON.parse(text.slice(start, end + 1));
     const regions = Array.isArray(obj.regions) ? obj.regions : [];
     return {
       subject: String(obj.subject ?? ''),
@@ -173,11 +266,9 @@ export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = fals
 
 /** Parses the art-director reply. Returns null if it is not usable JSON. */
 export function parseSuggestion(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
+  const o = looseJson(text);
+  if (!o) return null;
   try {
-    const o = JSON.parse(text.slice(start, end + 1));
     const bbox = (b) =>
       Array.isArray(b) && b.length === 4 && b.every((n) => Number.isFinite(Number(n)))
         ? b.map((n) => Math.round(Number(n)))
@@ -285,11 +376,9 @@ export function reviewPrompt(theme, { areas = [], subject, classRules = [] } = {
 
 /** Parses the review reply. */
 export function parseReview(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return { ok: true, summary: '', issues: [], lessons: [], raw: text };
+  const o = looseJson(text);
+  if (!o) return { ok: true, summary: '', issues: [], lessons: [], raw: text };
   try {
-    const o = JSON.parse(text.slice(start, end + 1));
     const issues = (Array.isArray(o.issues) ? o.issues : [])
       .filter((x) => x && (x.problem || x.fix))
       .slice(0, 4)

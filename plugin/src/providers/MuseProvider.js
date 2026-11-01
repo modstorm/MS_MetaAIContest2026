@@ -137,24 +137,41 @@ export class MuseProvider {
     if (req.sheet) images.push(this.toUploadSized(req.sheet, this.fast ? 1152 : 1536));
     if (req.idSheet) images.push(this.toUploadSized(req.idSheet, this.fast ? 864 : 1152));
     for (const a of req.atlases.slice(0, 4)) images.push(this.toUploadSized(a.atlasWithUvs, this.fast ? 768 : 1024));
-    const text = await this.client.chat({
-      reasoningEffort: this.fast ? 'low' : 'medium',
-      signal: req.signal,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet, !!req.idSheet, req.lessons),
-            },
-            ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
-          ],
-        },
-      ],
-    });
-    const s = parseSuggestion(text);
-    if (!s) throw new Error('Muse returned a suggestion that could not be read');
+    const ask = (strict) =>
+      this.client.chat({
+        reasoningEffort: this.fast ? 'low' : 'medium',
+        signal: req.signal,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  suggestPromptText(req.theme, req.atlases.slice(0, 4), !!req.sheet, !!req.idSheet, req.lessons) +
+                  (strict
+                    ? '\n\nIMPORTANT: your last reply could not be read. Reply with one complete JSON object only: no prose, no code fences, keep every text value short.'
+                    : ''),
+              },
+              ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+            ],
+          },
+        ],
+      });
+    let text = await ask(false);
+    let s = parseSuggestion(text ?? '');
+    if (!s || (!s.prompt && !s.subject)) {
+      // One retry asking for strict JSON (replies are sometimes cut off or wrapped in prose).
+      const first = text;
+      text = await ask(true);
+      s = parseSuggestion(text ?? '');
+      if (!s || (!s.prompt && !s.subject)) {
+        const snippet = String(text || first || '(empty reply)')
+          .replace(/\s+/g, ' ')
+          .slice(0, 160);
+        throw new Error(`Muse returned a suggestion that could not be read (twice). Reply started: "${snippet}"`);
+      }
+    }
     return s;
   }
 
