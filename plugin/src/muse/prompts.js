@@ -315,13 +315,13 @@ export function reskinPartPrompt(
     `Image 1 is the "${partName}" area of a 3D model's UV texture (base color / albedo), cut out on its own and shown upright. Flat grey (#808080) is not part of it.`,
     'Image 2 is its mask: white = this area, black = not part of it.',
     styleRef
-      ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette, materials and level of detail exactly.'
+      ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette and level of detail, but paint what belongs in this area (do not copy its garment or details here).'
       : '',
     subject ? `The model is: ${subject}.` : '',
     facing ? `On the model this area is ${facing}.` : '',
     facingLayout ? `Where each side is in image 1 (3x3 grid): ${facingLayout}.` : '',
     facingStrips
-      ? `Image 1 is laid out as strips that wrap around the body part (exact, from the 3D model): ${facingStrips}. "Inner side" faces the other arm or leg (or the body), "outer side" faces away. Neighbouring strips meet on the model, so the fabric continues across them; front details only on front strips.`
+      ? `Image 1 is laid out as strips that wrap around the body part (exact, from the 3D model): ${facingStrips}. "Inner side" faces the other arm or leg (or the body), "outer side" faces away. Each strip is one straight column covering the full height of the area: fill every column edge to edge (no gaps, wedges or curved trouser-leg shapes between them). Neighbouring strips meet on the model, so the fabric continues across them; pockets, buttons and other front details go only inside front strips and never span two strips.`
       : '',
     `Repaint every white-mask pixel of image 1 in this theme: "${theme}".`,
     paint ? `For the ${partName}: ${paint}` : '',
@@ -331,7 +331,7 @@ export function reskinPartPrompt(
     'Rules:',
     '- Keep every shape at exactly the same position, size and orientation, and keep the same framing. Do not crop, zoom, rotate, mirror or add borders.',
     '- Cover the whole white-mask area edge to edge with the new material, including thin strips along the edges (these are the sides of the part). Leave no patches of the old colors or skin showing, and no black or dark gaps.',
-    '- Image 1 is a flattened (unwrapped) surface, not a picture of an object. Do not draw the outline or silhouette of a garment, shoe or body part inside it, and do not draw arms, sleeves, hands, legs, feet or a background: fill the white area with the surface material itself, as if printing fabric on a flat sheet.',
+    '- Image 1 is a flattened (unwrapped) surface, not a picture of an object: fill the white area with the surface material itself, like fabric printed on a flat sheet, with no outlines, silhouettes or other objects drawn in it.',
     '- Front details (buttons, plackets, pockets, collars, emblems, buckles) only where the grid says front. Back areas get the plain back of the same material with no buttons or emblems.',
     '- Keep each decoration (chains, straps, emblems) whole inside one connected area: separate areas are not next to each other on the model.',
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',

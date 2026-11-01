@@ -895,6 +895,30 @@ try {
       res.warnings.some((w) => /shaded 8 hair strands/.test(w)),
       res.warnings.join(' | '),
     );
+    // Cards that all share one UV island are still told apart (as separate 3D pieces).
+    const glbShared = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(
+        new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, hairStrands: 8, hairSharedUv: true })),
+      );
+    });
+    const shared = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      const warnings = [];
+      p.on('warning', (e) => warnings.push(e.message));
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-hair-shared' });
+      await p.postPrompt('steampunk', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+      return warnings;
+    }, glbShared);
+    assert.ok(
+      shared.some((w) => /shaded 8 hair strands/.test(w)),
+      shared.join(' | '),
+    );
     const lum = (c) => c[0] + c[1] + c[2];
     for (const c of res.cards) {
       assert.ok(lum(c.root) < lum(c.tip) * 0.85, `root darker than tip: ${JSON.stringify(c)}`);
@@ -950,6 +974,10 @@ try {
 
   await step('unwrapped legs: the strip order (inner/back/outer/front) is read from the model and sent', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Mock paint: purple fabric with a black wedge down the middle (the gap Muse draws between trouser legs).
+    const wedge = makePng(64, 64, (x, y) => (Math.abs(x - 32) < (64 - y) / 6 ? [8, 8, 10] : [120, 40, 200])).toString(
+      'base64',
+    );
     const edits = [];
     await page.route('https://api.meta.ai/v1/**', (route) => {
       const isChat = route.request().url().endsWith('/chat/completions');
@@ -958,11 +986,7 @@ try {
         status: 200,
         contentType: 'application/json',
         headers: { 'access-control-allow-origin': '*' },
-        body: JSON.stringify(
-          isChat
-            ? { choices: [{ message: { content: '{}' } }] }
-            : { data: [{ b64_json: makePng().toString('base64') }] },
-        ),
+        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: wedge }] }),
       });
     });
     const glb = await page.evaluate(async () => {
@@ -974,11 +998,23 @@ try {
       await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-legs' });
       await p.postPrompt('clown', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
     }, glb);
+    const dark = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      const slot = p.layout.slots.find((s) => s.texture);
+      const out = p.lastPartJobs.get(slot.id).out;
+      const d = out
+        .getContext('2d')
+        .getImageData(0.52 * out.width, 0.42 * out.height, 0.16 * out.width, 0.26 * out.height).data;
+      let n = 0;
+      for (let k = 0; k < d.length; k += 4) if (Math.max(d[k], d[k + 1], d[k + 2]) < 28) n++;
+      return n / (d.length / 4);
+    });
+    assert.ok(dark < 0.01, `dark wedge filled: ${dark}`);
     const legs = edits.find((e) => /"Body \(legs\)" area/.test(e.prompt));
     assert.ok(legs, 'legs painted');
     assert.match(
       legs.prompt,
-      /8 vertical strips in 2 separate pieces: inner side, back, outer side, front \| inner side, front, outer side, back/,
+      /8 vertical strips in 2 groups \(one per limb\), each wrapping all the way round: inner side, back, outer side, front \| inner side, front, outer side, back/,
       legs.prompt.split('\n').find((l) => /strips/.test(l)),
     );
     await page.context().close();

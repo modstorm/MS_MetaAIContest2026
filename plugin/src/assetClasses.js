@@ -47,7 +47,7 @@ export const ASSET_CLASSES = [
       {
         match: /\b(hands?|gloves?|fingers?)\b/i,
         rules: [
-          'Hands: if they get gloves, the gloves cover the whole hand area including the back of the hand, both sides, the palm and every finger.',
+          'Hands: this area is the hands themselves (palm, back of the hand, fingers), not a sleeve. Paint skin, or gloves if the theme suggests them; gloves cover the whole hand area including the back of the hand, both sides, the palm and every finger. The sleeve fabric stops at the wrist and is not continued here.',
         ],
       },
       {
@@ -67,7 +67,7 @@ export const ASSET_CLASSES = [
       {
         match: /\b(torso|chest|shirt|jacket|vest|coat|upper)\b/i,
         rules: [
-          'Torso: paint only the garment body (front, sides, back). The arms and hands are separate areas: no sleeves, cuffs, gloves, arms or hands in this area, even at its edges. The garment covers the whole area, including the side strips and the top and bottom edges.',
+          'Torso: this area is only the body of the garment (front, sides, back, shoulders). Fill all of it, including the side strips and the top and bottom edges, with the same garment fabric and pattern.',
         ],
       },
       {

@@ -427,11 +427,24 @@ export function facingStripsText(guide) {
     purity += r.purity;
     n += r.end - r.start + 1;
   }
-  const real = pieces.filter((p) => p.length);
+  // A piece that repeats a direction is several limbs side by side (two trouser legs):
+  // split it where a direction comes round again.
+  const real = [];
+  for (const p of pieces.filter((x) => x.length)) {
+    let cur = [];
+    for (const name of p) {
+      if (cur.includes(name) && cur.length >= 3) {
+        real.push(cur);
+        cur = [];
+      }
+      cur.push(name);
+    }
+    if (cur.length) real.push(cur);
+  }
   const strips = real.reduce((a, p) => a + p.length, 0);
   // Only worth saying for real strip layouts: several strips, each mostly one facing top to bottom.
-  if (strips < 3 || purity / (n || 1) < 0.7) return '';
-  return `from left to right, ${strips} vertical strips${real.length > 1 ? ` in ${real.length} separate pieces` : ''}: ${real
+  if (strips < 3 || purity / (n || 1) < 0.55) return '';
+  return `from left to right, ${strips} vertical strips${real.length > 1 ? ` in ${real.length} groups (one per limb), each wrapping all the way round` : ''}: ${real
     .map((p) => p.join(', '))
     .join(' | ')}`;
 }

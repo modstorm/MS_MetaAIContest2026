@@ -192,6 +192,7 @@ export async function buildAvatarTestGlb({
   skinSwatch = false,
   separateHands = false,
   unwrappedLegs = false,
+  hairSharedUv = false,
 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
@@ -292,7 +293,9 @@ export async function buildAvatarTestGlb({
     const card = new THREE.PlaneGeometry(0.06, 0.22);
     const col = i % 4,
       row = Math.floor(i / 4);
-    packUvs(card, [0.75 + col * 0.06, 0.22 + row * 0.09, 0.8 + col * 0.06, 0.3 + row * 0.09]);
+    // hairSharedUv: every card uses the same UV square (one UV island for all strands).
+    if (hairSharedUv) packUvs(card, [0.75, 0.22, 0.8, 0.3]);
+    else packUvs(card, [0.75 + col * 0.06, 0.22 + row * 0.09, 0.8 + col * 0.06, 0.3 + row * 0.09]);
     card.translate(0, 0.11, 0); // root at the origin
     card.rotateX(0.6); // lean outward…
     card.rotateY(a); // …all around the head

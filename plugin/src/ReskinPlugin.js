@@ -49,6 +49,7 @@ import {
   copyCanvas,
   cropCanvas,
   greyedCrop,
+  fillBackgroundLeftovers,
   fillSkinLeftovers,
   mapLimit,
   maskedMedian,
@@ -1099,6 +1100,8 @@ export class ReskinPlugin {
       const paddedGuide = padToMuseAspect(whiteMask(guide), { fill: '#000000' });
       const layout = facingGridText(guide);
       const strips = job.sides ? facingStripsText(transformCanvas(cropCanvas(job.sides, rect), orient)) : '';
+      if (job.sides)
+        this.emit('warning', { message: `${part.name} layout: ${strips || 'no clear vertical strips found'}.` });
       const rules = this.rulesFor(opts.assetClass, [part.name]);
       const img = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
         this.provider.reskinPart({
@@ -1128,6 +1131,12 @@ export class ReskinPlugin {
         // so a second face can never appear on them.
         const n = oneFaceOnly(upright, crop, whiteMask(guide));
         if (n) this.emit('warning', { message: `${part.name}: ${n} separate piece(s) set to the painted skin color.` });
+      }
+      if (CLOTHED.has(part.zone) && part.zone !== 'hands' && opts.fixBackgroundLeftovers !== false) {
+        // Dark wedges / background blobs Muse leaves inside clothing (e.g. between trouser legs).
+        const fb = fillBackgroundLeftovers(upright, whiteMask(guide));
+        if (fb > 0.002)
+          this.emit('warning', { message: `${part.name}: filled ${(fb * 100).toFixed(1)}% background gaps.` });
       }
       if (skin && CLOTHED.has(part.zone)) {
         const f = fillSkinLeftovers(upright, whiteMask(guide), skin, { maxFraction: COVERED_FRACTION[part.zone] });
@@ -1196,7 +1205,7 @@ export class ReskinPlugin {
       const anat = this.anatomy();
       const center = anat ? [anat.cx, anat.neckY + (anat.maxY - anat.neckY) * 0.4, anat.cz] : null;
       for (const [r, job] of results.map((r, i) => [r, ordered[i]])) {
-        const isHair = job.part.zone === 'hair' || /\bhair\b/i.test(job.part.name);
+        const isHair = /^hair/.test(job.part.zone ?? '') || /(^|[^a-z])hair/i.test(job.part.name);
         if (!isHair || job.reuse || job.keep || r.status !== 'fulfilled') continue;
         const n = paintHairStrands(out, slot, job.part, { center });
         if (n) {

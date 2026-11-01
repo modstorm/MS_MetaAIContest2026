@@ -207,61 +207,7 @@ export function fillSkinLeftovers(painted, mask, skin, { maxFraction = 0.35, tol
   if (!n || !nBad) return 0;
   const frac = nBad / n;
   if (frac > maxFraction) return 0;
-  // Also refill a ring of `halo` pixels around each patch: its blended edge is skin-tinted too.
-  for (let ring = 0; ring < halo; ring++) {
-    const grow = [];
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if (!inside[i] || bad[i]) continue;
-        if ((x > 0 && bad[i - 1]) || (x < w - 1 && bad[i + 1]) || (y > 0 && bad[i - w]) || (y < h - 1 && bad[i + w]))
-          grow.push(i);
-      }
-    }
-    for (const i of grow) bad[i] = 1;
-    nBad += grow.length;
-  }
-  // Grow the good paint into the bad pixels, one ring per pass.
-  const good = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) good[i] = inside[i] && !bad[i] ? 1 : 0;
-  let left = nBad;
-  for (let pass = 0; pass < 400 && left > 0; pass++) {
-    const add = [];
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if (!bad[i] || good[i]) continue;
-        let r = 0,
-          g = 0,
-          b = 0,
-          c = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          const yy = y + dy;
-          if (yy < 0 || yy >= h) continue;
-          for (let dx = -1; dx <= 1; dx++) {
-            const xx = x + dx;
-            if (xx < 0 || xx >= w) continue;
-            const j = yy * w + xx;
-            if (!good[j]) continue;
-            r += d[j * 4];
-            g += d[j * 4 + 1];
-            b += d[j * 4 + 2];
-            c++;
-          }
-        }
-        if (c) add.push(i, r / c, g / c, b / c);
-      }
-    }
-    if (!add.length) break;
-    for (let k = 0; k < add.length; k += 4) {
-      const i = add[k];
-      d[i * 4] = add[k + 1];
-      d[i * 4 + 1] = add[k + 2];
-      d[i * 4 + 2] = add[k + 3];
-      good[i] = 1;
-      left--;
-    }
-  }
+  growFill(d, w, h, inside, bad, halo);
   ctx.putImageData(img, 0, 0);
   return frac;
 }
@@ -351,4 +297,135 @@ export function paintedSkin(painted, original, mask, skin, tolerance = 40) {
   }
   if (!ch[0].length) return null;
   return ch.map((a) => a.sort((x, y) => x - y)[a.length >> 1]);
+}
+
+/** Grows the good paint (inside && !bad) into the bad pixels; first widens `bad` by `halo` px. */
+function growFill(d, w, h, inside, bad, halo = 2) {
+  for (let ring = 0; ring < halo; ring++) {
+    const grow = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!inside[i] || bad[i]) continue;
+        if ((x > 0 && bad[i - 1]) || (x < w - 1 && bad[i + 1]) || (y > 0 && bad[i - w]) || (y < h - 1 && bad[i + w]))
+          grow.push(i);
+      }
+    }
+    for (const i of grow) bad[i] = 1;
+  }
+  const good = new Uint8Array(w * h);
+  let left = 0;
+  for (let i = 0; i < w * h; i++) {
+    good[i] = inside[i] && !bad[i] ? 1 : 0;
+    if (inside[i] && bad[i]) left++;
+  }
+  for (let pass = 0; pass < 400 && left > 0; pass++) {
+    const add = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!bad[i] || good[i]) continue;
+        let r = 0,
+          g = 0,
+          b = 0,
+          c = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const j = yy * w + xx;
+            if (!good[j]) continue;
+            r += d[j * 4];
+            g += d[j * 4 + 1];
+            b += d[j * 4 + 2];
+            c++;
+          }
+        }
+        if (c) add.push(i, r / c, g / c, b / c);
+      }
+    }
+    if (!add.length) break;
+    for (let k = 0; k < add.length; k += 4) {
+      const i = add[k];
+      d[i * 4] = add[k + 1];
+      d[i * 4 + 1] = add[k + 2];
+      d[i * 4 + 2] = add[k + 3];
+      good[i] = 1;
+      left--;
+    }
+  }
+}
+
+/**
+ * Background leftovers: big near-black (or flat outside-grey) blobs inside a clothing area,
+ * where the image model drew the gap between two trouser legs or a background instead of
+ * fabric. Thin dark lines and small dark details are kept. Blobs are filled from the
+ * surrounding paint when together they are under `maxFraction` of the area.
+ * Returns the fraction of pixels refilled.
+ */
+export function fillBackgroundLeftovers(painted, mask, { maxFraction = 0.3, minSize = 0.03 } = {}) {
+  const w = painted.width,
+    h = painted.height;
+  const ctx = ctx2d(painted);
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const m = ctx2d(mask).getImageData(0, 0, w, h).data;
+  const inside = new Uint8Array(w * h);
+  const dark = new Uint8Array(w * h);
+  let n = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (m[i * 4] < 128) continue;
+    inside[i] = 1;
+    n++;
+    const r = d[i * 4],
+      g = d[i * 4 + 1],
+      b = d[i * 4 + 2];
+    const grey = Math.abs(r - 128) < 10 && Math.abs(g - 128) < 10 && Math.abs(b - 128) < 10;
+    if (Math.max(r, g, b) < 28 || grey) dark[i] = 1;
+  }
+  if (!n) return 0;
+  const bad = new Uint8Array(w * h);
+  const seen = new Uint8Array(w * h);
+  const minSide = Math.max(3, Math.min(w, h) * minSize);
+  let nBad = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (!dark[i] || seen[i]) continue;
+    const cells = [];
+    const stack = [i];
+    seen[i] = 1;
+    let x0 = w,
+      y0 = h,
+      x1 = 0,
+      y1 = 0;
+    while (stack.length) {
+      const j = stack.pop();
+      cells.push(j);
+      const x = j % w,
+        y = (j / w) | 0;
+      x0 = Math.min(x0, x);
+      x1 = Math.max(x1, x);
+      y0 = Math.min(y0, y);
+      y1 = Math.max(y1, y);
+      for (const k of [j - 1, j + 1, j - w, j + w]) {
+        if (k < 0 || k >= w * h || seen[k] || !dark[k]) continue;
+        if ((k === j - 1 && x === 0) || (k === j + 1 && x === w - 1)) continue;
+        seen[k] = 1;
+        stack.push(k);
+      }
+    }
+    const bw = x1 - x0 + 1,
+      bh = y1 - y0 + 1;
+    // A blob, not a line: wide in both directions and fairly solid.
+    if (Math.min(bw, bh) < minSide || cells.length < bw * bh * 0.25) continue;
+    for (const j of cells) bad[j] = 1;
+    nBad += cells.length;
+  }
+  if (!nBad) return 0;
+  const frac = nBad / n;
+  if (frac > maxFraction) return 0;
+  growFill(d, w, h, inside, bad, 2);
+  ctx.putImageData(img, 0, 0);
+  return frac;
 }

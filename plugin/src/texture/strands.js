@@ -49,8 +49,8 @@ const clamp255 = (x) => (x < 0 ? 0 : x > 255 ? 255 : x);
 /**
  * Repaints the hair `part` on `canvas` (the atlas, in UV space) strand by strand.
  * `center` is a world-space point inside the head (strand roots are the island points
- * nearest it). Hair with fewer than `minStrands` islands is left alone. Returns the
- * number of strands painted.
+ * nearest it). Strands are UV islands, or separate 3D pieces when the strands share a few
+ * UV islands (fewer than `minStrands`). Returns the number of strands painted.
  * @param {HTMLCanvasElement} canvas
  * @param {{ uvChannel: number, texture: any }} slot
  * @param {{ meshes: THREE.Mesh[], tris?: Map<THREE.Mesh, Uint8Array>, islands?: Map<THREE.Mesh, Set<number>> }} part
@@ -67,8 +67,10 @@ export function paintHairStrands(
   const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
 
-  // Gather triangles: UVs (pixels) and world positions per vertex, grouped by UV island.
-  const strands = new Map(); // key → { tris: [[px,py,wx,wy,wz]x3] }
+  // Gather triangles: UVs (pixels) and world positions per vertex, grouped by UV island
+  // and, separately, by 3D piece (strands often share UV islands but are separate geometry).
+  const byIsland = new Map(); // key → { tris: [[px,py,wx,wy,wz]x3] }
+  const byPiece = new Map();
   const box = new THREE.Box3();
   for (const mesh of part.meshes) {
     const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
@@ -80,12 +82,10 @@ export function paintHairStrands(
     if (part.tris && !keepTri) continue;
     const keepIsland = part.islands?.get(mesh);
     const islandOf = islandIdPerTriangle(src);
+    const pieceOf = pieceIdPerTriangle(pos, src.index, triCount);
     for (let t = 0; t < triCount; t++) {
       if (keepTri && !keepTri[t]) continue;
       if (keepIsland && !keepIsland.has(islandOf[t])) continue;
-      const key = `${mesh.uuid}:${islandOf[t]}`;
-      let s = strands.get(key);
-      if (!s) strands.set(key, (s = { tris: [], seed: strands.size + 1 }));
       const tri = [];
       let ou = Infinity,
         ov = Infinity;
@@ -102,11 +102,20 @@ export function paintHairStrands(
         box.expandByPoint(_v);
         tri.push([(src.uvs[v * 2] - ou) * W, (src.uvs[v * 2 + 1] - ov) * H, _v.x, _v.y, _v.z]);
       }
-      s.tris.push(tri);
+      for (const [map, key] of [
+        [byIsland, `${mesh.uuid}:${islandOf[t]}`],
+        [byPiece, `${mesh.uuid}:${pieceOf[t]}`],
+      ]) {
+        let s = map.get(key);
+        if (!s) map.set(key, (s = { tris: [], seed: map.size + 1 }));
+        s.tris.push(tri);
+      }
     }
   }
-  // One big hair cap (a single skin) keeps the painted image: there are no strands to shade.
-  if (strands.size < minStrands) return 0;
+  // Strands: UV islands when there are enough, else separate 3D pieces (cards that share a
+  // UV island), else whatever there is (a hair cap still gets root-to-tip shading).
+  const strands = byIsland.size >= minStrands || byIsland.size >= byPiece.size ? byIsland : byPiece;
+  if (!strands.size) return 0;
   const c = center ?? box.getCenter(new THREE.Vector3()).toArray();
   const [cx, cy, cz] = Array.isArray(c) ? c : [c.x, c.y, c.z];
   const size = box.getSize(new THREE.Vector3()).length() || 1;
@@ -242,4 +251,35 @@ export function paintHairStrands(
   }
   ctx.putImageData(img, 0, 0);
   return strands.size;
+}
+
+/** Connected 3D pieces of a mesh (vertices welded by position), as a piece id per triangle. */
+function pieceIdPerTriangle(pos, index, triCount) {
+  const n = pos.count;
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  const union = (a, b) => {
+    a = find(a);
+    b = find(b);
+    if (a !== b) parent[a] = b;
+  };
+  const weld = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = `${Math.round(pos.getX(i) * 1e4)}_${Math.round(pos.getY(i) * 1e4)}_${Math.round(pos.getZ(i) * 1e4)}`;
+    const e = weld.get(key);
+    if (e === undefined) weld.set(key, i);
+    else union(i, e);
+  }
+  const vi = (t, k) => (index ? index[t * 3 + k] : t * 3 + k);
+  for (let t = 0; t < triCount; t++) {
+    union(vi(t, 0), vi(t, 1));
+    union(vi(t, 1), vi(t, 2));
+  }
+  const out = new Int32Array(triCount);
+  for (let t = 0; t < triCount; t++) out[t] = find(vi(t, 0));
+  return out;
 }
