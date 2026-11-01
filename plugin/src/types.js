@@ -97,6 +97,8 @@
  * @property {boolean} [strandHair] Shade hair made of strands (cards / spikes) strand by strand
  *   in the painted hair color: dark roots, light tips, streaks along each strand. Default true.
  * @property {boolean} [fixSkinLeftovers] Fill small skin-colored patches left in clothing zones. Default true.
+ * @property {boolean} [handsAsMaterial] Paint the hands zone from a seamless material texture (gloves or skin), shaded by the original, instead of an image edit. Default true.
+ * @property {boolean} [plainNarrowStrips] Narrow pieces between two limbs (inseam strip) get the plain fabric color. Default true.
  * @property {string[]} [locked] Area names that keep their current paint (default: plugin.locked).
  * @property {number} [edgePadding] Pixels (at 1024px) to grow island colors into gaps, against seams. Default 12; 0 = off.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.

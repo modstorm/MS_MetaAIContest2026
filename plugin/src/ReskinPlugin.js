@@ -1143,7 +1143,7 @@ export class ReskinPlugin {
       const rules = this.rulesFor(opts.assetClass, [part.name]);
       const frontLine = part.zone === 'torso' ? frontSpanText(guide) : '';
       if (frontLine) this.emit('warning', { message: `${part.name} front: ${frontLine.split(':')[0]}.` });
-      if (part.zone === 'hands' && opts.handsAsMaterial === true && this.provider.generateTexture) {
+      if (part.zone === 'hands' && opts.handsAsMaterial !== false && this.provider.generateTexture) {
         // Hand islands are tiny and look like little figures to the image model (it drew a
         // shirt and trousers in them), so hands get a plain material: a seamless texture of
         // the area theme, shaded by the original's light and dark (finger lines, nails).
