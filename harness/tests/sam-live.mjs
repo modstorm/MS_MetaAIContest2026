@@ -306,7 +306,11 @@ try {
               const mod = await import('/src/sampleModel.js');
               bytes = Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ oneMesh: true })));
             }
-            await p.postModel(new Uint8Array(bytes).buffer, { name });
+            const { model } = await p.postModel(new Uint8Array(bytes).buffer, { name });
+            // Show it in the 3D view like a drop does, so the screenshot has the model.
+            window.reskin.viewer.setContent(model.scene, model.gltf?.animations ?? []);
+            window.reskin.viewer.setSpin?.(false);
+            document.getElementById('empty-state')?.setAttribute('hidden', '');
             const warnings = [];
             const timings = [];
             const offW = p.on('warning', (e) => warnings.push(e.message));
@@ -360,7 +364,11 @@ try {
       }
     }
   }
-  report.usage = await page.evaluate(() => window.reskin.plugin.getUsage().text ?? null);
+  report.usage = await page.evaluate(() => {
+    const u = window.reskin.plugin.getUsage();
+    const s = u.session;
+    return `${s.images} images + ${s.segments ?? 0} SAM checks + ${s.inputTokens + s.outputTokens} tokens ≈ $${u.sessionCost.toFixed(2)} (whole run)`;
+  });
   save();
   console.log(`\nSession usage: ${report.usage}\nReport: ${outDir}report.json`);
 } finally {

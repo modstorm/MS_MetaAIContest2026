@@ -83,14 +83,16 @@ export const ASSET_CLASSES = [
     ],
     // Known Muse mistakes: portraits on the face / hands / pants, shoes at the bottom of the
     // legs, a face on the jacket front.
+    // A painted face scores 0.80-0.89 for "face" in live tests; a skull emblem scored 0.76, so
+    // "face" needs 0.8 (people and shoes score 0.89+).
     samCheck: {
       face: [{ concept: 'person', maxShare: 0.5 }],
-      hair: ['face'],
-      hands: ['face', 'person'],
-      torso: ['face', 'person'],
-      arms: ['face', 'person'],
-      legs: ['shoe', 'face', 'person'],
-      shoes: ['face', 'person'],
+      hair: [{ concept: 'face', minConfidence: 0.8 }],
+      hands: [{ concept: 'face', minConfidence: 0.8 }, 'person'],
+      torso: [{ concept: 'face', minConfidence: 0.8 }, 'person'],
+      arms: [{ concept: 'face', minConfidence: 0.8 }, 'person'],
+      legs: ['shoe', { concept: 'face', minConfidence: 0.8 }, 'person'],
+      shoes: [{ concept: 'face', minConfidence: 0.8 }, 'person'],
     },
   },
   {
