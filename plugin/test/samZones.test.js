@@ -41,8 +41,9 @@ function frontCamera() {
 describe('SAM zones', () => {
   it('takes phrases from the asset class, else from Muse part names', () => {
     const avatar = zoneConceptsFor('avatar');
-    expect(avatar.concepts.map((c) => c.zone)).toEqual(['face', 'hair', 'hands', 'arms', 'shoes', 'legs', 'torso']);
+    expect(avatar.concepts.map((c) => c.zone)).toEqual(['face', 'hair', 'hands', 'arms', 'shoes', 'legs']);
     expect(avatar.concepts.find((c) => c.zone === 'hands').concept).toBe('hand');
+    expect(avatar.rest).toBe('torso');
     const prop = zoneConceptsFor('prop', ['Red Lid!', 'metal body', 'red lid', '']);
     expect(prop.concepts.map((c) => c.concept)).toEqual(['red lid', 'metal body']);
     expect(zoneConceptsFor('generic', []).concepts).toEqual([]);

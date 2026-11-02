@@ -1562,8 +1562,15 @@ export class ReskinPlugin {
       const names = new Set();
       for (const slot of slots) {
         const found = res.zones.get(slot.id) ?? [];
-        if (found.length < 2) {
-          this.samZones.set(slot.id, []); // tried: one zone is no better than the usual areas
+        // Fewer zones than the usual split means SAM missed parts (the live run: hair, hands and
+        // shoes not seen on the test avatar), so the usual areas are kept unless preferSam is set.
+        const usual = this.paintRegions(slot, slotParts(slot), { ...opts, assetClass }).length;
+        if (found.length < 2 || (!opts.preferSam && found.length < usual)) {
+          this.samZones.set(slot.id, []); // tried: keep the usual areas
+          if (found.length >= 2)
+            this.emit('warning', {
+              message: `"${slot.name}": SAM found ${found.length} zones (${found.map((z) => z.zone).join(', ')}), fewer than the usual ${usual} areas; keeping the usual areas.`,
+            });
           continue;
         }
         const parts = slotParts(slot);

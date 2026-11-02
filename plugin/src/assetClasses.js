@@ -106,8 +106,8 @@ export const ASSET_CLASSES = [
         { zone: 'arms', concept: 'arm' },
         { zone: 'shoes', concept: 'shoe' },
         { zone: 'legs', concept: 'leg' },
-        { zone: 'torso', concept: 'shirt' },
       ],
+      // "shirt" found nothing on any model in the live run; what no phrase covers is the torso.
       rest: 'torso',
     },
   },

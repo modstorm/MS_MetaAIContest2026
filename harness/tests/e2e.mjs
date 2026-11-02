@@ -1380,7 +1380,11 @@ try {
       await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-zones' });
       const slot = p.layout.slots.find((s) => s.texture);
       const before = p.idRegions(slot).map((r) => r.name);
-      const found = await p.postFindZones({ assetClass: 'avatar' });
+      // Only face and shoes are found: fewer zones than the usual 7 areas, so those are kept...
+      const kept = await p.postFindZones({ assetClass: 'avatar' });
+      const keptAreas = p.idRegions(slot).map((r) => r.name);
+      // ...unless SAM is preferred (found again: no extra calls counted below come from this).
+      const found = await p.postFindZones({ assetClass: 'avatar', force: true, preferSam: true });
       const after = p.idRegions(slot).map((r) => r.zone);
       const usage = p.getUsage();
       await p.postPrompt('pirate', {
@@ -1395,21 +1399,24 @@ try {
       const withProfile = p.idRegions(slot).map((r) => r.name);
       p.setProfile(null);
       const off = (p.setSamZones(false), p.idRegions(slot).map((r) => r.name));
-      return { w, before, found, after, segments: usage.session.segments, withProfile, off };
+      return { w, before, kept, keptAreas, found, after, segments: usage.session.segments, withProfile, off };
     }, glb);
-    assert.equal(sams.length, 7, `one SAM image per phrase: ${sams.map((s) => s.prompt).join(', ')}`);
+    assert.equal(sams.length, 12, `one SAM image per phrase, twice: ${sams.map((s) => s.prompt).join(', ')}`);
+    assert.deepEqual(res.keptAreas, res.before, 'fewer SAM zones than usual areas: usual areas kept');
+    assert.ok(!res.kept?.length);
+    assert.ok(res.w.some((m) => /fewer than the usual 7 areas/.test(m)));
     assert.ok(sams.every((s) => s.w === 3 * 384 && s.h === 2 * 384), `sheet size ${sams[0].w}x${sams[0].h}`);
-    assert.equal(res.segments, 7, 'cost badge counts 7 SAM images');
+    assert.equal(res.segments, 12, 'cost badge counts 12 SAM images');
     for (const z of ['face', 'shoes', 'torso']) assert.ok(res.after.includes(z), `zone ${z}: ${res.after.join(', ')}`);
     assert.ok(res.found?.length, `zones returned: ${res.w.join(' | ')}`);
     assert.ok(
-      res.w.some((m) => /SAM 3\.1 zones: .*face.*7 SAM images ≈ \$0\.02/.test(m)),
+      res.w.some((m) => /SAM 3\.1 zones: .*face.*6 SAM images ≈ \$0\.0\d/.test(m)),
       res.w.filter((m) => /SAM/.test(m)).join(' | '),
     );
     // Painting used the SAM zones (one Muse image per zone), and found them only once.
     const areas = edits.map((e) => (e.prompt?.match(/"([^"]+)" area/) ?? [])[1]).filter(Boolean);
     assert.ok(areas.some((a) => /\(face\)/.test(a)) && areas.some((a) => /\(shoes\)/.test(a)), areas.join(', '));
-    assert.equal(sams.length, 7, 'zones are found once per model');
+    assert.equal(sams.length, 12, 'zones are not found again when painting');
     assert.deepEqual(res.withProfile, res.before, 'profile: usual areas');
     assert.deepEqual(res.off, res.before, 'switched off: usual areas');
     await page.context().close();
