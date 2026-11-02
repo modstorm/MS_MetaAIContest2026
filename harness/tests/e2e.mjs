@@ -1217,6 +1217,48 @@ try {
     await page.close();
   });
 
+  await step('torso wrapped side|front|side|back: a design centred by Muse lands on the front centre', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // Mock Muse: whatever it gets, it paints a red stripe down the middle of the image.
+    const stripe = makePng(64, 64, (x) => (x >= 30 && x < 34 ? [255, 0, 0] : [40, 60, 200])).toString('base64');
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: stripe }] }),
+      });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ singleMesh: true, torsoWrap: true })));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      const logs = [];
+      p.on('warning', (w) => logs.push(w.message));
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-wrap' });
+      await p.postPrompt('tiger', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+      const slot = p.layout.slots.find((s) => s.texture);
+      const out = p.lastPartJobs.get(slot.id).out;
+      const y = Math.round(0.86 * out.height);
+      const d = out.getContext('2d').getImageData(0, y, out.width, 1).data;
+      const red = [];
+      for (let x = Math.round(0.4 * out.width); x < Math.round(0.98 * out.width); x++)
+        if (d[x * 4] > 180 && d[x * 4 + 2] < 120) red.push(x / out.width);
+      return { red, logs: logs.filter((l) => /torso/i.test(l)), zones: p.idRegions(slot).map((r) => r.name) };
+    }, glb);
+    // Front panel: u from 0.4 + 0.58/6 to 0.4 + 0.58/2, centre at 0.4 + 0.58/3.
+    const frontCentre = 0.4 + 0.58 / 3;
+    const near = res.red.filter((u) => Math.abs(u - frontCentre) < 0.02);
+    assert.ok(
+      near.length > 0,
+      `stripe at front centre ${frontCentre.toFixed(3)}: red at ${JSON.stringify(res.red.map((u) => u.toFixed(3)))}; ${JSON.stringify(res)}`,
+    );
+    await page.close();
+  });
+
   await step('edge padding removes dark gaps; tiny islands become one solid color', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     // Mock paint: black background, red over the arm area, 1-texel red/yellow stripes elsewhere (64px -> 16px stripes).

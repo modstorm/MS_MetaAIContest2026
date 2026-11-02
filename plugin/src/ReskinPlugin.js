@@ -1210,7 +1210,7 @@ export class ReskinPlugin {
           guide = rollCanvas(guide, roll);
         }
         this.emit('warning', {
-          message: `${part.name}: ${fs ? (roll ? `front panel moved ${Math.round((100 * roll) / guide.width)}% to the center for painting` : 'front panel already centered') : 'no single front panel found'}.`,
+          message: `${part.name}: ${fs ? (roll ? `front panel moved ${Math.round((100 * roll) / guide.width)}% to the center for painting` : 'front panel already centered') : `no single front panel found (front faces: ${Math.round((facing.share.front ?? 0) * 100)}%, crop ${guide.width}x${guide.height}, orientation ${orient ? JSON.stringify({ rot: orient.rot, flipX: orient.flipX }) : 'upright'})`}.`,
         });
       }
       const padded = padToMuseAspect(crop);
@@ -1253,7 +1253,9 @@ export class ReskinPlugin {
       const paintMuse = (retryNote) =>
         this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
           this.provider.reskinPart({
-            theme: t,
+            // Plain retry: only this area's short theme (the whole-model theme may name a
+            // character the filter rejects), and no style reference image.
+            theme: plain && areaThemes.get(part.name) ? softenTheme(areaThemes.get(part.name)) : t,
             slotName: slot.name,
             partName: part.name,
             image: padded.canvas,
@@ -1984,7 +1986,7 @@ export class ReskinPlugin {
       if (!isContentPolicyError(err)) throw err;
       const softer = softenTheme(theme);
       this.emit('warning', {
-        message: `Muse's safety filter rejected the "${step}" request for "${slot.name}". Retrying with a plainer prompt: "${softer}".`,
+        message: `Muse's safety filter rejected the "${step}" request for "${slot.name}". Retrying with a plainer prompt (no style image; for areas, only that area's own theme).`,
       });
       try {
         return await this.timed(`${step} (plain retry)`, slot.id, () => call(true, softer));

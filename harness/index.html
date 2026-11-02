@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Muse Reskin: prompt-driven GLB retexturing</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%8E%A8%3C/text%3E%3C/svg%3E" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%8E%A8%3C/text%3E%3C/svg%3E"
+    />
   </head>
   <body>
     <div id="app">
@@ -18,9 +21,15 @@
           <button id="btn-open" title="Open a .glb or .gltf file">Open model</button>
           <button id="btn-sample" title="Load a built-in sample model">Sample model</button>
           <button id="btn-reskin" class="primary" disabled>Reskin…</button>
-          <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">ID map</button>
-          <button id="btn-review" disabled title="Muse checks renders of the result and repaints the areas it flags">Review &amp; fix</button>
-          <button id="btn-compare" disabled title="Drag the handle to compare the original and the reskin">Compare</button>
+          <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">
+            ID map
+          </button>
+          <button id="btn-review" disabled title="Muse checks renders of the result and repaints the areas it flags">
+            Review &amp; fix
+          </button>
+          <button id="btn-compare" disabled title="Drag the handle to compare the original and the reskin">
+            Compare
+          </button>
           <button id="btn-spin" class="on" title="Auto-rotate the model">Spin</button>
           <button id="btn-toggle" disabled title="Compare with the original textures">Show original</button>
           <button id="btn-export" disabled>Export GLB</button>
@@ -34,8 +43,10 @@
           <div id="empty-state" class="empty-state">
             <div class="drop-icon">⬇</div>
             <h2>Drop a .glb or .gltf here</h2>
-            <p>For a .gltf, drop it together with its .bin and texture files.<br />
-              Or use <a href="#" id="link-sample">the sample model</a>.</p>
+            <p>
+              For a .gltf, drop it together with its .bin and texture files.<br />
+              Or use <a href="#" id="link-sample">the sample model</a>.
+            </p>
           </div>
           <div id="status" class="status"></div>
           <div id="compare" class="compare" hidden>
@@ -61,7 +72,13 @@
             <div id="generated" class="muted">Nothing generated yet.</div>
           </section>
           <section id="history-section" hidden>
-            <h3>History <span class="hist-actions"><button id="btn-undo" title="Undo (Ctrl+Z)">↶</button><button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷</button></span></h3>
+            <h3>
+              History
+              <span class="hist-actions"
+                ><button id="btn-undo" title="Undo (Ctrl+Z)">↶</button
+                ><button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷</button></span
+              >
+            </h3>
             <div id="history" class="history"></div>
           </section>
           <section id="review-section" hidden>
@@ -88,27 +105,44 @@
         <h2>Reskin with a prompt</h2>
         <p class="muted" id="prompt-model-info"></p>
         <label for="prompt-text">Theme</label>
-        <textarea id="prompt-text" rows="3" required placeholder="e.g. haunted Halloween pumpkin armor with glowing orange cracks"></textarea>
+        <textarea
+          id="prompt-text"
+          rows="3"
+          required
+          placeholder="e.g. haunted Halloween pumpkin armor with glowing orange cracks"
+        ></textarea>
         <div class="chips" id="prompt-chips"></div>
         <div class="style-row">
-          <label class="inline" id="suggest-row"><input id="opt-suggest" type="checkbox" checked /> Let Muse study the model and improve the prompt</label>
-          <label class="inline">Variations
-            <select id="opt-variations"><option>1</option><option>2</option><option selected>3</option></select>
+          <label class="inline" id="suggest-row"
+            ><input id="opt-suggest" type="checkbox" checked /> Let Muse study the model and improve the prompt</label
+          >
+          <label class="inline"
+            >Variations
+            <select id="opt-variations">
+              <option>1</option>
+              <option>2</option>
+              <option selected>3</option>
+            </select>
           </label>
         </div>
         <details id="advanced">
           <summary>Advanced</summary>
           <div class="opts">
-            <label>Asset type
-              <select id="opt-asset-class"><option value="auto" selected>Auto (detected)</option></select>
+            <label
+              >Asset type
+              <select id="opt-asset-class">
+                <option value="auto" selected>Auto (detected)</option>
+              </select>
             </label>
-            <label>Paint mode
+            <label
+              >Paint mode
               <select id="opt-paint-mode">
                 <option value="auto" selected>Part by part (one Muse call per part)</option>
                 <option value="atlas">Whole atlas (one Muse call)</option>
               </select>
             </label>
-            <label>Atlas orientation
+            <label
+              >Atlas orientation
               <select id="opt-orient">
                 <option value="auto" selected>Auto (from the 3D model)</option>
                 <option value="none">As stored</option>
@@ -119,26 +153,64 @@
                 <option value="rot270">Rotate 270°</option>
               </select>
             </label>
-            <label>Max texture size
-              <select id="opt-size"><option>512</option><option selected>1024</option><option>2048</option></select>
+            <label
+              >Max texture size
+              <select id="opt-size">
+                <option>512</option>
+                <option selected>1024</option>
+                <option>2048</option>
+              </select>
             </label>
-            <label><input id="opt-review" type="checkbox" checked /> Review &amp; fix after painting (Muse checks 8 views of the result and repaints flagged areas once)</label>
-            <label><input id="opt-fast" type="checkbox" checked /> Fast mode (no Muse web search, low reasoning, smaller uploads)</label>
-            <label><input id="opt-plan" type="checkbox" checked /> Read the atlas layout first in whole-atlas mode (Muse Spark vision)</label>
-            <label><input id="opt-tiny" type="checkbox" checked /> Clean up tiny islands (fingers, buttons) to solid colors</label>
+            <label
+              ><input id="opt-review" type="checkbox" checked /> Review &amp; fix after painting (Muse checks 8 views of
+              the result and repaints flagged areas once)</label
+            >
+            <label
+              ><input id="opt-fast" type="checkbox" checked /> Fast mode (no Muse web search, low reasoning, smaller
+              uploads)</label
+            >
+            <label
+              ><input id="opt-plan" type="checkbox" checked /> Read the atlas layout first in whole-atlas mode (Muse
+              Spark vision)</label
+            >
+            <label
+              ><input id="opt-tiny" type="checkbox" checked /> Clean up tiny islands (fingers, buttons) to solid
+              colors</label
+            >
             <label><input id="opt-pad" type="checkbox" checked /> Edge padding against dark seams</label>
-            <label><input id="opt-normal" type="checkbox" checked /> Regenerate normal maps (only where the model has them)</label>
-            <label><input id="opt-rough" type="checkbox" checked /> Regenerate roughness maps (only where the model has them)</label>
-            <label><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images shortened)</label>
-            <label for="lessons">Learned tips <span class="muted">(from review passes; one per line as "asset type: tip", added to future prompts)</span></label>
-            <textarea id="lessons" rows="4" placeholder="avatar: Keep chest details on front-facing areas only"></textarea>
+            <label
+              ><input id="opt-normal" type="checkbox" checked /> Regenerate normal maps (only where the model has
+              them)</label
+            >
+            <label
+              ><input id="opt-rough" type="checkbox" checked /> Regenerate roughness maps (only where the model has
+              them)</label
+            >
+            <label
+              ><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images
+              shortened)</label
+            >
+            <label for="lessons"
+              >Learned tips
+              <span class="muted"
+                >(from review passes; one per line as "asset type: tip", added to future prompts)</span
+              ></label
+            >
+            <textarea
+              id="lessons"
+              rows="4"
+              placeholder="avatar: Keep chest details on front-facing areas only"
+            ></textarea>
             <div class="row">
               <button type="button" id="lessons-export">Export</button>
               <button type="button" id="lessons-import">Import</button>
               <button type="button" id="lessons-clear">Clear</button>
               <input id="lessons-file" type="file" accept=".json,application/json" hidden />
             </div>
-            <div class="row"><button type="button" id="btn-probe">Run filter probe</button><span class="muted">5 small Muse calls (~$0.05) to find what the safety filter rejects</span></div>
+            <div class="row">
+              <button type="button" id="btn-probe">Run filter probe</button
+              ><span class="muted">5 small Muse calls (~$0.05) to find what the safety filter rejects</span>
+            </div>
             <ul id="probe-results" class="probe" hidden></ul>
           </div>
         </details>
@@ -198,11 +270,19 @@
         <h2>Settings</h2>
         <label>Texture backend</label>
         <div class="radio">
-          <label><input type="radio" name="provider" value="muse" checked /> Meta Muse (muse-image-1.0 + muse-spark-1.3)</label>
+          <label
+            ><input type="radio" name="provider" value="muse" checked /> Meta Muse (muse-image-1.0 +
+            muse-spark-1.3)</label
+          >
           <label><input type="radio" name="provider" value="offline" /> Offline procedural (no key, for testing)</label>
         </div>
         <label for="set-key">Muse API key</label>
-        <input id="set-key" type="password" autocomplete="off" placeholder="from dev.meta.ai (kept in this browser only)" />
+        <input
+          id="set-key"
+          type="password"
+          autocomplete="off"
+          placeholder="from dev.meta.ai (kept in this browser only)"
+        />
         <p class="muted" id="key-source"></p>
         <label><input id="set-proxy" type="checkbox" /> Send requests through the local dev proxy (/api/muse)</label>
         <div class="row">

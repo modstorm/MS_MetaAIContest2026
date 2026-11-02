@@ -479,6 +479,7 @@ export function frontSpan(guide, facing = 0) {
   const d = guide.getContext('2d').getImageData(0, 0, w, h).data;
   const step = Math.max(1, Math.floor(h / 200));
   const isFront = new Uint8Array(w);
+  const frontPx = new Float64Array(w);
   for (let x = 0; x < w; x++) {
     let front = 0,
       covered = 0;
@@ -491,6 +492,7 @@ export function frontSpan(guide, facing = 0) {
       if (f === facing) front++;
     }
     isFront[x] = covered >= 3 && front / covered >= 0.6 ? 1 : 0;
+    frontPx[x] = front;
   }
   const runs = [];
   const gap = Math.max(2, Math.round(w * 0.01));
@@ -506,6 +508,15 @@ export function frontSpan(guide, facing = 0) {
     const first = runs.shift();
     runs[runs.length - 1].end = first.end + w;
   }
-  const big = runs.filter((r) => r.end - r.start + 1 >= w * 0.1);
-  return big.length === 1 ? big[0] : null;
+  // Small separate pieces of the area (a neck strip, stray islands) can face front too:
+  // the panel is the run with by far the most front-facing surface.
+  const mass = (r) => {
+    let m = 0;
+    for (let x = r.start; x <= r.end; x++) m += frontPx[x % w];
+    return m;
+  };
+  const big = runs.filter((r) => r.end - r.start + 1 >= w * 0.06).sort((p, q) => mass(q) - mass(p));
+  if (!big.length) return null;
+  if (big.length > 1 && mass(big[1]) > mass(big[0]) * 0.5) return null;
+  return big[0];
 }

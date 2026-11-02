@@ -18,7 +18,7 @@ export default defineConfig(({ command, mode }) => {
     },
     define: {
       // The key is injected ONLY for the local dev server, never into `vite build` output.
-      __MUSE_DEV_KEY__: JSON.stringify(isDev ? env.MUSE_API_KEY ?? '' : ''),
+      __MUSE_DEV_KEY__: JSON.stringify(isDev ? (env.MUSE_API_KEY ?? '') : ''),
       __MUSE_API_BASE__: JSON.stringify(env.MUSE_API_BASE || 'https://api.meta.ai/v1'),
       __MUSE_IMAGE_MODEL__: JSON.stringify(env.MUSE_IMAGE_MODEL || 'muse-image-1.0'),
       __MUSE_VISION_MODEL__: JSON.stringify(env.MUSE_VISION_MODEL || 'muse-spark-1.3'),

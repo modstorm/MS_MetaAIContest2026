@@ -194,6 +194,7 @@ export async function buildAvatarTestGlb({
   unwrappedLegs = false,
   hairSharedUv = false,
   oneMesh = false,
+  torsoWrap = false,
 } = {}) {
   const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
   const c = document.createElement('canvas');
@@ -216,8 +217,47 @@ export async function buildAvatarTestGlb({
     m.name = name;
     return m;
   };
+  // torsoWrap: the torso is one strip wrapped round the body, laid out left to right as
+  // side, front, side, back (front and back twice as wide as the sides), front off-center.
+  const wrapTorso = () => {
+    const hx = 0.25,
+      hz = 0.125,
+      yTop = 1.5,
+      yBot = 0.9,
+      rect = [0.4, 0.74, 0.98, 0.98];
+    const faces = [
+      { n: [1, 0, 0], w: 2 * hz },
+      { n: [0, 0, 1], w: 2 * hx },
+      { n: [-1, 0, 0], w: 2 * hz },
+      { n: [0, 0, -1], w: 2 * hx },
+    ];
+    const total = faces.reduce((a, f) => a + f.w, 0);
+    const pos = [],
+      uvs = [],
+      idx = [];
+    let acc = 0;
+    for (const f of faces) {
+      const r = [f.n[2], 0, -f.n[0]]; // up × n
+      const half = f.w / 2;
+      const c = [f.n[0] * hx, 0, f.n[2] * hz];
+      const a = rect[0] + ((rect[2] - rect[0]) * acc) / total;
+      acc += f.w;
+      const b = rect[0] + ((rect[2] - rect[0]) * acc) / total;
+      const corner = (sx, y) => [c[0] + r[0] * half * sx, y, c[2] + r[2] * half * sx];
+      const base = pos.length / 3;
+      pos.push(...corner(-1, yTop), ...corner(1, yTop), ...corner(1, yBot), ...corner(-1, yBot));
+      uvs.push(a, rect[1], b, rect[1], b, rect[3], a, rect[3]);
+      idx.push(base, base + 3, base + 2, base, base + 2, base + 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  };
   const torso = [
-    box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6, torsoColumns), // torsoColumns: vertex columns across (low-poly)
+    torsoWrap ? wrapTorso() : box([0.5, 0.6, 0.25], [0, 1.2, 0], [0.02, 0.02, 0.3, 0.3], 6, torsoColumns), // torsoColumns: vertex columns across (low-poly)
     box([0.08, 0.1, 0.08], [0, 1.55, 0], [0.32, 0.02, 0.36, 0.06]), // neck
   ];
   // skinSwatch: a small box on the upper back whose UVs are one tiny square (a color swatch).
