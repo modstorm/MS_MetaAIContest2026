@@ -1696,6 +1696,148 @@ try {
     await page.context().close();
   });
 
+  console.log('Single textures (postTexture) and texture ids');
+  await step('events carry the glTF texture and image index of the texture they replace', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      await p.postModel(await mod.buildOrientationTestGlb(), { name: 'ids-test' });
+      const updates = [];
+      const off = p.on('textureUpdated', (e) => updates.push({ ...e, canvas: undefined }));
+      const r = await p.postPrompt('lava', { paintMode: 'atlas' });
+      // The model has no normal / roughness maps: 'always' creates them, and they replace nothing.
+      const made = await p.postPrompt('lava', { paintMode: 'atlas', normalMaps: 'always', roughnessMaps: 'always' });
+      off();
+      const created = made.slots.flatMap((s) => s.maps.filter((m) => m.kind !== 'baseColor'));
+      const json = p.model.gltf.parser.json;
+      return {
+        updates,
+        slots: r.slots.map((s) => ({
+          slotId: s.slotId,
+          textureIndex: s.textureIndex,
+          imageIndex: s.imageIndex,
+          textureUuid: s.textureUuid,
+        })),
+        images: json.images.length,
+        created: created.map((m) => ({
+          kind: m.kind,
+          textureName: m.textureName,
+          textureUuid: m.textureUuid,
+          imageIndex: m.imageIndex,
+        })),
+        plainMaps: r.slots.flatMap((s) => s.maps.map((m) => m.kind)),
+      };
+    });
+    const base = out.updates.filter((u) => u.kind === 'baseColor');
+    assert.ok(base.length >= 1, 'baseColor update');
+    for (const u of base) {
+      assert.equal(typeof u.textureIndex, 'number', `textureIndex on ${u.slotId}`);
+      assert.ok(u.imageIndex >= 0 && u.imageIndex < out.images, `imageIndex on ${u.slotId}`);
+      assert.ok(u.textureUuid && 'textureName' in u && 'imageName' in u);
+    }
+    assert.equal(out.slots[0].imageIndex, base.find((u) => u.slotId === out.slots[0].slotId).imageIndex);
+    assert.deepEqual([...new Set(out.plainMaps)], ['baseColor'], 'no normal/roughness maps made by default');
+    assert.ok(out.created.length >= 2, 'always: maps created');
+    for (const m of out.created)
+      assert.deepEqual([m.textureName, m.textureUuid, m.imageIndex], [null, null, null], m.kind);
+    await page.context().close();
+  });
+
+  await step('postTexture: a tiling texture comes back tiling, with tiling normal and roughness maps', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      // A checker that tiles (period divides the size).
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      const g = c.getContext('2d');
+      for (let y = 0; y < 8; y++)
+        for (let x = 0; x < 8; x++) {
+          g.fillStyle = (x + y) % 2 ? '#303030' : '#d0d0d0';
+          g.fillRect(x * 32, y * 32, 32, 32);
+        }
+      const events = [];
+      p.on('textureProgress', (e) => events.push(e.stage));
+      const r = await p.postTexture(c, { theme: 'molten lava', context: 'race track surface', id: 'img-42' });
+      const n = await p.measureSeams(r.normal);
+      const rough = await p.measureSeams(r.roughness);
+      return {
+        id: r.id,
+        cls: r.assetClass,
+        wrap: r.wrap,
+        seams: r.seams,
+        n,
+        rough,
+        w: r.canvas.width,
+        h: r.canvas.height,
+        events,
+        busy: p.isBusy,
+      };
+    });
+    assert.equal(out.id, 'img-42');
+    assert.equal(out.cls, 'material');
+    assert.equal(out.wrap, 'both');
+    assert.ok(out.seams.after.x < 2 && out.seams.after.y < 2, JSON.stringify(out.seams));
+    assert.ok(out.n.x < 2 && out.n.y < 2, `normal tiles ${JSON.stringify(out.n)}`);
+    assert.ok(out.rough.x < 2 && out.rough.y < 2, `roughness tiles ${JSON.stringify(out.rough)}`);
+    assert.deepEqual([out.w, out.h], [256, 256]);
+    assert.ok(out.events.includes('done'));
+    assert.equal(out.busy, false);
+    await page.context().close();
+  });
+
+  await step('postTexture: a sky panorama joins left to right, calm poles, Muse gets the equirect prompt', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const prompts = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
+      return museOk(route);
+    });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      // 2:1 sky: blue gradient to a green ground, a sun near the right edge (does not wrap).
+      const c = document.createElement('canvas');
+      c.width = 512;
+      c.height = 256;
+      const g = c.getContext('2d');
+      const grad = g.createLinearGradient(0, 0, 512, 0);
+      grad.addColorStop(0, '#203060');
+      grad.addColorStop(1, '#a0c0ff');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 512, 128);
+      g.fillStyle = '#306030';
+      g.fillRect(0, 128, 512, 128);
+      const before = await p.measureSeams(c);
+      const r = await p.postTexture(c, { theme: 'stormy sunset', assetClass: 'sky' });
+      const d = r.canvas.getContext('2d').getImageData(0, 0, r.canvas.width, 1).data;
+      const top = new Set();
+      for (let x = 0; x < r.canvas.width; x += 37) top.add(`${d[x * 4]},${d[x * 4 + 1]},${d[x * 4 + 2]}`);
+      return {
+        before,
+        wrap: r.wrap,
+        seams: r.seams,
+        normal: r.normal,
+        roughness: r.roughness,
+        w: r.canvas.width,
+        h: r.canvas.height,
+        top: top.size,
+      };
+    });
+    assert.ok(out.before.x > 2, 'test sky does not wrap before');
+    assert.equal(out.wrap, 'equirect');
+    assert.ok(out.seams.after.x < 2, JSON.stringify(out.seams));
+    assert.equal(out.normal, null);
+    assert.equal(out.roughness, null);
+    assert.deepEqual([out.w, out.h], [512, 256]);
+    assert.equal(out.top, 1, 'zenith row is one color');
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /equirectangular/);
+    assert.match(prompts[0], /stormy sunset/);
+    await page.context().close();
+  });
+
   console.log('Drag and drop');
   await step('dropping a .glb loads it and opens the prompt', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });

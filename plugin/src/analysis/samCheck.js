@@ -42,6 +42,7 @@ export function samRulesFor(assetClassId, zone, theme = '') {
 export function areaCoverage(result, area, w, h, minConfidence = 0.4) {
   const hitMap = new Uint8Array(w * h);
   let best = null;
+  const boxes = [];
   for (const rec of recordsOfKind(result?.records ?? [], 'mask')) {
     if (rec.confidence !== undefined && rec.confidence < minConfidence) continue;
     const { left, top, right, bottom } = rec.bounds;
@@ -64,6 +65,7 @@ export function areaCoverage(result, area, w, h, minConfidence = 0.4) {
         }
       }
     }
+    if (n) boxes.push({ left, top, right, bottom });
     if (!best || n > best.n) best = { n, cx: (left + right) / 2 / w, cy: (top + bottom) / 2 / h, c: rec.confidence };
   }
   let total = 0,
@@ -79,6 +81,8 @@ export function areaCoverage(result, area, w, h, minConfidence = 0.4) {
     confidence: best?.c,
     /** 1 where a mask covers the area, at w x h (for a masked repaint). */
     mask: hitMap,
+    /** Boxes (pixels at w x h) of the masks that touch the area. */
+    boxes,
   };
 }
 
@@ -131,6 +135,7 @@ export async function findIntrusions(o) {
         where: now.where,
         confidence: now.confidence,
         mask: now.mask,
+        boxes: now.boxes,
         maskSize: size,
       };
     }),
@@ -177,6 +182,16 @@ export function maskedBlend(base, patch, hits, { grow = 0.03 } = {}) {
     for (let i = 0; i < hit.mask.length; i++) if (hit.mask[i]) id.data[i * 4 + 3] = 255;
   }
   sg.putImageData(id, 0, 0);
+  // Also each detection's whole box, grown by a fifth: SAM's mask of a face often leaves out
+  // the hair, neck and outline of the drawn figure, and a patch on the mask alone left a face.
+  sg.fillStyle = '#000';
+  for (const hit of withMask) {
+    for (const b of hit.boxes ?? []) {
+      const gx = (b.right - b.left) * 0.2,
+        gy = (b.bottom - b.top) * 0.2;
+      sg.fillRect(b.left - gx, b.top - gy, b.right - b.left + 2 * gx, b.bottom - b.top + 2 * gy);
+    }
+  }
   // Grow and feather at full size: blur the alpha, then stretch it so the core stays solid.
   const r = Math.max(1, Math.round(Math.max(base.width, base.height) * grow));
   const alpha = document.createElement('canvas');

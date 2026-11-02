@@ -13,6 +13,8 @@ import {
   plainReskinPartPrompt,
   reskinPartPrompt,
   plainSeamlessTexturePrompt,
+  plainReskinTexturePrompt,
+  reskinTexturePrompt,
   seamlessTexturePrompt,
   suggestPrompt as suggestPromptText,
   suggestFromAnalysisPrompt,
@@ -374,6 +376,23 @@ export class MuseProvider {
             ...(req.styleRef ? [this.toUploadSized(req.styleRef, 512)] : []),
             ...(req.template ? [this.toUpload(req.template, 'guide')] : []),
           ],
+      size: museSizeFor(req.image.width, req.image.height),
+      signal: req.signal,
+    });
+  }
+
+  /** One standalone texture (tiling material, track, sky panorama): see reskinTexturePrompt. */
+  reskinTexture(req) {
+    return this.paint('editImage', {
+      prompt: req.plain
+        ? plainReskinTexturePrompt(req.theme, req.wrap)
+        : reskinTexturePrompt(req.theme, {
+            name: req.name,
+            context: req.context,
+            classRules: req.classRules,
+            wrap: req.wrap,
+          }),
+      images: [this.toUpload(req.image)],
       size: museSizeFor(req.image.width, req.image.height),
       signal: req.signal,
     });

@@ -43,6 +43,8 @@ import {
   accentColor,
   averageColor,
   blobToCanvas,
+  createCanvas,
+  ctx2d,
   drawAtlasWithUvs,
   drawPartLabels,
   partLayer,
@@ -58,6 +60,7 @@ import {
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
+import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -166,6 +169,8 @@ export class ReskinPlugin {
   usage = { reskin: emptyUsage(), session: emptyUsage() };
   busy = false;
   abort = null;
+  /** AbortControllers of running postTexture jobs (they run alongside each other). */
+  textureJobs = new Set();
 
   model = null;
   layout = null;
@@ -267,6 +272,7 @@ export class ReskinPlugin {
   /** Cancels a running postPrompt. */
   cancel() {
     this.abort?.abort(new DOMException('Cancelled', 'AbortError'));
+    for (const c of this.textureJobs) c.abort(new DOMException('Cancelled', 'AbortError'));
   }
 
   // ---------------------------------------------------------------- post: model
@@ -675,7 +681,13 @@ export class ReskinPlugin {
         } else {
           const e = toError(r.reason);
           firstError ??= e;
-          const f = { slotId: remote[i].id, name: remote[i].name, error: e.message, step: e.step };
+          const f = {
+            slotId: remote[i].id,
+            name: remote[i].name,
+            ...this.textureIdentity(remote[i].texture),
+            error: e.message,
+            step: e.step,
+          };
           failed.push(f);
           this.emit('warning', {
             message: `"${remote[i].name}" was not painted${e.step ? ` (${e.step})` : ''}: ${e.message}. It keeps its original texture.`,
@@ -933,9 +945,12 @@ export class ReskinPlugin {
     const { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts } = ctx;
     let raw = ctx.raw;
     const maps = []; // generated maps of this result, kept with it in the history
-    const emitMap = (kind, canvas) => {
-      maps.push({ slotId: slot.id, kind, canvas });
-      this.emit('textureUpdated', { slotId: slot.id, kind, canvas });
+    // Each map carries the identity of the texture it replaces (name, uuid, glTF texture and
+    // image index), so a host can match it to its own image ids.
+    const emitMap = (kind, canvas, replaces) => {
+      const entry = { slotId: slot.id, slotName: slot.name, kind, canvas, ...this.textureIdentity(replaces) };
+      maps.push(entry);
+      this.emit('textureUpdated', entry);
     };
     signal.throwIfAborted();
     // Undo the upright transform so the texture matches the model's UVs again.
@@ -982,7 +997,7 @@ export class ReskinPlugin {
       mat.color.set(0xffffff);
       mat.needsUpdate = true;
     }
-    emitMap('baseColor', baseColor);
+    emitMap('baseColor', baseColor, slot.texture);
 
     // ---- normal maps
     if (opts.normalMaps ?? true) {
@@ -1001,7 +1016,7 @@ export class ReskinPlugin {
           );
           tex = this.makeTexture(canvas, src ?? slot.texture, THREE.NoColorSpace, slot.uvChannel, !atlasMode);
           cache.set(key, tex);
-          emitMap('normal', canvas);
+          emitMap('normal', canvas, src);
         }
         mat.normalMap = tex;
         mat.needsUpdate = true;
@@ -1025,7 +1040,7 @@ export class ReskinPlugin {
           );
           tex = this.makeTexture(canvas, src ?? slot.texture, THREE.NoColorSpace, slot.uvChannel, !atlasMode);
           cache.set(key, tex);
-          emitMap('roughness', canvas);
+          emitMap('roughness', canvas, src);
         }
         const packed = snap.metalnessMap && snap.metalnessMap === snap.roughnessMap;
         mat.roughnessMap = tex;
@@ -1036,7 +1051,16 @@ export class ReskinPlugin {
     }
 
     report(1, 'apply', `Finished "${slot.name}"`);
-    return { slotId: slot.id, canvas: baseColor, raw, plan, prompt: usedPrompt, maps };
+    return {
+      slotId: slot.id,
+      slotName: slot.name,
+      ...this.textureIdentity(slot.texture),
+      canvas: baseColor,
+      raw,
+      plan,
+      prompt: usedPrompt,
+      maps,
+    };
   }
 
   async auxMap(kind, theme, source, newBaseColor, signal, derive) {
@@ -1063,6 +1087,233 @@ export class ReskinPlugin {
       }
     }
     return derive();
+  }
+
+  // ---------------------------------------------------------------- texture identity
+
+  /**
+   * Who a texture is in the source file: { textureName, textureUuid, textureIndex,
+   * imageIndex, imageName }. textureIndex / imageIndex are the glTF `textures[]` and
+   * `images[]` indices (null if the texture did not come from the loaded GLB).
+   * @param {THREE.Texture | null | undefined} tex
+   */
+  textureIdentity(tex) {
+    const none = { textureName: null, textureUuid: null, textureIndex: null, imageIndex: null, imageName: null };
+    if (!tex) return none;
+    const parser = this.model?.gltf?.parser;
+    const assoc = parser?.associations;
+    let ref = assoc?.get(tex);
+    if (ref?.textures == null && assoc) {
+      // A clone (texture transform, a second sampler) shares the original's image.
+      for (const [k, v] of assoc) {
+        if (k?.isTexture && v?.textures != null && k.source && k.source === tex.source) {
+          ref = v;
+          break;
+        }
+      }
+    }
+    const textureIndex = ref?.textures ?? null;
+    const t = textureIndex != null ? parser?.json?.textures?.[textureIndex] : null;
+    const imageIndex = t
+      ? (t.source ?? Object.values(t.extensions ?? {}).find((e) => e?.source != null)?.source ?? null)
+      : null;
+    return {
+      textureName: tex.name || null,
+      textureUuid: tex.uuid,
+      textureIndex,
+      imageIndex,
+      imageName: imageIndex != null ? (parser.json.images?.[imageIndex]?.name ?? null) : null,
+    };
+  }
+
+  // ---------------------------------------------------------------- post: texture
+
+  /**
+   * Repaints one standalone texture (no model needed): a tiling material, a track surface,
+   * an equirectangular sky. Keeps the wrap: tiling textures tile on both axes, a sky
+   * panorama joins left to right with calm poles. Returns the new base color plus
+   * normal and roughness maps derived from it (they tile too).
+   *
+   * Runs alongside other postTexture calls and is not blocked by a running reskin.
+   * Events: `textureProgress` { id, stage, message, progress }, `textureReskinned` (the
+   * result), `textureFailed` { id, name, error }.
+   *
+   * @param {HTMLCanvasElement | HTMLImageElement | ImageBitmap | ImageData | Blob | THREE.Texture | string | null} input
+   *   The texture to repaint (a URL string is fetched). null generates a new seamless texture.
+   * @param {import('./types.js').PostTextureOptions} opts
+   * @returns {Promise<import('./types.js').TextureResult>}
+   */
+  async postTexture(input, opts = {}) {
+    const theme = String(opts.theme ?? '').trim();
+    if (!theme) throw new Error('postTexture needs opts.theme');
+    const ctrl = new AbortController();
+    this.textureJobs.add(ctrl);
+    const signal = opts.signal ? anySignal([opts.signal, ctrl.signal]) : ctrl.signal;
+    this.textureCount = (this.textureCount ?? 0) + 1;
+    const id = opts.id ?? `texture${this.textureCount}`;
+    const name = opts.name ?? (typeof input?.name === 'string' && input.name ? input.name : id);
+    const started = performance.now();
+    const report = (progress, stage, message) => this.emit('textureProgress', { id, name, stage, message, progress });
+    const job = { id: null, name };
+    try {
+      const assetClass = opts.assetClass
+        ? (normalizeAssetClass(opts.assetClass) ?? String(opts.assetClass))
+        : detectAssetClass({ subject: `${opts.context ?? ''} ${theme}`, modelName: name });
+      report(0.02, 'load', `Reading "${name}"`);
+      const source = input == null ? null : await this.toInputCanvas(input);
+      signal.throwIfAborted();
+      const maxSize = Math.min(opts.maxTextureSize ?? 2048, 4096);
+      const wrap = resolveWrap(opts.wrap, assetClass, source);
+      let width, height;
+      if (source) ({ width, height } = fitSize(source.width, source.height, maxSize));
+      else {
+        width = Math.min(opts.width ?? 1024, maxSize);
+        height = Math.min(opts.height ?? (wrap === 'equirect' ? Math.round(width / 2) : width), maxSize);
+      }
+      const classRules = assetClassRules(assetClass);
+
+      report(
+        0.1,
+        'paint',
+        `Painting "${name}" (${wrap === 'none' ? 'no wrap' : wrap === 'equirect' ? 'sky panorama' : `wraps ${wrap}`})`,
+      );
+      let raw;
+      if (source) {
+        const image = resizeCanvas(source, width, height);
+        raw = await this.withFilterRetry('paint texture', job, theme, (plain, t) =>
+          this.provider.reskinTexture
+            ? this.provider.reskinTexture({
+                theme: t,
+                image,
+                name,
+                context: opts.context,
+                classRules,
+                wrap,
+                plain,
+                signal,
+              })
+            : this.provider.reskinAtlas({
+                theme: t,
+                slotName: name,
+                atlas: image,
+                uvGuide: image,
+                width,
+                height,
+                plain,
+                extraInstructions: [opts.context, ...classRules].filter(Boolean).join('\n'),
+                signal,
+              }),
+        );
+      } else {
+        raw = await this.withFilterRetry('generate texture', job, theme, (plain, t) =>
+          this.provider.generateTexture({
+            theme: t,
+            materialName: name,
+            width,
+            height,
+            plain,
+            extraInstructions: [opts.context, ...classRules].filter(Boolean).join('\n'),
+            signal,
+          }),
+        );
+      }
+      signal.throwIfAborted();
+      let canvas = resizeCanvas(await this.toCanvas(raw), width, height);
+
+      // ---- seams
+      const axes = {
+        x: wrap === 'both' || wrap === 'x' || wrap === 'equirect',
+        y: wrap === 'both' || wrap === 'y',
+      };
+      let seams = null;
+      if (wrap !== 'none' && opts.fixSeams !== false) {
+        report(0.75, 'seams', `Checking the wrap seams of "${name}"`);
+        const r = makeSeamless(canvas, {
+          ...axes,
+          poles: wrap === 'equirect' && opts.calmPoles !== false,
+          band: opts.seamBand,
+        });
+        canvas = r.canvas;
+        seams = { before: r.before, after: r.after, blended: r.fixed };
+      }
+
+      // ---- normal + roughness (sampled across the wrap so they tile as well)
+      const sky = wrap === 'equirect';
+      let normal = null;
+      let roughness = null;
+      const tidy = (c) => (wrap === 'none' ? c : makeSeamless(c, axes).canvas);
+      if (opts.normalMap ?? !sky) {
+        report(0.85, 'postprocess', `Normal map for "${name}"`);
+        const orig = opts.normal ? resizeCanvas(await this.toInputCanvas(opts.normal), width, height) : null;
+        normal = tidy(
+          await this.auxMap('normal', theme, orig, canvas, signal, () =>
+            deriveNormalMap(canvas, orig, opts.normalStrength ?? 2, axes),
+          ),
+        );
+      }
+      if (opts.roughnessMap ?? !sky) {
+        report(0.92, 'postprocess', `Roughness map for "${name}"`);
+        const orig = opts.roughness ? resizeCanvas(await this.toInputCanvas(opts.roughness), width, height) : null;
+        roughness = tidy(
+          await this.auxMap('roughness', theme, orig, canvas, signal, () =>
+            deriveRoughnessMap(canvas, orig, { baseRoughness: opts.baseRoughness ?? 0.7 }),
+          ),
+        );
+      }
+
+      const result = {
+        id,
+        name,
+        assetClass,
+        wrap,
+        canvas,
+        normal,
+        roughness,
+        seams,
+        theme,
+        context: opts.context ?? null,
+        width,
+        height,
+        durationMs: performance.now() - started,
+        usage: this.getUsage(),
+      };
+      report(1, 'done', `Finished "${name}"`);
+      this.emit('textureReskinned', result);
+      return result;
+    } catch (err) {
+      const e = toError(err);
+      this.emit('textureFailed', { id, name, error: e });
+      throw err;
+    } finally {
+      this.textureJobs.delete(ctrl);
+    }
+  }
+
+  /** Any image-like input → a canvas (URL strings are fetched). */
+  async toInputCanvas(input) {
+    if (typeof input === 'string') {
+      const res = await fetch(input);
+      if (!res.ok) throw new Error(`Could not fetch ${input}: HTTP ${res.status}`);
+      return blobToCanvas(await res.blob());
+    }
+    if (input instanceof Blob) return blobToCanvas(input);
+    if (input?.isTexture) return textureToCanvas(input, 4096);
+    if (typeof ImageData !== 'undefined' && input instanceof ImageData) {
+      const c = createCanvas(input.width, input.height);
+      ctx2d(c).putImageData(input, 0, 0);
+      return c;
+    }
+    const w = input?.naturalWidth || input?.videoWidth || input?.width;
+    const h = input?.naturalHeight || input?.videoHeight || input?.height;
+    if (!w || !h) throw new Error('postTexture: unsupported image input');
+    const c = createCanvas(w, h);
+    ctx2d(c).drawImage(input, 0, 0, w, h);
+    return c;
+  }
+
+  /** Wrap seam measure of any image: { x, y } (about 1 = tiles, 3+ = visible seam). */
+  async measureSeams(input) {
+    return canvasSeams(await this.toInputCanvas(input));
   }
 
   // ---------------------------------------------------------------- post: export
@@ -2580,6 +2831,26 @@ export function slug(s) {
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'reskin'
   );
+}
+
+/**
+ * Which edges of a standalone texture must join: 'both' | 'x' | 'y' | 'none' | 'equirect'.
+ * Explicit `wrap` wins (true = 'both', 'sky' = 'equirect'); else a sky is an equirect
+ * panorama, a seamless class (terrain, tiling material) tiles both ways, and otherwise the
+ * source decides: an axis that already wraps keeps wrapping.
+ */
+export function resolveWrap(wrap, assetClass, source) {
+  if (wrap === true) return 'both';
+  if (wrap === false) return 'none';
+  if (wrap === 'sky' || wrap === 'equirect') return 'equirect';
+  if (['both', 'x', 'y', 'none'].includes(wrap)) return wrap;
+  if (assetClass === 'sky') return 'equirect';
+  if (getAssetClass(assetClass)?.seamless) return 'both';
+  if (!source) return 'both';
+  const s = canvasSeams(source);
+  const x = s.x < 2,
+    y = s.y < 2;
+  return x && y ? 'both' : x ? 'x' : y ? 'y' : 'none';
 }
 
 function toError(err) {
