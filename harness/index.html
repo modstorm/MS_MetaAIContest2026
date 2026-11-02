@@ -13,39 +13,28 @@
     <div id="app">
       <div id="key-banner" class="key-banner" hidden>
         <strong>No Muse API key.</strong> Copy <code>.env.example</code> to <code>.env</code>, set
-        <code>MUSE_API_KEY=your key</code>, then restart <code>npm run dev</code>. (Or paste a key in Settings ⚙.)
+        <code>MUSE_API_KEY=your key</code>, then restart <code>npm run dev</code>. (Or paste a key in ☰ Menu →
+        Settings.)
       </div>
       <header class="topbar">
+        <div class="menu-wrap">
+          <button id="btn-menu" aria-haspopup="menu" aria-expanded="false" title="Open, sample, export, settings">
+            ☰ Menu
+          </button>
+          <div id="main-menu" class="main-menu" role="menu" hidden>
+            <button id="btn-open" role="menuitem" title="Open a .glb or .gltf file">Open model…</button>
+            <button id="btn-sample" role="menuitem" title="Load a built-in sample model">Sample model</button>
+            <button id="btn-export" role="menuitem" disabled>Export GLB</button>
+            <hr />
+            <button id="btn-settings" role="menuitem">Settings…</button>
+          </div>
+        </div>
         <div class="brand">
           <span class="logo">◆</span>
           <span>Muse Reskin</span>
           <span class="tag">GLB → prompt → GLB</span>
         </div>
-        <div class="actions">
-          <button id="btn-open" title="Open a .glb or .gltf file">Open model</button>
-          <button id="btn-sample" title="Load a built-in sample model">Sample model</button>
-          <button id="btn-reskin" class="primary" disabled>Reskin…</button>
-          <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">
-            ID map
-          </button>
-          <button
-            id="btn-samzones"
-            disabled
-            title="SAM 3.1 finds the paint zones (face, hands, wheels…) from renders of the model; for models with no profile"
-          >
-            Find zones
-          </button>
-          <button id="btn-review" disabled title="Muse checks renders of the result and repaints the areas it flags">
-            Review &amp; fix
-          </button>
-          <button id="btn-compare" disabled title="Drag the handle to compare the original and the reskin">
-            Compare
-          </button>
-          <button id="btn-spin" class="on" title="Auto-rotate the model">Spin</button>
-          <button id="btn-toggle" disabled title="Compare with the original textures">Show original</button>
-          <button id="btn-export" disabled>Export GLB</button>
-          <button id="btn-settings" class="icon" title="Settings">⚙</button>
-        </div>
+        <button id="btn-reskin" class="primary reskin-btn" disabled title="Load a model first">✨ Reskin…</button>
         <input id="file-input" type="file" accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden />
       </header>
 
@@ -56,14 +45,15 @@
             <h2>Drop a .glb or .gltf here</h2>
             <p>
               For a .gltf, drop it together with its .bin and texture files.<br />
-              Or use <a href="#" id="link-sample">the sample model</a>.
+              Or <a href="#" id="link-sample">try the sample model</a>.
             </p>
           </div>
           <div id="status" class="status"></div>
-          <div id="cost" class="cost" hidden>
-            <span class="cost-label">Muse cost</span> <span id="cost-reskin"></span>
-            <span id="cost-session" class="muted"></span>
-            <button id="cost-reset" type="button" class="icon small" title="Reset the cost counter">↺</button>
+          <div class="view-tools">
+            <button id="btn-compare" disabled title="Drag the handle to compare the original and the reskin">
+              ⇆ Compare
+            </button>
+            <button id="btn-spin" class="on icon" title="Auto-rotate the model">⟳</button>
           </div>
           <div id="compare" class="compare" hidden>
             <div id="compare-handle" class="compare-handle"><span>⇆</span></div>
@@ -73,38 +63,122 @@
         </section>
 
         <aside class="panel">
-          <section>
-            <h3>Texture layout</h3>
-            <div id="layout-summary" class="muted">No model loaded.</div>
-            <div id="slots"></div>
-            <ul id="warnings" class="warnings"></ul>
-          </section>
-          <section id="zones-section" hidden>
-            <h3>Zones <span class="muted small" id="zones-note"></span></h3>
-            <div id="zones" class="zones"></div>
-          </section>
-          <section>
-            <h3>Generated maps</h3>
-            <div id="generated" class="muted">Nothing generated yet.</div>
-          </section>
-          <section id="history-section" hidden>
-            <h3>
-              History
-              <span class="hist-actions"
-                ><button id="btn-undo" title="Undo (Ctrl+Z)">↶</button
-                ><button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷</button></span
+          <nav class="tabs" role="tablist">
+            <button id="tab-run" class="tab on" role="tab" data-tab="run">Run</button>
+            <button id="tab-model" class="tab" role="tab" data-tab="model">Model</button>
+            <button id="tab-log" class="tab" role="tab" data-tab="log">Log</button>
+          </nav>
+          <div id="page-run" class="tab-page" role="tabpanel">
+            <div id="cost" class="cost" hidden>
+              <span class="cost-label">Muse cost</span> <span id="cost-reskin"></span>
+              <span id="cost-session" class="muted"></span>
+              <button id="cost-reset" type="button" class="icon small" title="Reset the cost counter">↺</button>
+            </div>
+            <p id="run-hint" class="muted hint">
+              Drop a model in the window (or ☰ Menu → Open model), then press Reskin.
+            </p>
+            <!-- Each run's progress, Muse's suggestion, variations and errors show here, beside the model. -->
+            <dialog id="run-dialog" class="dialog run-panel">
+              <h2 id="run-title">Painting</h2>
+              <p class="muted" id="run-theme"></p>
+              <div class="progress" id="prompt-progress">
+                <div class="bar"><span id="prompt-bar"></span></div>
+                <div id="prompt-stage" class="muted"></div>
+              </div>
+              <section id="suggestion" class="suggestion" hidden>
+                <div id="sugg-sheet" class="sheet"></div>
+                <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
+                <div id="sugg-parts" class="chips static"></div>
+                <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
+                <textarea id="sugg-prompt" rows="5"></textarea>
+                <p class="muted" id="sugg-tips"></p>
+                <details>
+                  <summary>Paint plan per texture region</summary>
+                  <ul id="sugg-regions" class="regions"></ul>
+                </details>
+              </section>
+              <section id="variations" hidden>
+                <p>
+                  <strong>Pick your favorite</strong> <span class="muted">(you can switch any time in History)</span>
+                </p>
+                <div id="variation-list" class="variation-list"></div>
+              </section>
+              <div class="error-box" id="prompt-error" hidden>
+                <strong id="err-title">Something went wrong</strong>
+                <p id="err-text"></p>
+                <div class="row">
+                  <button type="button" id="err-retry">Retry</button>
+                  <button type="button" id="err-edit">Edit prompt</button>
+                  <button type="button" id="err-skip" hidden>Skip suggestion and paint</button>
+                  <button type="button" id="err-probe">Run filter probe</button>
+                </div>
+              </div>
+              <div class="row">
+                <span class="spacer"></span>
+                <button type="button" id="run-cancel">Stop</button>
+                <button type="button" id="prompt-original" hidden>Use my prompt</button>
+                <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
+              </div>
+            </dialog>
+            <div id="result-actions" class="row" hidden>
+              <button type="button" id="btn-export-run" class="primary">Export GLB</button>
+            </div>
+            <section id="history-section" hidden>
+              <h3>
+                History
+                <span class="hist-actions"
+                  ><button id="btn-undo" title="Undo (Ctrl+Z)">↶</button
+                  ><button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷</button></span
+                >
+              </h3>
+              <div id="history" class="history"></div>
+            </section>
+          </div>
+          <div id="page-model" class="tab-page" role="tabpanel" hidden>
+            <div class="row tools">
+              <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">
+                ID map
+              </button>
+              <button
+                id="btn-samzones"
+                disabled
+                title="SAM 3.1 finds the paint zones (face, hands, wheels…) from renders of the model; for models with no profile"
               >
-            </h3>
-            <div id="history" class="history"></div>
-          </section>
-          <section id="review-section" hidden>
-            <h3>Review</h3>
-            <div id="review"></div>
-          </section>
-          <section>
-            <h3>Log</h3>
-            <ol id="log" class="log"></ol>
-          </section>
+                Find zones
+              </button>
+              <button
+                id="btn-review"
+                disabled
+                title="Muse checks renders of the result and repaints the areas it flags"
+              >
+                Review &amp; fix
+              </button>
+            </div>
+            <section>
+              <h3>Texture layout</h3>
+              <div id="layout-summary" class="muted">No model loaded.</div>
+              <div id="slots"></div>
+              <ul id="warnings" class="warnings"></ul>
+            </section>
+            <section id="zones-section" hidden>
+              <h3>Zones <span class="muted small" id="zones-note"></span></h3>
+              <div id="zones" class="zones"></div>
+            </section>
+            <section>
+              <h3>Generated maps</h3>
+              <div id="generated" class="muted">Nothing generated yet.</div>
+            </section>
+            <section id="review-section" hidden>
+              <h3>Review</h3>
+              <div id="review"></div>
+            </section>
+          </div>
+          <div id="page-log" class="tab-page" role="tabpanel" hidden>
+            <section>
+              <h3>Log</h3>
+              <ol id="log" class="log"></ol>
+            </section>
+          </div>
         </aside>
       </main>
 
@@ -180,12 +254,12 @@
               </select>
             </label>
             <label
-              ><input id="opt-review" type="checkbox" checked /> Review &amp; fix after painting (Muse checks 8 views of
-              the result and repaints flagged areas once)</label
+              ><input id="opt-review" type="checkbox" /> Review &amp; fix after painting (Muse checks 8 views of the
+              result and repaints flagged areas once)</label
             >
             <label
-              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check: look for faces, people or shoes painted in
-              the wrong area and repaint that area once</label
+              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check (avatars): look for faces, people or shoes
+              painted in the wrong area and repaint that area once</label
             >
             <label
               ><input id="opt-sam-zones" type="checkbox" /> Find paint zones with SAM 3.1 (models with no profile: one
@@ -259,48 +333,6 @@
           <button type="submit" id="prompt-go" class="primary">Reskin</button>
         </div>
       </form>
-    </dialog>
-
-    <!-- Non-modal, so the model stays visible while each area is painted. -->
-    <dialog id="run-dialog" class="dialog run-panel">
-      <h2 id="run-title">Painting</h2>
-      <p class="muted" id="run-theme"></p>
-      <div class="progress" id="prompt-progress">
-        <div class="bar"><span id="prompt-bar"></span></div>
-        <div id="prompt-stage" class="muted"></div>
-      </div>
-      <section id="suggestion" class="suggestion" hidden>
-        <div id="sugg-sheet" class="sheet"></div>
-        <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
-        <div id="sugg-parts" class="chips static"></div>
-        <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
-        <textarea id="sugg-prompt" rows="5"></textarea>
-        <p class="muted" id="sugg-tips"></p>
-        <details>
-          <summary>Paint plan per texture region</summary>
-          <ul id="sugg-regions" class="regions"></ul>
-        </details>
-      </section>
-      <section id="variations" hidden>
-        <p><strong>Pick your favorite</strong> <span class="muted">(you can switch any time in History)</span></p>
-        <div id="variation-list" class="variation-list"></div>
-      </section>
-      <div class="error-box" id="prompt-error" hidden>
-        <strong id="err-title">Something went wrong</strong>
-        <p id="err-text"></p>
-        <div class="row">
-          <button type="button" id="err-retry">Retry</button>
-          <button type="button" id="err-edit">Edit prompt</button>
-          <button type="button" id="err-skip" hidden>Skip suggestion and paint</button>
-          <button type="button" id="err-probe">Run filter probe</button>
-        </div>
-      </div>
-      <div class="row">
-        <span class="spacer"></span>
-        <button type="button" id="run-cancel">Stop</button>
-        <button type="button" id="prompt-original" hidden>Use my prompt</button>
-        <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
-      </div>
     </dialog>
 
     <dialog id="settings-dialog" class="dialog">

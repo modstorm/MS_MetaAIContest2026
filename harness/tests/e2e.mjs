@@ -122,6 +122,17 @@ function museOk(route) {
   });
 }
 
+// Ids that live in the top-bar menu or on the side panel's Model tab: open those first.
+const MENU_IDS = ['btn-open', 'btn-sample', 'btn-export', 'btn-settings'];
+const MODEL_TAB_IDS = ['btn-idmap', 'btn-samzones', 'btn-review'];
+
+/** Clicks a control, opening the menu or the Model tab it sits in first. */
+async function ui(page, id) {
+  if (MENU_IDS.includes(id)) await page.click('#btn-menu');
+  if (MODEL_TAB_IDS.includes(id)) await page.click('#tab-model');
+  await page.click(`#${id}`);
+}
+
 /** Sets the popup's paint mode select (it sits in the collapsed Options section). */
 async function setPaintMode(page, mode) {
   await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
@@ -155,7 +166,7 @@ function parseGlb(buf) {
 }
 
 async function exportAndCheck(page, file) {
-  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#btn-export')]);
+  const [download] = await Promise.all([page.waitForEvent('download'), ui(page, 'btn-export')]);
   const path = `${outDir}${file}`;
   await download.saveAs(path);
   const buf = new Uint8Array(await (await import('node:fs/promises')).readFile(path));
@@ -218,28 +229,30 @@ try {
   console.log('Offline backend');
   await step('sample model loads, analysis shows, prompt pops up, reskin + export', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     const summary = await page.textContent('#layout-summary');
     assert.match(summary, /9 meshes/);
     assert.match(summary, /2 texture slot/);
     await page.screenshot({ path: `${outDir}01-loaded.png` });
     await reskinViaPopup(page, 'molten lava rock with glowing magma veins');
+    assert.ok(await page.isVisible('#compare-handle'), 'before/after slider on after painting');
     const kinds = await page.$$eval('#generated figure', (f) => f.map((x) => x.dataset.kind));
     assert.deepEqual(kinds, ['baseColor'], `maps: ${kinds}`); // no normal/roughness in the sample to regenerate
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${outDir}02-reskinned-offline.png` });
     exported = await exportAndCheck(page, 'offline.glb');
     assert.match(exported.name, /sample-robot-molten-lava/);
-    // Compare toggle works
-    await page.click('#btn-toggle');
+    // The before/after slider turned on by itself; export turned it off; it toggles back on.
+    await page.click('#btn-compare');
+    assert.ok(await page.isVisible('#compare-handle'));
     await page.screenshot({ path: `${outDir}03-original.png` });
     await page.context().close();
   });
 
   await step('3 variations at once: pick one, history + undo, before/after slider', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await reskinViaPopup(page, 'molten lava rock', { variations: 3 }).catch(async (e) => {
       await page.screenshot({ path: `${outDir}08-variations-fail.png` });
       throw e;
@@ -305,7 +318,7 @@ try {
         body: JSON.stringify(json),
       });
     });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await reskinViaPopup(page, 'frozen ice crystal, frost and snow', { paintMode: 'atlas' });
     const chat = calls.find((c) => c.url.endsWith('/chat/completions'));
     const edit = calls.find((c) => c.url.endsWith('/images/edits'));
@@ -384,7 +397,7 @@ try {
         body: JSON.stringify(json),
       });
     });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
     await setPaintMode(page, 'atlas');
@@ -444,7 +457,7 @@ try {
         body: JSON.stringify({ error: { type: 'authentication_error', message: 'Invalid API key' } }),
       }),
     );
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     await page.fill('#prompt-text', 'gold armor');
     await page.click('#prompt-go');
@@ -490,7 +503,7 @@ try {
         ),
       });
     });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await reskinViaPopup(page, 'gold armor', { suggest: false, paintMode: 'atlas' });
     assert.equal(bodies.length, 2);
     assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
@@ -531,7 +544,7 @@ try {
       }
       return ok({ data: [{ b64_json: png }] });
     });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await reskinViaPopup(page, 'scary clown', { paintMode: 'atlas' });
     assert.equal(edits.length, 2);
     assert.match(
@@ -773,7 +786,7 @@ try {
 
   await step('ID map: flat color per area on the model, restored afterwards, never exported', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await page.click('#btn-sample');
+    await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     await page.click('#prompt-cancel');
     const r = await page.evaluate(() => {
@@ -794,7 +807,7 @@ try {
       r.during.join(),
     );
     assert.deepEqual(r.after, r.before);
-    await page.click('#btn-idmap');
+    await ui(page, 'btn-idmap');
     assert.ok(await page.evaluate(() => window.reskin.plugin.idMapVisible));
     await page.screenshot({ path: `${outDir}07-id-map.png` });
     // Right-click a layout image: menu offers a named save.
@@ -989,7 +1002,8 @@ try {
     const legs1 = await probe(legsRect);
     assert.equal(legs1.skin, 0, `legs still show skin: ${JSON.stringify(legs1)}`);
     assert.ok(legs1.blue > legs1.n * 0.9, `legs painted: ${JSON.stringify(legs1)}`);
-    // Zones list in the side panel; lock the legs there and repaint in red.
+    // Zones list in the side panel's Model tab; lock the legs there and repaint in red.
+    await page.click('#tab-model');
     await page.waitForSelector('#zones .zone[data-name="Body (legs)"]');
     assert.equal(await page.locator('#zones .zone').count(), 7);
     await page.click('#zones .zone[data-name="Body (legs)"] .zone-lock');

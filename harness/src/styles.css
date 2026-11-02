@@ -58,11 +58,51 @@ body {
   border-radius: 99px;
   padding: 1px 8px;
 }
-.actions {
-  margin-left: auto;
+/* Top bar: one menu (open, sample, export, settings) and the big Reskin button. */
+.menu-wrap {
+  position: relative;
+}
+.main-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 6px;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.main-menu button {
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+.main-menu hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 4px 0;
+}
+.reskin-btn {
+  margin-left: auto;
+  padding: 9px 26px;
+  font-size: 16px;
+  font-weight: 650;
+  border-radius: 10px;
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.25);
+}
+.reskin-btn:not(:disabled) {
+  animation: reskin-glow 2.4s ease-in-out infinite;
+}
+@keyframes reskin-glow {
+  50% {
+    box-shadow: 0 0 0 6px rgba(124, 92, 255, 0.12);
+  }
 }
 
 button {
@@ -98,7 +138,7 @@ button.icon {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 1fr 380px;
   min-height: 0;
 }
 .viewport {
@@ -158,11 +198,22 @@ button.icon {
   color: var(--err);
 }
 
-/* Muse cost estimate for the current reskin (bottom right of the viewport). */
-.cost {
+/* Compare + spin, top right of the viewport. */
+.view-tools {
   position: absolute;
-  right: 12px;
   bottom: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 5;
+}
+.view-tools button {
+  background: rgba(14, 15, 19, 0.8);
+}
+
+/* Muse cost for the current reskin (top of the Run tab). */
+.cost {
+  margin-top: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -171,7 +222,6 @@ button.icon {
   border-radius: 8px;
   padding: 4px 6px 4px 10px;
   font-size: 12px;
-  max-width: 45%;
 }
 .cost[hidden] {
   display: none;
@@ -190,7 +240,41 @@ button.icon {
   border-left: 1px solid var(--line);
   background: var(--panel);
   overflow: auto;
-  padding: 4px 14px 14px;
+  padding: 0 14px 14px;
+}
+/* Side panel tabs: Run, Model, Log. */
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  margin: 0 -14px;
+  padding: 8px 14px 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.tabs .tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 12px;
+}
+.tabs .tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.hint {
+  margin-top: 16px;
+}
+.row.tools {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+#result-actions {
+  margin-top: 12px;
 }
 .panel h3 {
   font-size: 12px;
@@ -548,15 +632,15 @@ button.on {
 .style-row select {
   margin-left: 0;
 }
+/* The run panel sits in the Run tab, in the flow of the side panel. */
 .run-panel {
-  position: fixed;
-  inset: 64px auto auto 16px;
-  margin: 0;
-  width: min(440px, 92vw);
-  max-height: calc(100vh - 90px);
-  overflow: auto;
-  z-index: 20;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  position: static;
+  margin: 12px 0 0;
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 12px;
+  border-radius: 10px;
 }
 .variation-list {
   display: grid;

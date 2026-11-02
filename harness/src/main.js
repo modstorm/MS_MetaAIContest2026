@@ -42,7 +42,7 @@ function updateKeyBanner(flash = false) {
   el.hidden = !missingKey();
   if (!__HAS_DEV_PROXY__)
     el.innerHTML =
-      '<strong>AI reskins need a Meta Muse API key.</strong> Paste yours in Settings ⚙ (it stays in this browser only), or clone the repo and put <code>MUSE_API_KEY</code> in <code>.env</code>. Without a key you can still load a model and explore its texture layout, areas, facing map and animation.';
+      '<strong>AI reskins need a Meta Muse API key.</strong> Paste yours in ☰ Menu → Settings (it stays in this browser only), or clone the repo and put <code>MUSE_API_KEY</code> in <code>.env</code>. Without a key you can still load a model and explore its texture layout, areas, facing map and animation.';
   if (flash && !el.hidden) {
     el.classList.remove('flash');
     void el.offsetWidth;
@@ -226,6 +226,10 @@ async function load(input, name) {
 
 function setLoaded(on) {
   $('btn-reskin').disabled = !on;
+  $('btn-reskin').textContent = '✨ Reskin…';
+  $('btn-reskin').title = on ? 'Theme the model from a prompt' : 'Load a model first';
+  $('run-hint').hidden = on;
+  $('result-actions').hidden = true;
   $('btn-export').disabled = !on;
   $('btn-idmap').disabled = !on;
   $('btn-idmap').classList.remove('on');
@@ -234,9 +238,28 @@ function setLoaded(on) {
   $('review-section').hidden = true;
   $('history-section').hidden = true;
   $('btn-compare').disabled = true;
-  $('btn-toggle').disabled = true;
   if (compareOn) setCompare(false);
 }
+
+// ---- top-bar menu: open, sample, export, settings
+function setMenu(open) {
+  $('main-menu').hidden = !open;
+  $('btn-menu').setAttribute('aria-expanded', String(open));
+}
+$('btn-menu').onclick = (e) => {
+  e.stopPropagation();
+  setMenu($('main-menu').hidden);
+};
+// Any click (on an item or elsewhere) and Escape close it.
+document.addEventListener('click', () => setMenu(false));
+document.addEventListener('keydown', (e) => e.key === 'Escape' && setMenu(false));
+
+// ---- side panel tabs: Run (progress, suggestion, history), Model (layout, zones, tools), Log
+function showTab(name) {
+  for (const t of document.querySelectorAll('.tabs .tab')) t.classList.toggle('on', t.dataset.tab === name);
+  for (const p of document.querySelectorAll('.tab-page')) p.hidden = p.id !== `page-${name}`;
+}
+for (const t of document.querySelectorAll('.tabs .tab')) t.onclick = () => showTab(t.dataset.tab);
 
 $('btn-open').onclick = () => $('file-input').click();
 $('file-input').onchange = (e) => {
@@ -394,7 +417,7 @@ for (const p of PRESETS) {
 
 // ---- step 1: the prompt popup (theme + style; everything else under Advanced)
 function openPrompt() {
-  if (plugin.isBusy) return runDialog.open || runDialog.show();
+  if (plugin.isBusy) return runDialog.open || showRun();
   const s = plugin.summary();
   $('prompt-model-info').textContent = s
     ? `${plugin.model?.name}: ${s.slots.length} texture slot(s), ${s.triangleCount.toLocaleString()} triangles`
@@ -458,6 +481,15 @@ $('prompt-form').addEventListener('submit', (e) => {
 // The suggestion waiting for the user's OK (art-director step), if any.
 let pending = null;
 
+/** The run panel lives in the side panel's Run tab, beside the model. */
+function showRun() {
+  $('result-actions').hidden = true;
+  if (compareOn) setCompare(false);
+  runDialog.show();
+  showTab('run');
+}
+runDialog.addEventListener('close', () => ($('result-actions').hidden = !plugin.lastResult));
+
 function openRun(prompt) {
   pending = null;
   $('run-title').textContent = 'Painting';
@@ -469,7 +501,7 @@ function openRun(prompt) {
   $('prompt-stage').textContent = '';
   setRunButtons({ go: false });
   hideError();
-  if (!runDialog.open) runDialog.show();
+  if (!runDialog.open) showRun();
 }
 
 function setRunButtons({ go = false, busy = false, done = false } = {}) {
@@ -537,7 +569,7 @@ function showError(err, retry, { canSkip = false } = {}) {
   $('err-probe').hidden = !filtered;
   $('prompt-error').hidden = false;
   $('prompt-stage').textContent = '';
-  if (!runDialog.open) runDialog.show();
+  if (!runDialog.open) showRun();
   retryAction = retry;
 }
 
@@ -607,6 +639,7 @@ async function runReskin(text, suggestion) {
     } else {
       runDialog.close();
       if ($('opt-review').checked && plugin.canReview) runReview();
+      else setCompare(true); // show before/after straight away
     }
   } catch (err) {
     setRunButtons({});
@@ -651,11 +684,9 @@ async function retrySlot(f, text) {
 
 function afterPaint() {
   if (compareOn) setCompare(true); // refresh the "after" side
-  $('btn-toggle').disabled = false;
   $('btn-compare').disabled = false;
   $('btn-review').disabled = !plugin.canReview;
-  showingOriginal = false;
-  $('btn-toggle').textContent = 'Show original';
+  $('btn-reskin').textContent = '✨ Reskin again…';
 }
 
 function showVariations(list) {
@@ -744,6 +775,7 @@ $('err-probe').onclick = () => {
 
 // ------------------------------------------------------------------ review & fix
 async function runReview() {
+  if (compareOn) setCompare(false); // the review renders the reskin itself
   $('btn-review').disabled = true;
   $('btn-reskin').disabled = true;
   try {
@@ -791,6 +823,7 @@ function renderReview(r) {
 // ------------------------------------------------------------------ ID map
 $('btn-idmap').onclick = () => {
   const on = !plugin.idMapVisible;
+  if (on && compareOn) setCompare(false);
   plugin.showIdMap(on);
   $('btn-idmap').classList.toggle('on', on);
 };
@@ -804,6 +837,7 @@ $('btn-samzones').onclick = async () => {
   try {
     const found = await plugin.postFindZones({ force: true, ...paintOptions() });
     if (found?.length) {
+      if (compareOn) setCompare(false);
       if (plugin.idMapVisible) plugin.showIdMap(false);
       plugin.showIdMap(true);
     }
@@ -947,13 +981,11 @@ function setCompare(on) {
   compareOn = on;
   $('compare').hidden = !on;
   $('btn-compare').classList.toggle('on', on);
-  $('btn-toggle').disabled = on || !plugin.lastResult;
   if (!on) {
     viewer.compare?.after();
     viewer.compare = null;
     return;
   }
-  if (showingOriginal) $('btn-toggle').click();
   plugin.showIdMap(false);
   viewer.compare = plugin.compareStates();
   placeHandle();
@@ -1033,15 +1065,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ------------------------------------------------------------------ compare + export
-let showingOriginal = false;
-$('btn-toggle').onclick = () => {
-  showingOriginal = !showingOriginal;
-  plugin.showOriginal(showingOriginal);
-  $('btn-toggle').textContent = showingOriginal ? 'Show reskin' : 'Show original';
-};
-
-$('btn-export').onclick = async () => {
-  if (showingOriginal) $('btn-toggle').click();
+async function exportGlb() {
   if (compareOn) setCompare(false);
   if (plugin.idMapVisible) $('btn-idmap').click();
   const { glb, filename } = await plugin.postExport();
@@ -1051,7 +1075,9 @@ $('btn-export').onclick = async () => {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
-};
+}
+$('btn-export').onclick = exportGlb;
+$('btn-export-run').onclick = exportGlb;
 
 // ------------------------------------------------------------------ settings dialog
 const settingsDialog = $('settings-dialog');
