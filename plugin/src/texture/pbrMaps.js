@@ -18,8 +18,9 @@ function heightField(albedo) {
  * Builds a tangent-space normal map: Sobel normals from the new albedo's
  * luminance, blended over the original normal map (if any) with a
  * whiteout-style blend so the original large-scale detail survives.
+ * `wrap` ({ x, y }) samples across the edges for textures that tile, so the map tiles too.
  */
-export function deriveNormalMap(newAlbedo, originalNormal, strength = 2.0) {
+export function deriveNormalMap(newAlbedo, originalNormal, strength = 2.0, wrap = null) {
   const w = newAlbedo.width;
   const hgt = newAlbedo.height;
   const h = heightField(newAlbedo);
@@ -32,7 +33,9 @@ export function deriveNormalMap(newAlbedo, originalNormal, strength = 2.0) {
     : null;
   const out = createCanvas(w, hgt);
   const img = ctx2d(out).createImageData(w, hgt);
-  const at = (x, y) => h[Math.min(hgt - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  const ix = wrap?.x ? (x) => (x + w) % w : (x) => Math.min(w - 1, Math.max(0, x));
+  const iy = wrap?.y ? (y) => (y + hgt) % hgt : (y) => Math.min(hgt - 1, Math.max(0, y));
+  const at = (x, y) => h[iy(y) * w + ix(x)];
   for (let y = 0; y < hgt; y++) {
     for (let x = 0; x < w; x++) {
       const dx =

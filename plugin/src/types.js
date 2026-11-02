@@ -126,8 +126,66 @@
  */
 
 /**
+ * Identity of a texture in the source file, on textureUpdated events, slot results and
+ * failed slots. For normal / roughness maps it is the original map being replaced (all
+ * null if the model had none and one was created).
+ * @typedef {object} TextureIdentity
+ * @property {string | null} textureName The three.js texture's name (from the glTF image / texture).
+ * @property {string | null} textureUuid The three.js texture's uuid in the loaded scene.
+ * @property {number | null} textureIndex Index into the glTF `textures[]` array.
+ * @property {number | null} imageIndex Index into the glTF `images[]` array.
+ * @property {string | null} imageName The glTF image's `name`.
+ */
+
+/**
+ * @typedef {object} PostTextureOptions
+ * @property {string} theme What to paint, e.g. "lava cracks", "sunset over the sea".
+ * @property {string} [id] Your own id for this job (e.g. the editor's image id); echoed on every event and the result.
+ * @property {string} [name] Name used in prompts and messages (default: the input's name or the id).
+ * @property {string} [assetClass] 'sky', 'material' (tiling material / track), 'terrain', … or any registered class.
+ *   Guessed from context, theme and name if left out.
+ * @property {string} [context] What it is for, sent to Muse ("race track asphalt seen from above").
+ * @property {boolean | 'both' | 'x' | 'y' | 'none' | 'equirect' | 'sky'} [wrap] Which edges must join.
+ *   Default: sky → 'equirect' (left/right + calm poles); seamless classes → 'both'; else what the source already does.
+ * @property {boolean} [fixSeams=true] Blend the wrap seams locally (offset-by-half) when Muse's output does not wrap.
+ * @property {number} [seamBand=0.125] Fraction of the size used for the seam blend at each edge.
+ * @property {boolean} [calmPoles=true] Equirect only: fade the top and bottom rows to their average.
+ * @property {boolean} [normalMap] Return a normal map (default true, false for skies).
+ * @property {boolean} [roughnessMap] Return a roughness map (default true, false for skies).
+ * @property {HTMLCanvasElement | HTMLImageElement | Blob | string} [normal] The original normal map, blended under the new detail.
+ * @property {HTMLCanvasElement | HTMLImageElement | Blob | string} [roughness] The original roughness map (glTF G channel), mixed in.
+ * @property {number} [normalStrength=2]
+ * @property {number} [baseRoughness=0.7]
+ * @property {number} [maxTextureSize=2048] Output is the source size, scaled down to fit this.
+ * @property {number} [width] Only when generating (input null): output size (default 1024, sky 1024×512).
+ * @property {number} [height]
+ * @property {AbortSignal} [signal]
+ */
+
+/**
+ * @typedef {object} TextureResult
+ * @property {string} id
+ * @property {string} name
+ * @property {string} assetClass
+ * @property {'both' | 'x' | 'y' | 'none' | 'equirect'} wrap
+ * @property {HTMLCanvasElement} canvas New base color (sRGB).
+ * @property {HTMLCanvasElement | null} normal Tangent-space normal map (glTF convention, +Y up).
+ * @property {HTMLCanvasElement | null} roughness glTF metallicRoughness layout: G = roughness, B = metalness.
+ * @property {{ before: { x: number, y: number }, after: { x: number, y: number }, blended: { x: boolean, y: boolean, poles: boolean } } | null} seams
+ *   Seam measure (about 1 = tiles, 3+ = visible) before and after the local blend.
+ * @property {string} theme
+ * @property {string | null} context
+ * @property {number} width
+ * @property {number} height
+ * @property {number} durationMs
+ * @property {object} usage Session Muse usage so far (shared by all jobs on this instance).
+ */
+
+/**
  * @typedef {object} ReskinSlotResult
  * @property {string} slotId
+ * @property {string} slotName
+ * @property {string | null} textureName See TextureIdentity (also textureUuid, textureIndex, imageIndex, imageName).
  * @property {HTMLCanvasElement} canvas Final base color applied to the model.
  * @property {HTMLCanvasElement} raw Image the provider returned, before resize and post-processing.
  * @property {LayoutPlan | null} [plan] Vision plan used to build the prompt.
