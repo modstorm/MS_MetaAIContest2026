@@ -67,3 +67,13 @@ describe('texture prompts', () => {
     expect(normalizeAssetClass('sky')).toBe('sky');
   });
 });
+
+import { areaThemesPrompt } from '../src/muse/prompts.js';
+
+describe('area themes for buildings', () => {
+  it('asks for a roofing material that fits the theme only when there is a roof', () => {
+    const withRoof = areaThemesPrompt('overgrown ruin', ['Building (walls) (center)', 'Building (roof)'], 'a house');
+    expect(withRoof).toMatch(/roofing material that fits this theme/);
+    expect(areaThemesPrompt('lava', ['Body', 'Head'])).not.toMatch(/roof/);
+  });
+});

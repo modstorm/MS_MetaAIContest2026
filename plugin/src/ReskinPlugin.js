@@ -1954,9 +1954,12 @@ export class ReskinPlugin {
         // the area theme, shaded by the original's light and dark (finger lines, nails).
         const tex = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
           this.provider.generateTexture({
-            theme: plain ? t : (areaThemes.get(part.name) ?? `${t}, ${roof ? 'roof' : 'hands (gloves or skin)'}`),
+            theme: plain
+              ? t
+              : (areaThemes.get(part.name) ??
+                `${roof ? `roofing material that fits "${t}"` : `${t}, hands (gloves or skin)`}`),
             materialName: roof
-              ? 'simple roof covering seen from above (one material: slates, tiles, gravel or a flat slab)'
+              ? 'roof covering seen from straight above, one roofing material that fits the theme'
               : 'hand surface (glove material or skin)',
             extraInstructions: roof
               ? 'Simple, even roofing material only: no windows, doors, walls, ledges, figures or objects.'

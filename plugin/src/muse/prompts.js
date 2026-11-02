@@ -451,10 +451,15 @@ export function areaThemesPrompt(theme, areas, subject) {
     'Head accessories (goggles, glasses, hats, headbands) belong to the face area only: never put them in another area.',
     'Never describe something that belongs to another listed area (for example no shoes or boots in the legs area, no gloves in the arms area, no shirt in the hands area).',
     'Never mention the character, a person, a figure, a body or a scene. Describe only the material and details of that area (for the face: skin tone, makeup, facial features; for hair: hair color and texture).',
+    areas.some((a) => /\(roof\)/i.test(a))
+      ? 'An area named "(roof)" is a roof seen from straight above: name one roofing material that fits this theme and its look (for example moss-covered cracked slate for an overgrown ruin, rusted corrugated tin for a junkyard, candy-striped wafer tiles for candy land), with its colors. No walls, windows or doors.'
+      : '',
     'Areas:',
     ...areas.map((a) => `- ${a}`),
     'Reply with JSON only: {"areas": {"exact area name": "description", ...}}',
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /** Parses the area-theme reply into a Map of area name -> description. */
