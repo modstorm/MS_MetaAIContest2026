@@ -153,6 +153,8 @@ export function analyzeTextureLayout(root) {
     }
   });
 
+  uniqueSlotNames([...byTexture.values()]);
+
   for (const [key, slot] of byTexture) {
     const srcs = sources.get(key);
     let bounds = emptyBounds();
@@ -191,6 +193,27 @@ export function analyzeTextureLayout(root) {
     triangleCount: totalTris,
     warnings,
   };
+}
+
+/**
+ * Slots that share a name (two materials both called "lambert1", Maya's default) are
+ * told apart by their first mesh: "lambert1 · carBody", "lambert1 · tireBackR".
+ * Logs, panels, history and Muse prompts then all name the right texture.
+ * @param {{ name: string, meshes: { name?: string }[] }[]} slots
+ */
+export function uniqueSlotNames(slots) {
+  const count = new Map();
+  for (const s of slots) count.set(s.name, (count.get(s.name) ?? 0) + 1);
+  const taken = new Set(slots.filter((s) => count.get(s.name) === 1).map((s) => s.name));
+  slots.forEach((s, i) => {
+    if (count.get(s.name) === 1) return;
+    const mesh = s.meshes.map((m) => String(m.name || '').replace(/[_.]\d+$/, '').trim()).find(Boolean);
+    let name = mesh ? `${s.name} · ${mesh}` : `${s.name} (${i + 1})`;
+    for (let n = 2; taken.has(name); n++) name = `${s.name} · ${mesh || 'texture'} ${n}`;
+    taken.add(name);
+    s.name = name;
+  });
+  return slots;
 }
 
 /** Compact JSON-friendly summary of a layout (no three.js objects), for logging or sending to a model. */

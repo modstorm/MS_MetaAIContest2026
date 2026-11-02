@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { uvSourceOf } from './textureLayout.js';
-import { computeUvBounds, islandIdPerTriangle, triangleCount } from './uvIslands.js';
+import { computeUvBounds, islandIdPerTriangle, triangleCount, uvCoverageMask } from './uvIslands.js';
 
 /** Distinct, nameable colors for the part map (name used in prompts, hex used in the image). */
 export const PART_COLORS = [
@@ -49,6 +49,7 @@ export function slotParts(slot) {
     if (!byName.has(name)) byName.set(name, []);
     byName.get(name).push(mesh);
   }
+  mergeStackedNames(byName, slot);
   const parts = [];
   for (const [name, meshes] of byName) {
     let minU = Infinity,
@@ -88,6 +89,57 @@ export function slotParts(slot) {
   }
   parts.sort((a, b) => b.area - a.area);
   return parts.slice(0, PART_COLORS.length).map((p, i) => ({ ...p, color: PART_COLORS[i][0], hex: PART_COLORS[i][1] }));
+}
+
+/**
+ * Meshes with different names stacked on the same spot of the texture (four wheels,
+ * left and right shoes sharing one image) are one area: painting them separately
+ * would paint the same pixels several times and the last one would win.
+ * A group joins an earlier one when most of its UV area lies on that group's area.
+ */
+export function mergeStackedNames(byName, slot, { resolution = 64, share = 0.8 } = {}) {
+  if (byName.size < 2) return byName;
+  const groups = [...byName].map(([name, meshes]) => {
+    const srcs = meshes.map((m) => uvSourceOf(m, slot.uvChannel, slot.texture)).filter(Boolean);
+    const mask = uvCoverageMask(srcs, resolution);
+    let cells = 0;
+    for (const c of mask) cells += c;
+    return { name, meshes, mask, cells };
+  });
+  const kept = [];
+  for (const g of groups) {
+    const host = g.cells
+      ? kept.find((k) => {
+          let both = 0;
+          for (let i = 0; i < g.mask.length; i++) both += g.mask[i] & k.mask[i];
+          return both >= share * Math.min(g.cells, k.cells);
+        })
+      : null;
+    if (!host) {
+      kept.push({ ...g, mask: g.mask.slice() });
+      continue;
+    }
+    host.meshes.push(...g.meshes);
+    host.names = [...(host.names ?? [host.name]), g.name];
+    for (let i = 0; i < g.mask.length; i++) host.mask[i] |= g.mask[i];
+  }
+  if (kept.length === groups.length) return byName;
+  byName.clear();
+  // "tireBackR" + "tireFrontL" → "tire": the shared start of the names, when it says something.
+  for (const k of kept) {
+    let name = k.name;
+    if (k.names) {
+      let lcp = k.names.reduce((a, b) => {
+        let i = 0;
+        while (i < a.length && a[i].toLowerCase() === b[i]?.toLowerCase()) i++;
+        return a.slice(0, i);
+      });
+      lcp = lcp.trim();
+      if (lcp.length >= 3 && !byName.has(lcp) && !kept.some((o) => o !== k && o.name === lcp)) name = lcp;
+    }
+    byName.set(name, k.meshes);
+  }
+  return byName;
 }
 
 /**

@@ -353,3 +353,50 @@ export async function buildAvatarTestGlb({
   if (strands.length) root.add(mesh('Hair', strands));
   return exportGLB(root);
 }
+
+/**
+ * A toy car laid out like Kris's test car: a body atlas and a separate wheel atlas,
+ * both materials named "lambert1" (Maya's default), and four wheels whose UVs are
+ * all stacked on the same wheel image (100% overlap).
+ */
+export async function buildCarTestGlb() {
+  const flat = (w, h, color, name) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = color;
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = '#ffffff';
+    g.fillRect(w * 0.1, h * 0.1, w * 0.3, h * 0.3);
+    const t = new THREE.CanvasTexture(c);
+    t.flipY = false;
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.name = name;
+    return t;
+  };
+  const bodyMat = new THREE.MeshStandardMaterial({ map: flat(1024, 1024, '#3366cc', ''), name: 'lambert1' });
+  const wheelMat = new THREE.MeshStandardMaterial({ map: flat(512, 512, '#222222', ''), name: 'lambert1' });
+  const root = new THREE.Group();
+  root.name = 'ToyCar';
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2, 0.6, 1), bodyMat);
+  packUvs(body.geometry, [0.05, 0.05, 0.95, 0.6]);
+  body.name = 'carBody';
+  body.position.set(0, 0.6, 0);
+  root.add(body);
+  for (const [name, x, z] of [
+    ['tireBackR', -0.7, 0.55],
+    ['tireBackL', -0.7, -0.55],
+    ['tireFrontR', 0.7, 0.55],
+    ['tireFrontL', 0.7, -0.55],
+  ]) {
+    const g = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 20);
+    packUvs(g, [0.05, 0.05, 0.95, 0.95]); // every wheel on the same spot of the wheel image
+    const m = new THREE.Mesh(g, wheelMat);
+    m.name = name;
+    m.rotation.x = Math.PI / 2;
+    m.position.set(x, 0.3, z);
+    root.add(m);
+  }
+  return exportGLB(root);
+}

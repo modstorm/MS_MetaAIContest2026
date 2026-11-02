@@ -220,6 +220,18 @@ button.icon {
   font-weight: 400;
   font-size: 12px;
 }
+.slot.failed {
+  border-color: var(--err);
+}
+.slot.failed .slot-head span {
+  color: var(--err);
+}
+.fail-reason {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 .thumbs {
   display: grid;
   grid-template-columns: 1fr 1fr;

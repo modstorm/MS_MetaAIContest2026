@@ -174,6 +174,37 @@ export function computeUvCoverage(sources, resolution = 256) {
   };
 }
 
+/**
+ * Which cells of a resolution² grid the UV triangles of `sources` cover (1 = covered).
+ * Used to spot parts stacked on the same spot of a texture (four wheels sharing one image).
+ */
+export function uvCoverageMask(sources, resolution = 64) {
+  const mask = new Uint8Array(resolution * resolution);
+  for (const src of sources) {
+    const triCount = triangleCount(src);
+    for (let t = 0; t < triCount; t++) {
+      const pts = [];
+      for (let c = 0; c < 3; c++) {
+        const v = vertexAt(src, t, c);
+        pts.push(src.uvs[v * 2], src.uvs[v * 2 + 1]);
+      }
+      const offU = Math.floor(Math.min(pts[0], pts[2], pts[4]));
+      const offV = Math.floor(Math.min(pts[1], pts[3], pts[5]));
+      rasterTriangle(
+        (pts[0] - offU) * resolution,
+        (pts[1] - offV) * resolution,
+        (pts[2] - offU) * resolution,
+        (pts[3] - offV) * resolution,
+        (pts[4] - offU) * resolution,
+        (pts[5] - offV) * resolution,
+        resolution,
+        (cell) => (mask[cell] = 1),
+      );
+    }
+  }
+  return mask;
+}
+
 export function islandIdPerTriangle(src, epsilon = 1e-5) {
   const triCount = triangleCount(src);
   const vertexCount = src.uvs.length / 2;

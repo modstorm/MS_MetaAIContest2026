@@ -534,6 +534,78 @@ try {
     await page.context().close();
   });
 
+  await step('car: same-named materials, stacked wheels painted once, a failed texture is shown and retried', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    let failWheels = true;
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const isChat = route.request().url().endsWith('/chat/completions');
+      const body = route.request().postDataJSON();
+      if (!isChat) edits.push(body.prompt);
+      if (!isChat && failWheels && /^- tire, bbox/m.test(body.prompt))
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({ error: { message: 'mock wheel failure' } }),
+        });
+      const png = makePng(64, 64, () => [220, 40, 40]).toString('base64');
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: png }] }),
+      });
+    });
+    const bytes = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildCarTestGlb()));
+    });
+    await page.setInputFiles('#file-input', { name: 'car.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(bytes) });
+    await page.waitForSelector('#prompt-dialog[open]');
+    const layout = await page.evaluate(() => {
+      const p = window.reskin.plugin;
+      return p.layout.slots.map((s) => ({ id: s.id, name: s.name, areas: p.idRegions(s).map((r) => r.name) }));
+    });
+    // Both materials are "lambert1": the slots are told apart by their first mesh.
+    assert.deepEqual(
+      layout.map((s) => s.name),
+      ['lambert1 · carBody', 'lambert1 · tireBackR'],
+    );
+    // Four wheels stacked on the same UVs are one area, painted once.
+    assert.deepEqual(layout[1].areas, ['tire']);
+    await reskinViaPopup(page, 'pepperoni pizza', { variations: 1 });
+    // One paint per texture (the failing wheel call is retried by the client on a 500).
+    assert.equal(edits.filter((e) => !/^- tire, bbox/m.test(e)).length, 1);
+    assert.equal(new Set(edits.filter((e) => /^- tire, bbox/m.test(e))).size, 1);
+    const failedCard = await page.$('#generated .slot.failed');
+    assert.ok(failedCard, 'failed wheel texture has a card');
+    assert.match(await failedCard.textContent(), /lambert1 · tireBackR.*not painted.*mock wheel failure/s);
+    assert.match(await page.textContent('#log'), /Not painted: "lambert1 · tireBackR"/);
+    const wheelMap = () =>
+      page.evaluate(() => {
+        const s = window.reskin.plugin.layout.slots[1];
+        return s.materials[0].map === s.texture;
+      });
+    assert.ok(await wheelMap(), 'wheels keep their original texture');
+    // Retry only the wheels: they get painted, the body keeps its paint.
+    const bodyBefore = await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid);
+    failWheels = false;
+    await failedCard.$eval('button', (b) => b.click());
+    await page.waitForFunction(() => !window.reskin.plugin.busy && !document.querySelector('#generated .slot.failed'), null, {
+      timeout: 60_000,
+    });
+    assert.equal(await wheelMap(), false, 'wheels repainted');
+    assert.equal(
+      await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid),
+      bodyBefore,
+      'body paint kept on retry',
+    );
+    const kinds = await page.$$eval('#generated .slot', (g) => g.map((x) => x.dataset.slot));
+    assert.deepEqual(kinds.sort(), ['slot0', 'slot1']);
+    await page.context().close();
+  });
+
   console.log('UV orientation');
   await step('an upside-down head island is painted upright and turned back (whole-atlas mode)', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });

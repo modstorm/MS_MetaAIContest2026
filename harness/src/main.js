@@ -128,10 +128,13 @@ plugin.onUpdate((e) => {
       localStorage.setItem(LESSONS_KEY, JSON.stringify(e.data));
       if (document.activeElement !== $('lessons')) $('lessons').value = lessonsToText(e.data);
       break;
-    case 'maps':
+    case 'maps': {
+      const failedCards = [...$('generated').querySelectorAll('.slot.failed')];
       $('generated').innerHTML = e.data.maps.length ? '' : '<span class="muted">Original textures.</span>';
       for (const m of e.data.maps) showGenerated(m.slotId, m.kind, m.canvas);
+      if (e.data.maps.length) $('generated').append(...failedCards.filter((c) => !e.data.maps.some((m) => m.slotId === c.dataset.slot)));
       break;
+    }
     case 'history':
       renderHistory(e.data);
       break;
@@ -326,6 +329,7 @@ function renderLayout(layout) {
 function showGenerated(slotId, kind, canvas) {
   const host = $('generated');
   if (host.querySelector('.muted')) host.innerHTML = '';
+  host.querySelector(`.slot.failed[data-slot="${slotId}"]`)?.remove();
   let group = host.querySelector(`[data-slot="${slotId}"]`);
   if (!group) {
     group = document.createElement('div');
@@ -572,6 +576,7 @@ async function runReskin(text, suggestion) {
     log(
       `Reskinned "${res.prompt}": ${res.slots.length} texture(s), ${res.recoloredMaterials} recolored, ${(res.durationMs / 1000).toFixed(1)}s`,
     );
+    showFailed(res.failed, text);
     if ((res.variations?.length ?? 1) > 1) {
       showVariations(res.variations);
       pickedReview = true;
@@ -586,6 +591,40 @@ async function runReskin(text, suggestion) {
     setRunButtons({});
     if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
     else showError(err, () => runReskin(text, suggestion));
+  }
+}
+
+/** Textures that could not be painted: a card per slot in Generated Maps with the reason and a retry. */
+function showFailed(failed = [], text) {
+  const host = $('generated');
+  host.querySelectorAll('.slot.failed').forEach((el) => el.remove());
+  for (const f of failed) {
+    log(`Not painted: "${f.name}" (${f.error})`, 'err');
+    if (host.querySelector('.muted')) host.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'slot failed';
+    div.dataset.slot = f.slotId;
+    div.innerHTML = `<div class="slot-head">${escapeHtml(f.name)}<span>not painted</span></div><p class="fail-reason">${escapeHtml(f.error)}</p><button type="button">Retry this texture</button>`;
+    div.querySelector('button').onclick = () => retrySlot(f, text);
+    host.append(div);
+  }
+}
+
+async function retrySlot(f, text) {
+  if (plugin.busy) return;
+  hideError();
+  openRun(text);
+  $('run-title').textContent = `Painting "${f.name}"`;
+  setRunButtons({ busy: true });
+  try {
+    const res = await plugin.postPrompt(text, { ...paintOptions(), variants: 1, slotIds: [f.slotId] });
+    afterPaint();
+    showFailed(res.failed, text);
+    runDialog.close();
+  } catch (err) {
+    setRunButtons({});
+    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
+    else showError(err, () => retrySlot(f, text));
   }
 }
 

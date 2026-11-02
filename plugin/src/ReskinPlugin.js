@@ -91,6 +91,7 @@ import {
  *   usage           { reskin, session, reskinCost, sessionCost, text, last? }   Muse usage + cost estimate
  *                   (reskin = since the last new suggest/prompt, incl. its review & fix; see muse/pricing.js)
  *   warning         { message }
+ *   slotFailed      { slotId, name, error, step? }   a texture that could not be painted (it keeps its original); retry with postPrompt(theme, { slotIds: [slotId] })
  *   error           { error: Error, stage }
  *
  * @typedef {import('./types.js').LoadedModel} LoadedModel
@@ -587,16 +588,20 @@ export class ReskinPlugin {
     const results = [];
     let recolored = 0;
     let firstError = null;
+    const failed = [];
 
     try {
       if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
       this.samOff = false;
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
-      // Start from the original look every time, so prompts don't compound.
-      this.restoreSnapshots();
+      opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
+      // Start from the original look every time, so prompts don't compound. A retry of
+      // some slots (opts.slotIds) only resets those; the others keep their paint.
+      this.restoreSnapshots(
+        opts.slotIds ? this.layout.slots.filter((s) => opts.slotIds.includes(s.id)).flatMap((s) => s.materials) : null,
+      );
       this.variantJobs = [];
 
-      opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
       this.areaClass = opts.assetClass;
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
 
@@ -644,7 +649,12 @@ export class ReskinPlugin {
         } else {
           const e = toError(r.reason);
           firstError ??= e;
-          this.emit('warning', { message: `Slot "${remote[i].name}" failed: ${e.message}` });
+          const f = { slotId: remote[i].id, name: remote[i].name, error: e.message, step: e.step };
+          failed.push(f);
+          this.emit('warning', {
+            message: `"${remote[i].name}" was not painted${e.step ? ` (${e.step})` : ''}: ${e.message}. It keeps its original texture.`,
+          });
+          this.emit('slotFailed', f);
         }
       });
 
@@ -684,6 +694,7 @@ export class ReskinPlugin {
         prompt: theme,
         slots: results,
         recoloredMaterials: recolored,
+        failed,
         durationMs: performance.now() - started,
         variations: entries.map(({ id, variant, thumb }) => ({ id, variant, thumb })),
         usage: this.getUsage(),
@@ -696,7 +707,9 @@ export class ReskinPlugin {
       this.emit('reskinned', result);
       this.status(
         'idle',
-        `Reskinned ${results.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s` +
+        (failed.length
+          ? `Reskinned ${results.length} of ${results.length + failed.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s; not painted: ${failed.map((f) => `"${f.name}"`).join(', ')}`
+          : `Reskinned ${results.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s`) +
           (result.usage.reskin.calls ? ` · ${result.usage.text}` : ''),
       );
       return result;
@@ -1808,14 +1821,19 @@ export class ReskinPlugin {
 
   recordVariations(theme, results, opts) {
     const base = this.captureMaterials(this.snapshots.keys());
+    // A retry of some slots keeps the other slots' maps and part jobs from the entry shown now.
+    const shown = opts.slotIds ? this.history[this.historyIndex] : null;
+    const keepSlot = (id) => !opts.slotIds.includes(id);
+    const keptMaps = shown ? shown.maps.filter((m) => keepSlot(m.slotId)) : [];
+    const keptJobs = shown ? [...shown.partJobs].filter(([id]) => keepSlot(id)) : [];
     const count = Math.max(1, ...results.map((r) => r.variants?.length ?? 1));
     const entries = [];
     // Drop any redo branch: a new paint goes after the current entry.
     this.history = this.history.slice(0, this.historyIndex + 1);
     for (let vi = 0; vi < count; vi++) {
       const state = new Map(base);
-      const partJobs = new Map();
-      const maps = [];
+      const partJobs = new Map(keptJobs);
+      const maps = [...keptMaps];
       for (const r of results) {
         const v = r.variants?.[vi] ?? r.variants?.[0] ?? r;
         for (const [mat, st] of v.state ?? []) state.set(mat, st);
@@ -2298,8 +2316,10 @@ export class ReskinPlugin {
     });
   }
 
-  restoreSnapshots() {
+  /** Puts the original maps back on all reskinned materials (or only on `only`). */
+  restoreSnapshots(only = null) {
     for (const [mat, s] of this.snapshots) {
+      if (only && !only.includes(mat)) continue;
       delete mat.userData.__reskin;
       mat.map = s.map;
       mat.normalMap = s.normalMap;
