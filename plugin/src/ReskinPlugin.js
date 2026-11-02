@@ -27,7 +27,7 @@ import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass }
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
-import { addUsage, emptyUsage, formatUsage, usageCost } from './muse/pricing.js';
+import { addUsage, emptyUsage, formatUsage, priceFor, usageCost } from './muse/pricing.js';
 import {
   findIntrusions,
   intrusionNote,
@@ -236,6 +236,54 @@ export class ReskinPlugin {
       sessionCost: usageCost(session),
       text: formatUsage(reskin),
     };
+  }
+
+  /**
+   * Rough cost of one reskin before it runs, from the loaded model's areas and the options
+   * (paintMode, variants, samCheck, suggest, review). Counts Muse images (1 per area in
+   * part-by-part mode plus the torso's front and back panels, 1 per texture in one-pass
+   * mode), SAM checks, and chat calls at about 1.5 cents each. Retries for flagged areas
+   * and review fixes are not known in advance, so the real cost can be a little higher.
+   * Returns { images, samChecks, chats, cost }.
+   */
+  estimateCost(opts = {}) {
+    const out = { images: 0, samChecks: 0, chats: 0, cost: 0 };
+    if (!this.layout || !this.model) return out;
+    const variants = Math.max(1, Math.min(opts.variants ?? 1, 4));
+    const assetClass = this.resolveAssetClass(opts);
+    const onePass = opts.paintMode === 'atlas' || typeof this.provider.reskinPart !== 'function';
+    const sam = opts.samCheck !== false && !!this.provider.segment;
+    const modelRadius = boundingRadius(this.model.scene);
+    let parts = false;
+    for (const slot of this.layout.slots) {
+      if (!slot.texture) {
+        const small = boundingRadius(slot.meshes) < modelRadius * (opts.smallPartRatio ?? 0.2);
+        if (!small) out.images += variants;
+        continue;
+      }
+      const regions = onePass ? [] : this.idRegions(slot, { ...opts, assetClass });
+      if (regions.length <= 1 && slotParts(slot).length <= 1) {
+        out.images += variants;
+        continue;
+      }
+      if (onePass) {
+        out.images += variants;
+        continue;
+      }
+      parts = true;
+      for (const r of regions) {
+        out.images += variants * (r.zone === 'torso' && opts.frontPanelPass !== false ? 3 : 1);
+        if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '').length;
+      }
+    }
+    // Suggestion, per-area themes (part by part) or a layout reading (one pass), review.
+    out.chats += opts.suggest ? 1 : 0;
+    out.chats += parts ? 1 : onePass && opts.useVisionPlanning !== false && !opts.suggest ? 1 : 0;
+    out.chats += opts.review ? 1 : 0;
+    const img = priceFor(this.provider.client?.options?.imageModel ?? 'muse-image-1.0')?.image ?? 0.01;
+    const seg = priceFor('sam-3.1')?.segment ?? 0.0025;
+    out.cost = out.images * img + out.samChecks * seg + out.chats * 0.015;
+    return out;
   }
 
   recordUsage(u) {
@@ -606,6 +654,8 @@ export class ReskinPlugin {
 
     try {
       if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
+      // 'high' = Muse Image reasons longer per picture (same price per image); '' = default.
+      if (opts.imageReasoning !== undefined) this.provider.setImageReasoning?.(opts.imageReasoning);
       this.samOff = false;
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
       opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
@@ -824,15 +874,22 @@ export class ReskinPlugin {
           } else if ((opts.useVisionPlanning ?? true) && this.provider.planLayout) {
             report(0.05, 'plan', `Reading atlas layout of "${slot.name}"`);
             try {
-              plan = await this.timed('read layout', slot.id, () =>
-                this.provider.planLayout({
-                  slotName: slot.name,
-                  meshNames: slot.meshes.map((m) => m.name),
-                  atlas: sendAtlas,
-                  atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
-                  signal,
-                }),
-              );
+              // Variations run in parallel: they share one layout reading instead of one each.
+              this.planInflight ??= new Map();
+              if (!this.planInflight.has(planKey)) {
+                const reading = this.timed('read layout', slot.id, () =>
+                  this.provider.planLayout({
+                    slotName: slot.name,
+                    meshNames: slot.meshes.map((m) => m.name),
+                    atlas: sendAtlas,
+                    atlasWithUvs: transformCanvas(drawAtlasWithUvs(original, slot), orient),
+                    signal,
+                  }),
+                );
+                this.planInflight.set(planKey, reading);
+                reading.finally(() => this.planInflight.delete(planKey)).catch(() => {});
+              }
+              plan = await this.planInflight.get(planKey);
               if (plan) this.planCache.set(planKey, plan);
             } catch (err) {
               if (signal.aborted) throw err;

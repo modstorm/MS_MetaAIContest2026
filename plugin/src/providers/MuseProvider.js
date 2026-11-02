@@ -81,6 +81,11 @@ export class MuseProvider {
     this.opts = { ...this.opts, fast: on };
   }
 
+  /** Muse Image reasoning strength: 'low' | 'high', or '' for the default (low in fast mode). */
+  setImageReasoning(level) {
+    this.opts = { ...this.opts, reasoningStrength: level || undefined };
+  }
+
   /** Chat model for the suggest and review steps (default: the vision model, Muse Spark). */
   get adviceModel() {
     return this.opts.adviceModel || this.client.options.visionModel;

@@ -126,13 +126,22 @@
             ><input id="opt-suggest" type="checkbox" checked /> Let Muse study the model and improve the prompt</label
           >
           <label class="inline"
-            >Variations
-            <select id="opt-variations">
-              <option>1</option>
-              <option>2</option>
-              <option selected>3</option>
+            >Paint
+            <select id="opt-paint-mode">
+              <option value="auto" selected>Part by part (best, 1 image per area)</option>
+              <option value="atlas">One pass (cheapest, 1 image per texture)</option>
+              <option value="atlas-hq">One pass, high detail (Muse thinks longer)</option>
             </select>
           </label>
+          <label class="inline"
+            >Variations
+            <select id="opt-variations">
+              <option selected>1</option>
+              <option>2</option>
+              <option>3</option>
+            </select>
+          </label>
+          <span class="muted" id="cost-estimate"></span>
         </div>
         <details id="advanced">
           <summary>Advanced</summary>
@@ -141,13 +150,6 @@
               >Asset type
               <select id="opt-asset-class">
                 <option value="auto" selected>Auto (detected)</option>
-              </select>
-            </label>
-            <label
-              >Paint mode
-              <select id="opt-paint-mode">
-                <option value="auto" selected>Part by part (one Muse call per part)</option>
-                <option value="atlas">Whole atlas (one Muse call)</option>
               </select>
             </label>
             <label

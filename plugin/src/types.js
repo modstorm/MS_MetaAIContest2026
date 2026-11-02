@@ -93,6 +93,7 @@
  * @property {boolean} [cleanTinyIslands] Fill each tiny island (fingers, buttons) with one solid color. Default true.
  * @property {number} [tinyIslandFraction] "Tiny" = fewer texels than this fraction of the image. Default 0.002.
  * @property {'auto' | 'parts' | 'atlas'} [paintMode] 'auto' (default) paints atlases shared by several parts one part at a time; 'atlas' paints the whole atlas in one call.
+ * @property {'' | 'low' | 'high'} [imageReasoning] Muse Image reasoning strength for this run ('high' = more careful, same price per image; '' = default, low in fast mode).
  * @property {number} [partConcurrency] Parallel Muse calls in part-by-part mode. Default 4.
  * @property {boolean} [strandHair] Shade hair made of strands (cards / spikes) strand by strand
  *   in the painted hair color: dark roots, light tips, streaks along each strand. Default true.

@@ -1,11 +1,5 @@
 import './styles.css';
-import {
-  ASSET_CLASSES,
-  MuseProvider,
-  ProceduralProvider,
-  ReskinPlugin,
-  formatDollars,
-} from '@metaai26/reskin-plugin';
+import { ASSET_CLASSES, MuseProvider, ProceduralProvider, ReskinPlugin, formatDollars } from '@metaai26/reskin-plugin';
 import { Viewer } from './viewer.js';
 import { buildSampleGlb } from './sampleModel.js';
 
@@ -132,7 +126,8 @@ plugin.onUpdate((e) => {
       const failedCards = [...$('generated').querySelectorAll('.slot.failed')];
       $('generated').innerHTML = e.data.maps.length ? '' : '<span class="muted">Original textures.</span>';
       for (const m of e.data.maps) showGenerated(m.slotId, m.kind, m.canvas);
-      if (e.data.maps.length) $('generated').append(...failedCards.filter((c) => !e.data.maps.some((m) => m.slotId === c.dataset.slot)));
+      if (e.data.maps.length)
+        $('generated').append(...failedCards.filter((c) => !e.data.maps.some((m) => m.slotId === c.dataset.slot)));
       break;
     }
     case 'history':
@@ -403,6 +398,7 @@ function openPrompt() {
   $('suggest-row').hidden = !plugin.canSuggest;
   if (runDialog.open) runDialog.close();
   updateGoLabel();
+  updateCostEstimate();
   if (!dialog.open) dialog.showModal();
   promptText.focus();
 }
@@ -418,6 +414,24 @@ function updateGoLabel() {
   $('prompt-go').textContent = suggestEnabled() ? 'Get Muse suggestion' : 'Reskin';
 }
 $('opt-suggest').addEventListener('change', updateGoLabel);
+
+/** "About 7 Muse images ≈ $0.12" for the current choices, before painting. */
+function updateCostEstimate() {
+  const el = $('cost-estimate');
+  if (!plugin.model || !(plugin.getProvider() instanceof MuseProvider)) return (el.textContent = '');
+  try {
+    const e = plugin.estimateCost({
+      ...paintOptions(),
+      suggest: suggestEnabled(),
+      review: $('opt-review').checked && plugin.canReview,
+    });
+    el.textContent = `About ${e.images} Muse image${e.images === 1 ? '' : 's'} ≈ ${formatDollars(e.cost)}`;
+  } catch {
+    el.textContent = '';
+  }
+}
+for (const id of ['opt-paint-mode', 'opt-variations', 'opt-suggest', 'opt-review', 'opt-sam'])
+  $(id).addEventListener('change', updateCostEstimate);
 
 $('prompt-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -548,7 +562,8 @@ function paintOptions() {
     useVisionPlanning: $('opt-plan').checked,
     fast: $('opt-fast').checked,
     orientation: $('opt-orient').value,
-    paintMode: $('opt-paint-mode').value,
+    paintMode: $('opt-paint-mode').value.startsWith('atlas') ? 'atlas' : 'auto',
+    imageReasoning: $('opt-paint-mode').value === 'atlas-hq' ? 'high' : '',
     assetClass: $('opt-asset-class').value,
     variants: Number($('opt-variations').value),
     cleanTinyIslands: $('opt-tiny').checked,
