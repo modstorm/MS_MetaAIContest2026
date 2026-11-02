@@ -552,6 +552,7 @@ function paintOptions() {
     normalMaps: $('opt-normal').checked,
     roughnessMaps: $('opt-rough').checked,
     maxTextureSize: Number($('opt-size').value),
+    samCheck: $('opt-sam').checked,
   };
 }
 

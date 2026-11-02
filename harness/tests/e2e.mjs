@@ -10,6 +10,7 @@ import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { encodeSegmentationMask } from '../../node_modules/@meta-sam/parser/dist/mask-codec.js';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -49,6 +50,50 @@ async function newPage(settings) {
   await page.goto(url);
   await page.waitForFunction(() => !!window.reskin);
   return page;
+}
+
+/** SAM 3.1 mock reply: no match. */
+function samNone() {
+  return {
+    status: 200,
+    contentType: 'application/json',
+    headers: { 'access-control-allow-origin': '*' },
+    body: JSON.stringify({ status: 'completed', output_text: '' }),
+  };
+}
+
+/** SAM 3.1 mock reply (as an event stream): one object covering the whole image sent. */
+function samWhole(dataUrl, confidence = 0.9) {
+  const png = Buffer.from(dataUrl.split(',')[1], 'base64');
+  const w = png.readUInt32BE(16),
+    h = png.readUInt32BE(20);
+  const m = encodeSegmentationMask(new Uint8Array(64).fill(1), 8, 8);
+  const text = `<0f>0<|box;x1=0;y1=0;x2=${w - 1};y2=${h - 1};w=${w};h=${h};c=${confidence}|><|mask;x=0;y=0;data=8,8,${m.payload};c=${confidence}|>\n`;
+  const lane = { item_id: 'm1', output_index: 0, content_index: 0 };
+  const events = [
+    { type: 'response.output_text.delta', ...lane, delta: text },
+    { type: 'response.output_text.done', ...lane, text },
+    { type: 'response.completed' },
+  ];
+  return {
+    status: 200,
+    contentType: 'text/event-stream',
+    headers: { 'access-control-allow-origin': '*' },
+    body: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''),
+  };
+}
+
+/** Plain Muse mock: '{}' for chat, a 64x64 PNG for image calls; optional hook per request. */
+function museOk(route) {
+  const isChat = route.request().url().endsWith('/chat/completions');
+  return route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    headers: { 'access-control-allow-origin': '*' },
+    body: JSON.stringify(
+      isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: makePng().toString('base64') }] },
+    ),
+  });
 }
 
 /** Sets the popup's paint mode select (it sits in the collapsed Options section). */
@@ -787,6 +832,7 @@ try {
     const edits = [];
     await page.route('https://api.meta.ai/v1/**', (route) => {
       const isChat = route.request().url().endsWith('/chat/completions');
+      if (route.request().url().endsWith('/responses')) return route.fulfill(samNone());
       if (!isChat) edits.push(route.request().postDataJSON());
       const png = makePng(64, 64, (x) => (x % 16 < 2 ? [204, 153, 153] : fill)).toString('base64');
       return route.fulfill({
@@ -1000,6 +1046,7 @@ try {
     const edits = [];
     await page.route('https://api.meta.ai/v1/**', (route) => {
       const isChat = route.request().url().endsWith('/chat/completions');
+      if (route.request().url().endsWith('/responses')) return route.fulfill(samNone());
       if (!isChat) edits.push(route.request().postDataJSON());
       return route.fulfill({
         status: 200,
@@ -1044,6 +1091,7 @@ try {
     const edits = [];
     await page.route('https://api.meta.ai/v1/**', (route) => {
       const isChat = route.request().url().endsWith('/chat/completions');
+      if (route.request().url().endsWith('/responses')) return route.fulfill(samNone());
       if (!isChat) edits.push(route.request().postDataJSON());
       return route.fulfill({
         status: 200,
@@ -1068,6 +1116,91 @@ try {
     const areas = edits.map((e) => (e.prompt.match(/"([^"]+)" area/) ?? [])[1]).filter(Boolean);
     assert.ok(areas.length >= 6, `painted zone by zone: ${areas.join(', ')} (${edits.length} calls)`);
     assert.ok(areas.includes('Body (legs)') && areas.includes('Body (shoes)'), areas.join(', '));
+    await page.context().close();
+  });
+
+  await step('SAM 3.1 check: shoes painted on the legs are found and the legs repainted once', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const edits = [];
+    const sams = [];
+    let shoeAsks = 0;
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) {
+        const body = req.postDataJSON();
+        const [text, image] = body.input[0].content;
+        sams.push({ model: body.model, prompt: text.text, stream: body.stream });
+        // Asked for the original first (nothing there), then the first paint (shoes), then the repaint (clean).
+        if (text.text === 'shoe' && ++shoeAsks === 2) return route.fulfill(samWhole(image.image_url));
+        return route.fulfill(samNone());
+      }
+      if (!req.url().endsWith('/chat/completions')) edits.push(req.postDataJSON());
+      return museOk(route);
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ oneMesh: true })));
+    });
+    const warnings = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      const w = [];
+      p.on('warning', (e) => w.push(e.message));
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-sam' });
+      await p.postPrompt('pirate', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+      return w;
+    }, glb);
+    assert.ok(
+      sams.length > 0 && sams.every((s) => s.model === 'sam-3.1' && s.stream === true),
+      JSON.stringify(sams[0]),
+    );
+    assert.equal(shoeAsks, 3, 'shoe asked of the original, the first paint and the repaint');
+    const legs = edits.filter((e) => /"Body \(legs\)" area/.test(e.prompt ?? ''));
+    assert.equal(legs.length, 2, `legs painted twice: ${legs.length}`);
+    assert.match(legs[1].prompt, /drew a shoe/);
+    assert.ok(
+      warnings.some((m) => /SAM 3\.1 found shoe/.test(m)),
+      warnings.filter((m) => /SAM/.test(m)).join(' | '),
+    );
+    assert.ok(warnings.some((m) => /using the repaint/.test(m)));
+
+    // A SAM error turns the check off for the run; painting still finishes. Unticked: no SAM calls.
+    await page.unroute('https://api.meta.ai/v1/**');
+    let samCalls = 0;
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      if (!route.request().url().endsWith('/responses')) return museOk(route);
+      samCalls++;
+      return route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify({ error: { message: 'model not found', code: 'model_not_found' } }),
+      });
+    });
+    const off = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const w = [];
+      p.on('warning', (e) => w.push(e.message));
+      const res = await p.postPrompt('ninja', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
+      return { w, slots: res.slots.length };
+    });
+    assert.ok(off.slots > 0);
+    assert.equal(off.w.filter((m) => /SAM 3\.1 check turned off/.test(m)).length, 1, off.w.join(' | '));
+    const before = samCalls;
+    await page.evaluate(() =>
+      window.reskin.plugin.postPrompt('robot', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      }),
+    );
+    assert.equal(samCalls, before, 'samCheck: false sends no SAM calls');
     await page.context().close();
   });
 

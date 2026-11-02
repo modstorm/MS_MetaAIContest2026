@@ -10,6 +10,8 @@
  *   rules     prompt lines for every paint call of this class
  *   parts     [{ match: regex on the part name, rules: [...] }] extra lines for matching parts
  *   seamless  true if the texture should wrap around (sky, terrain)
+ *   samCheck  { zone: [noun phrase | { concept, minShare, maxShare, minConfidence }] } things SAM 3.1
+ *             must NOT find newly painted in that zone; a hit repaints the area once (see samCheck.js)
  */
 
 /** @typedef {{ id: string, label: string, keywords?: RegExp, rules: string[], parts?: { match: RegExp, rules: string[] }[], seamless?: boolean }} AssetClass */
@@ -79,6 +81,17 @@ export const ASSET_CLASSES = [
         ],
       },
     ],
+    // Known Muse mistakes: portraits on the face / hands / pants, shoes at the bottom of the
+    // legs, a face on the jacket front.
+    samCheck: {
+      face: [{ concept: 'person', maxShare: 0.5 }],
+      hair: ['face'],
+      hands: ['face', 'person'],
+      torso: ['face', 'person'],
+      arms: ['face', 'person'],
+      legs: ['shoe', 'face', 'person'],
+      shoes: ['face', 'person'],
+    },
   },
   {
     id: 'creature',

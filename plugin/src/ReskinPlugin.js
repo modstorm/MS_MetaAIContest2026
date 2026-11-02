@@ -28,6 +28,7 @@ import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
 import { addUsage, emptyUsage, formatUsage, usageCost } from './muse/pricing.js';
+import { findIntrusions, intrusionNote, intrusionScore, intrusionText, samRulesFor } from './analysis/samCheck.js';
 import {
   applyDetailPreserve,
   accentColor,
@@ -124,6 +125,10 @@ export class ReskinPlugin {
   snapshots = new Map();
   /** Layout readings per texture, reused across prompts (the layout doesn't depend on the theme). */
   planCache = new Map();
+  /** SAM 3.1 results on the original texture, per area and phrase (cleared with a new model). */
+  samCache = new Map();
+  /** Set when a SAM call fails, so the rest of the run skips the check. */
+  samOff = false;
   /** Art-director suggestions per theme for the current model. */
   /** Per-part paint jobs of the last run, per slot (for review & repaint). */
   lastPartJobs = new Map();
@@ -267,6 +272,7 @@ export class ReskinPlugin {
       this.model = model;
       this.snapshots.clear();
       this.planCache.clear();
+      this.samCache.clear();
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.lastPartJobs.clear();
@@ -584,6 +590,7 @@ export class ReskinPlugin {
 
     try {
       if (opts.fast !== undefined) this.provider.setFast?.(opts.fast);
+      this.samOff = false;
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
       // Start from the original look every time, so prompts don't compound.
       this.restoreSnapshots();
@@ -1454,6 +1461,41 @@ export class ReskinPlugin {
           });
         }
       }
+      const samRules =
+        opts.samCheck !== false && this.provider.segment ? samRulesFor(opts.assetClass, part.zone, theme) : [];
+      if (samRules.length && !this.samOff) {
+        // SAM 3.1 looks for things that belong to other areas (a face on the trousers, shoes
+        // at the bottom of the legs) that this paint added; repaint once if it finds any.
+        const areaMask = whiteMask(guide);
+        const find = (c) =>
+          this.samFind(
+            slot,
+            part.name,
+            unpad(c, padded.canvas, padded.box, crop.width, crop.height),
+            crop,
+            areaMask,
+            samRules,
+            signal,
+          );
+        const first = await find(painted);
+        if (first?.length) {
+          this.emit('warning', {
+            message: `${part.name}: SAM 3.1 found ${intrusionText(first)} painted where it does not belong; repainting once.`,
+          });
+          const again = await this.toCanvas(await paintMuse(intrusionNote(first, part.name)));
+          signal.throwIfAborted();
+          const second = (await find(again)) ?? first;
+          const better = intrusionScore(second) < intrusionScore(first);
+          if (better) painted = again;
+          this.emit('warning', {
+            message: `${part.name}: SAM 3.1 after the repaint: ${second.length ? intrusionText(second) : 'nothing out of place'}; using the ${better ? 'repaint' : 'first try'}.`,
+          });
+        } else if (first) {
+          this.emit('warning', {
+            message: `${part.name}: SAM 3.1 check passed (${samRules.map((r) => r.concept).join(', ')}).`,
+          });
+        }
+      }
       const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
       if (restoreLost) {
         // Still missing after the repaint: draw the original's eyes / brows / mouth lines back.
@@ -1544,6 +1586,18 @@ export class ReskinPlugin {
             const added = skinShare(fp) - skinShare(fCrop);
             if (added > 0.02)
               throw new Error(`it drew ${(added * 100).toFixed(0)}% new skin-colored area (a face or person)`);
+            if (panel.facing === 0 && samRules.length && !this.samOff) {
+              const hits = await this.samFind(
+                slot,
+                `${part.name} front panel`,
+                fp,
+                fCrop,
+                whiteMask(cropCanvas(rGuide, fr)),
+                samRules,
+                signal,
+              );
+              if (hits?.length) throw new Error(`SAM 3.1 found ${intrusionText(hits)} on it`);
+            }
             const ug = rUp.getContext('2d');
             const dst = ug.getImageData(fr.x, 0, fr.width, fr.height);
             const src = fp.getContext('2d').getImageData(0, 0, fr.width, fr.height).data;
@@ -2158,6 +2212,38 @@ export class ReskinPlugin {
   }
 
   /** Runs one provider call and emits a `timing` event with how long it took. */
+  /**
+   * SAM 3.1 check of one painted crop against the original crop. Returns the hits the paint
+   * added, [] if clean, or null if SAM could not be reached (the check is then turned off
+   * for the rest of the run, with one warning).
+   */
+  async samFind(slot, areaName, painted, original, guide, rules, signal) {
+    if (this.samOff || !this.provider.segment) return null;
+    try {
+      return await this.timed(`sam ${areaName}`, slot.id, () =>
+        findIntrusions({
+          segment: (o) => this.provider.segment(o),
+          painted,
+          original,
+          guide,
+          rules,
+          cache: this.samCache,
+          cacheKey: `${slot.id}|${areaName}`,
+          signal,
+        }),
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      if (!this.samOff) {
+        this.samOff = true;
+        this.emit('warning', {
+          message: `SAM 3.1 check turned off for this run (${toError(err).message}); painting continues without it.`,
+        });
+      }
+      return null;
+    }
+  }
+
   async timed(step, slotId, fn) {
     const t0 = performance.now();
     let ok = false;

@@ -65,6 +65,11 @@ export class MuseProvider {
   /** Optional hook for notices the host should show (e.g. a model fallback): (message) => void. */
   onNotice = null;
 
+  /** SAM 3.1: masks for one noun phrase in an image (see MuseClient.segment). */
+  segment(o) {
+    return this.client.segment(o);
+  }
+
   get fast() {
     return this.opts.fast ?? true;
   }

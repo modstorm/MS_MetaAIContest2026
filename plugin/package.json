@@ -21,5 +21,8 @@
   "devDependencies": {
     "three": "^0.187.0",
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@meta-sam/parser": "0.1.0"
   }
 }

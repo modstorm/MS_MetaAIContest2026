@@ -5,15 +5,19 @@
  *  - POST {base}/images/generations  text -> image   (muse-image-1.0)
  *  - POST {base}/images/edits        image(s) + text -> image (JSON body with `images: [{image_url}]`)
  *  - POST {base}/chat/completions    vision / text  (muse-spark-1.3)
+ *  - POST {base}/responses           image + noun phrase -> masks (sam-3.1), see segment()
  *
  * Works in the browser with an API key (direct), or against a proxy that adds the key
  * (see `@metaai26/reskin-plugin/server`). If the direct call fails at the network level
  * (for example CORS), it retries once against `fallbackBaseUrl` when one is set.
  */
 
+import { parseImageStream } from '@meta-sam/parser';
+
 export const MUSE_DEFAULT_BASE = 'https://api.meta.ai/v1';
 export const MUSE_IMAGE_MODEL = 'muse-image-1.0';
 export const MUSE_VISION_MODEL = 'muse-spark-1.3';
+export const SAM_MODEL = 'sam-3.1';
 
 export class MuseApiError extends Error {
   constructor(message, status, type, code, body) {
@@ -60,6 +64,7 @@ export class MuseClient {
       fallbackBaseUrl: opts.fallbackBaseUrl?.replace(/\/+$/, ''),
       imageModel: opts.imageModel ?? MUSE_IMAGE_MODEL,
       visionModel: opts.visionModel ?? MUSE_VISION_MODEL,
+      samModel: opts.samModel ?? SAM_MODEL,
       timeoutMs: opts.timeoutMs ?? 180_000,
       maxRetries: opts.maxRetries ?? 2,
       user: opts.user,
@@ -120,6 +125,39 @@ export class MuseClient {
     }
   }
 
+  /**
+   * SAM 3.1 segmentation (Responses API, docs: https://dev.meta.ai/docs/sam/segmenting).
+   * `prompt` is one short noun phrase ("face", "shoe"); `image` a data URL or https URL.
+   * Returns the parsed image result of @meta-sam/parser: records of kind 'box' and 'mask'
+   * (mask payloads decode with decodeMaskToRaster). No match is a normal, empty result.
+   */
+  async segment(o) {
+    const body = {
+      model: this.options.samModel,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: o.prompt },
+            { type: 'input_image', image_url: o.image },
+          ],
+        },
+      ],
+      metadata: { include_confidence: 'true' },
+      stream: true,
+    };
+    const raw = await this.post('/responses', body, o.signal, true);
+    // Counted as a call; SAM is not in the price table, so it shows as unpriced.
+    this.reportUsage({ model: body.model, kind: 'sam', images: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 });
+    const events = [...toResponsesEvents(raw)];
+    return parseImageStream(
+      (async function* () {
+        yield* events;
+      })(),
+    ).finalResult;
+  }
+
   imageBody(o) {
     // Only documented fields: unknown top-level fields return 400.
     const body = {
@@ -148,20 +186,22 @@ export class MuseClient {
     throw new MuseApiError('Muse returned no image', 200, undefined, undefined, json);
   }
 
-  async post(path, body, signal) {
+  async post(path, body, signal, raw = false) {
     try {
-      return await this.postTo(this.options.baseUrl, path, body, signal);
+      return await this.postTo(this.options.baseUrl, path, body, signal, raw);
     } catch (err) {
       const fb = this.options.fallbackBaseUrl;
       if (fb && fb !== this.options.baseUrl && isNetworkError(err) && !signal?.aborted) {
-        return this.postTo(fb, path, body, signal);
+        return this.postTo(fb, path, body, signal, raw);
       }
       throw err;
     }
   }
 
-  async postTo(base, path, body, signal) {
+  /** raw: return { text, contentType } instead of parsed JSON (for streamed responses). */
+  async postTo(base, path, body, signal, raw = false) {
     const headers = { 'Content-Type': 'application/json' };
+    if (raw) headers.Accept = 'text/event-stream, application/json';
     // Only send the key to the real API; a proxy adds its own.
     if (this.options.apiKey && /^https?:\/\//.test(base)) headers.Authorization = `Bearer ${this.options.apiKey}`;
     if (!headers.Authorization && /^https:\/\/api\.meta\.ai/.test(base)) {
@@ -197,6 +237,7 @@ export class MuseClient {
       }
       if (res.ok) {
         report(res.status);
+        if (raw) return { text, contentType: res.headers.get('content-type') ?? '' };
         return json;
       }
 
@@ -218,6 +259,71 @@ export class MuseClient {
       );
     }
   }
+}
+
+/**
+ * Turns a buffered Responses API reply into the event list @meta-sam/parser reads: either
+ * a server-sent-event stream ("data: {...}" lines) or a plain JSON response object.
+ */
+export function* toResponsesEvents({ text }) {
+  const lane = { item_id: 'sam', output_index: 0, content_index: 0 };
+  const trimmed = String(text ?? '').trim();
+  if (trimmed.startsWith('{')) {
+    let json = null;
+    try {
+      json = JSON.parse(trimmed);
+    } catch {
+      /* fall through to SSE parsing */
+    }
+    if (json) {
+      const out =
+        json.output_text ??
+        (json.output ?? [])
+          .flatMap((o) => o?.content ?? [])
+          .map((c) => c?.text ?? '')
+          .join('');
+      yield { type: 'response.output_text.done', ...lane, text: out };
+      yield json.status === 'failed' ? { type: 'response.failed', response: json } : { type: 'response.completed' };
+      return;
+    }
+  }
+  // Text per lane; a lane that got deltas but no "done" is closed before the end event.
+  const open = new Map();
+  const closeOpen = function* () {
+    for (const [k, v] of open) {
+      const [item_id, output_index, content_index] = JSON.parse(k);
+      yield { type: 'response.output_text.done', item_id, output_index, content_index, text: v };
+    }
+    open.clear();
+  };
+  for (const line of trimmed.split(/\r?\n/)) {
+    const m = /^data:\s*(.*)$/.exec(line);
+    if (!m || !m[1] || m[1] === '[DONE]') continue;
+    let ev;
+    try {
+      ev = JSON.parse(m[1]);
+    } catch {
+      continue;
+    }
+    if (!ev?.type) continue;
+    // The parser keys text by lane; normalize so a missing field never splits the text.
+    if (ev.type.startsWith('response.output_text.') || ev.type.startsWith('response.refusal.')) {
+      const e = {
+        ...ev,
+        item_id: ev.item_id ?? lane.item_id,
+        output_index: ev.output_index ?? 0,
+        content_index: ev.content_index ?? 0,
+      };
+      const k = JSON.stringify([e.item_id, e.output_index, e.content_index]);
+      if (e.type === 'response.output_text.delta') open.set(k, (open.get(k) ?? '') + (e.delta ?? ''));
+      if (e.type === 'response.output_text.done') open.delete(k);
+      yield e;
+    } else {
+      if (/^response\.(completed|incomplete|failed)$/.test(ev.type)) yield* closeOpen();
+      yield ev;
+    }
+  }
+  yield* closeOpen();
 }
 
 /** Deep copy of a request body with data-URL images replaced by a short placeholder. */
