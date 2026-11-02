@@ -99,6 +99,8 @@
  * @property {boolean} [fixSkinLeftovers] Fill small skin-colored patches left in clothing zones. Default true.
  * @property {boolean} [handsAsMaterial] Paint the hands zone from a seamless material texture (gloves or skin), shaded by the original, instead of an image edit. Default true.
  * @property {boolean} [plainNarrowStrips] Narrow pieces between two limbs (inseam strip) get the plain fabric color. Default true.
+ * @property {{ image: CanvasImageSource, slot?: string, rect?: number[], flipY?: boolean }[]} [templates] Artists' templates (panel outlines and labels laid out like the texture); each area is sent to Muse with its part of the template. Also settable for every run with plugin.setProfile({ templates, panels }).
+ * @property {{ zone?: string, area?: string, slot?: string, facing: 'front' | 'back', rect: number[] }[]} [panels] Exact front / back panels in texture fractions [u0, v0, u1, v1], used instead of reading them from the 3D data.
  * @property {string[]} [locked] Area names that keep their current paint (default: plugin.locked).
  * @property {number} [edgePadding] Pixels (at 1024px) to grow island colors into gaps, against seams. Default 12; 0 = off.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.

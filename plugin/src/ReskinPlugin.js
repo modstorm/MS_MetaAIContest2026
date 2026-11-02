@@ -1113,6 +1113,51 @@ export class ReskinPlugin {
    * (slightly grown) UV area, on top of a copy of the original atlas. Returns that canvas,
    * in the atlas's own orientation.
    */
+  /**
+   * Artists' templates for a slot, composed into one image at the atlas size (white where no
+   * template covers it), or null. Entries come from opts.templates and the profile
+   * (setProfile): { image, slot?, rect?: [u0, v0, u1, v1], flipY? }. `slot` is a slot name or
+   * id (none = every textured slot); `rect` places the image on part of the texture (texture
+   * fractions, default the whole texture); `flipY` turns it upside down first (templates drawn
+   * upright for an atlas the model stores upside down).
+   */
+  templateFor(slot, opts, W, H) {
+    const list = [...(opts.templates ?? []), ...(this.profile?.templates ?? [])].filter(
+      (e) => e?.image && (!e.slot || e.slot === slot.id || e.slot === slot.name),
+    );
+    if (!list.length) return null;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, W, H);
+    for (const e of list) {
+      const [u0, v0, u1, v1] = e.rect ?? [0, 0, 1, 1];
+      const x = u0 * W,
+        y = v0 * H,
+        w = (u1 - u0) * W,
+        h = (v1 - v0) * H;
+      g.save();
+      if (e.flipY) {
+        g.translate(0, y * 2 + h);
+        g.scale(1, -1);
+      }
+      g.drawImage(e.image, x, y, w, h);
+      g.restore();
+    }
+    return c;
+  }
+
+  /**
+   * Caller-supplied profile for a family of models (e.g. a game's avatars): artists'
+   * templates and exact panels, used by every later reskin. Pass null to clear.
+   * @param {{ templates?: object[], panels?: object[], name?: string } | null} profile
+   */
+  setProfile(profile) {
+    this.profile = profile ?? null;
+  }
+
   /** Per-area theme descriptions (cached per theme + area list; failures fall back to the theme). */
   async areaThemesFor(theme, names, plan, signal) {
     if (!this.provider.areaThemes) return new Map();
@@ -1148,6 +1193,8 @@ export class ReskinPlugin {
     const manual =
       opts.orientation != null && opts.orientation !== 'auto' ? resolveOrientation(opts.orientation, parts) : null;
     const regions = this.idRegions(slot, opts);
+    const template = this.templateFor(slot, opts, W, H);
+    if (template) this.emit('warning', { message: `"${slot.name}": using the artists' template for layout.` });
     // Review & fix: areas Muse did not flag reuse their last painted image.
     // Locked areas keep their current paint (or the original colors if never painted).
     const locked = new Set(opts.locked ?? this.locked);
@@ -1256,17 +1303,58 @@ export class ReskinPlugin {
       }
       let crop = transformCanvas(greyedCrop(original, mask, rect), orient);
       let guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
+      // Artists' template (editor-supplied, same layout as the texture): cut like the area.
+      let tpl = template ? transformCanvas(cropCanvas(template, rect), orient) : null;
+      // Editor-supplied panels ({ zone | area, facing: 'front' | 'back', rect: [u0, v0, u1, v1] }
+      // in texture fractions) give the exact front / back instead of reading it from the 3D data.
+      const panelMask = (facingIdx) => {
+        const pn = [...(opts.panels ?? []), ...(this.profile?.panels ?? [])].find(
+          (p) =>
+            p.facing === (facingIdx === 0 ? 'front' : 'back') &&
+            (p.area === part.name || p.zone === part.zone) &&
+            (!p.slot || p.slot === slot.name || p.slot === slot.id),
+        );
+        if (!pn) return null;
+        const c = document.createElement('canvas');
+        c.width = W;
+        c.height = H;
+        const g = c.getContext('2d');
+        g.fillStyle = '#000';
+        g.fillRect(0, 0, W, H);
+        g.fillStyle = '#fff';
+        const [u0, v0, u1, v1] = pn.rect;
+        g.fillRect(u0 * W, v0 * H, (u1 - u0) * W, (v1 - v0) * H);
+        return transformCanvas(cropCanvas(c, rect), orient);
+      };
+      const colSpan = (c) => {
+        if (!c) return null;
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let a = -1,
+          b = -1;
+        for (let x = 0; x < c.width; x++) {
+          let on = false;
+          for (let y = 0; y < c.height && !on; y += 2) on = d[(y * c.width + x) * 4] > 128;
+          if (on) {
+            if (a < 0) a = x;
+            b = x;
+          }
+        }
+        return a < 0 ? null : { start: a, end: b };
+      };
+      const panelMasks = [panelMask(0), panelMask(1)];
       // Torso: the front panel is often off to one side of the crop and the image model
       // always centers the garment, so the crop is rolled (wrapping round) to put the front
       // in the middle, and rolled back after painting.
       let roll = 0;
       if (part.zone === 'torso' && opts.centerFront !== false) {
-        const fs = frontSpan(guide);
+        const fs = colSpan(panelMasks[0]) ?? frontSpan(guide);
         const d = fs ? Math.round(guide.width / 2 - (fs.start + fs.end + 1) / 2) : 0;
         if (Math.abs(d) >= guide.width * 0.04) {
           roll = d;
           crop = rollCanvas(crop, roll);
           guide = rollCanvas(guide, roll);
+          if (tpl) tpl = rollCanvas(tpl, roll);
+          for (let i = 0; i < 2; i++) if (panelMasks[i]) panelMasks[i] = rollCanvas(panelMasks[i], roll);
         }
         this.emit('warning', {
           message: `${part.name}: ${fs ? (roll ? `front panel moved ${Math.round((100 * roll) / guide.width)}% to the center for painting` : 'front panel already centered') : `no single front panel found (front faces: ${Math.round((facing.share.front ?? 0) * 100)}%, crop ${guide.width}x${guide.height}, orientation ${orient ? JSON.stringify({ rot: orient.rot, flipX: orient.flipX }) : 'upright'})`}.`,
@@ -1323,6 +1411,7 @@ export class ReskinPlugin {
             facingLayout: layout,
             facingStrips: strips || undefined,
             styleRef: plain ? null : styleRef,
+            template: plain || !tpl ? undefined : padToMuseAspect(tpl, { fill: '#ffffff' }).canvas,
             subject: plain ? undefined : plan?.subject,
             areaTheme: plain ? undefined : areaThemes.get(part.name),
             paint: plain ? undefined : regionPaint(part),
@@ -1409,19 +1498,23 @@ export class ReskinPlugin {
         ];
         for (const panel of panels) {
           const w = guide.width;
-          const sp0 = frontSpan(guide, panel.facing);
+          const pm = panelMasks[panel.facing];
+          const sp0 = colSpan(pm) ?? frontSpan(guide, panel.facing);
           if (!sp0 || sp0.end - sp0.start + 1 >= w * 0.8) continue;
           // Roll so the panel sits in the middle (a back panel is often split over the edges).
           const d = Math.round(w / 2 - (sp0.start + sp0.end + 1) / 2);
           const rCrop = d ? rollCanvas(crop, d) : crop;
           const rGuide = d ? rollCanvas(guide, d) : guide;
           const rUp = d ? rollCanvas(upright, d) : upright;
-          const sp = frontSpan(rGuide, panel.facing);
+          const sp = colSpan(pm && d ? rollCanvas(pm, d) : pm) ?? frontSpan(rGuide, panel.facing);
           if (!sp || sp.end >= w) continue;
           const fr = { x: sp.start, y: 0, width: sp.end - sp.start + 1, height: rGuide.height };
           const fCrop = cropCanvas(rCrop, fr);
           const fPad = padToMuseAspect(fCrop);
           const fGuide = padToMuseAspect(whiteMask(cropCanvas(rGuide, fr)), { fill: '#000000' });
+          const fTpl = tpl
+            ? padToMuseAspect(cropCanvas(d ? rollCanvas(tpl, d) : tpl, fr), { fill: '#ffffff' }).canvas
+            : null;
           try {
             const img = await this.withFilterRetry(`paint ${part.name} ${panel.label}`, slot, theme, (plain, t) =>
               this.provider.reskinPart({
@@ -1435,6 +1528,7 @@ export class ReskinPlugin {
                     ? 'the front of the body, seen straight on'
                     : 'the back of the body, seen from behind',
                 styleRef: plain ? null : rUp,
+                template: plain ? undefined : (fTpl ?? undefined),
                 areaTheme: plain ? undefined : areaThemes.get(part.name),
                 classRules: plain ? undefined : rules,
                 extra: plain

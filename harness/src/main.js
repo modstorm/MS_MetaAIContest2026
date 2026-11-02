@@ -800,6 +800,39 @@ try {
 } catch {
   /* ignore broken storage */
 }
+// Model profile: { name, templates: [{ file, rect?, flipY?, slot? }], panels: [...] } plus the
+// template images it names, picked together in one file dialog.
+$('profile-file').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  const json = files.find((f) => /\.json$/i.test(f.name));
+  if (!json) return log('Pick the profile .json together with its template images.', 'error');
+  try {
+    const profile = JSON.parse(await json.text());
+    const templates = [];
+    for (const t of profile.templates ?? []) {
+      const f = files.find((x) => x.name === t.file);
+      if (!f) {
+        log(`Profile: template image "${t.file}" was not selected; skipped.`, 'error');
+        continue;
+      }
+      templates.push({ ...t, image: await createImageBitmap(f) });
+    }
+    plugin.setProfile({ ...profile, templates });
+    $('profile-name').textContent =
+      `${profile.name ?? json.name}: ${templates.length} template(s), ${(profile.panels ?? []).length} panel(s)`;
+    log(
+      `Profile "${profile.name ?? json.name}" loaded: ${templates.length} template(s), ${(profile.panels ?? []).length} panel(s).`,
+    );
+  } catch (err) {
+    log(`Could not read the profile: ${err.message}`, 'error');
+  }
+});
+$('profile-clear').onclick = () => {
+  plugin.setProfile(null);
+  $('profile-name').textContent = '';
+  log('Profile cleared.');
+};
 $('lessons').value = lessonsToText(plugin.getLessons());
 $('lessons').addEventListener('change', () => plugin.setLessons(textToLessons($('lessons').value)));
 $('lessons-clear').onclick = () => plugin.setLessons({});

@@ -199,6 +199,18 @@
               ><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images
               shortened)</label
             >
+            <label for="profile-file"
+              >Model profile
+              <span class="muted"
+                >(optional: a profile .json plus its template PNGs, selected together; artists' templates and exact
+                panels for your models)</span
+              ></label
+            >
+            <div class="row">
+              <input id="profile-file" type="file" accept=".json,application/json,image/png,image/jpeg" multiple />
+              <button type="button" id="profile-clear">Clear</button>
+              <span id="profile-name" class="muted"></span>
+            </div>
             <label for="lessons"
               >Learned tips
               <span class="muted"

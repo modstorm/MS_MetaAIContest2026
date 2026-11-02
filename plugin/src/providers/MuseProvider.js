@@ -367,6 +367,7 @@ export class MuseProvider {
             this.toUpload(req.image),
             this.toUpload(req.mask, 'guide'),
             ...(req.styleRef ? [this.toUploadSized(req.styleRef, 512)] : []),
+            ...(req.template ? [this.toUpload(req.template, 'guide')] : []),
           ],
       size: museSizeFor(req.image.width, req.image.height),
       signal: req.signal,

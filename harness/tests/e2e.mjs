@@ -1227,9 +1227,11 @@ try {
   await step('torso wrapped side|front|side|back: a design centred by Muse lands on the front centre', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     // Mock Muse: whatever it gets, it paints a red stripe down the middle of the image.
+    const wrapEdits = [];
     const stripe = makePng(64, 64, (x) => (x >= 30 && x < 34 ? [255, 0, 0] : [40, 60, 200])).toString('base64');
     await page.route('https://api.meta.ai/v1/**', (route) => {
       const isChat = route.request().url().endsWith('/chat/completions');
+      if (!isChat) wrapEdits.push(route.request().postDataJSON());
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -1263,6 +1265,34 @@ try {
       near.length > 0,
       `stripe at front centre ${frontCentre.toFixed(3)}: red at ${JSON.stringify(res.red.map((u) => u.toFixed(3)))}; ${JSON.stringify(res)}`,
     );
+    // A profile with exact panels and an artists' template: the template goes to Muse with the torso.
+    const prof = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const logs = [];
+      p.on('warning', (w) => logs.push(w.message));
+      const t = document.createElement('canvas');
+      t.width = t.height = 64;
+      const g = t.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, 64, 64);
+      g.strokeStyle = '#f00';
+      g.strokeRect(8, 8, 48, 48);
+      p.setProfile({
+        name: 'test',
+        templates: [{ image: t, rect: [0.4, 0.74, 0.98, 0.98] }],
+        panels: [{ zone: 'torso', facing: 'front', rect: [0.4 + 0.58 / 6, 0.74, 0.4 + 0.58 / 2, 0.98] }],
+      });
+      await p.postPrompt('tiger', { useVisionPlanning: false, variants: 1, normalMaps: false, roughnessMaps: false });
+      p.setProfile(null);
+      return logs.filter((l) => /template|torso/i.test(l));
+    });
+    assert.ok(
+      prof.some((l) => /artists' template/.test(l)),
+      JSON.stringify(prof),
+    );
+    const withTpl = wrapEdits.filter((e) => /artists' template for this same area/.test(e.prompt));
+    assert.ok(withTpl.length > 0, 'template sent with the areas');
+    assert.ok(withTpl.every((e) => e.images.length >= 3));
     await page.close();
   });
 

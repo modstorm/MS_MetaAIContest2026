@@ -336,7 +336,20 @@ export function isFacePart(name) {
  */
 export function reskinPartPrompt(
   theme,
-  { partName, subject, paint, others, extra, facing, facingLayout, facingStrips, classRules, styleRef, areaTheme } = {},
+  {
+    partName,
+    subject,
+    paint,
+    others,
+    extra,
+    facing,
+    facingLayout,
+    facingStrips,
+    classRules,
+    styleRef,
+    areaTheme,
+    template,
+  } = {},
 ) {
   const face = isFacePart(partName);
   const lines = [
@@ -344,6 +357,9 @@ export function reskinPartPrompt(
     'Image 2 is its mask: white = this area, black = not part of it.',
     styleRef
       ? 'Image 3 is another area of the same model that is already painted in the new theme: match its palette and level of detail, but paint what belongs in this area (do not copy its garment or details here).'
+      : '',
+    template
+      ? `Image ${styleRef ? 4 : 3} is the artists' template for this same area, at the same position and size as image 1: its outlines and labels show the garment's panels (front, back, sides, neckline, seams, sleeve parts). Follow it exactly: put each design element in the panel it belongs to, follow the neckline shape it shows, and centre front details on the front panel's centre line. Never draw the template's lines, labels or text.`
       : '',
     subject && !areaTheme ? `The model is: ${subject}.` : '',
     facing ? `On the model this area is ${facing}.` : '',
