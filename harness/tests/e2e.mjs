@@ -1608,7 +1608,10 @@ try {
       const updates = [];
       const off = p.on('textureUpdated', (e) => updates.push({ ...e, canvas: undefined }));
       const r = await p.postPrompt('lava', { paintMode: 'atlas' });
+      // The model has no normal / roughness maps: 'always' creates them, and they replace nothing.
+      const made = await p.postPrompt('lava', { paintMode: 'atlas', normalMaps: 'always', roughnessMaps: 'always' });
       off();
+      const created = made.slots.flatMap((s) => s.maps.filter((m) => m.kind !== 'baseColor'));
       const json = p.model.gltf.parser.json;
       return {
         updates,
@@ -1619,6 +1622,13 @@ try {
           textureUuid: s.textureUuid,
         })),
         images: json.images.length,
+        created: created.map((m) => ({
+          kind: m.kind,
+          textureName: m.textureName,
+          textureUuid: m.textureUuid,
+          imageIndex: m.imageIndex,
+        })),
+        plainMaps: r.slots.flatMap((s) => s.maps.map((m) => m.kind)),
       };
     });
     const base = out.updates.filter((u) => u.kind === 'baseColor');
@@ -1629,6 +1639,10 @@ try {
       assert.ok(u.textureUuid && 'textureName' in u && 'imageName' in u);
     }
     assert.equal(out.slots[0].imageIndex, base.find((u) => u.slotId === out.slots[0].slotId).imageIndex);
+    assert.deepEqual([...new Set(out.plainMaps)], ['baseColor'], 'no normal/roughness maps made by default');
+    assert.ok(out.created.length >= 2, 'always: maps created');
+    for (const m of out.created)
+      assert.deepEqual([m.textureName, m.textureUuid, m.imageIndex], [null, null, null], m.kind);
     await page.context().close();
   });
 
