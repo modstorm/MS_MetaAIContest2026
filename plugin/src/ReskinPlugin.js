@@ -22,12 +22,13 @@ import {
   splitPartRegions,
   whiteMask,
 } from './analysis/facing.js';
-import { avatarAnatomy, splitAvatarZones } from './analysis/anatomy.js';
+import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.js';
+import { findSamZones, regionData, zoneConceptsFor } from './analysis/samZones.js';
 import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
-import { addUsage, emptyUsage, formatUsage, usageCost } from './muse/pricing.js';
+import { addUsage, emptyUsage, formatDollars, formatUsage, usageCost } from './muse/pricing.js';
 import {
   findIntrusions,
   intrusionNote,
@@ -138,6 +139,10 @@ export class ReskinPlugin {
   samCache = new Map();
   /** Set when a SAM call fails, so the rest of the run skips the check. */
   samOff = false;
+  /** Paint zones found by SAM 3.1, per slot id (see findZones; cleared with a new model). */
+  samZones = new Map();
+  /** Use SAM-found zones for models without a profile (setSamZones / opts.samZones). */
+  samZonesOn = false;
   /** Art-director suggestions per theme for the current model. */
   /** Per-part paint jobs of the last run, per slot (for review & repaint). */
   lastPartJobs = new Map();
@@ -282,6 +287,7 @@ export class ReskinPlugin {
       this.snapshots.clear();
       this.planCache.clear();
       this.samCache.clear();
+      this.samZones.clear();
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.lastPartJobs.clear();
@@ -476,6 +482,12 @@ export class ReskinPlugin {
         if (!raw.atlases?.length) raw.atlases = an.atlases;
       } else {
         this.restoreSnapshots(); // study the original look
+        if (opts.samZones !== undefined) this.setSamZones(opts.samZones);
+        // SAM zones first (when the asset class has its own phrases), so the ID views match the paint.
+        if (this.samZonesActive && this.slotsWithoutSamZones().length) {
+          const cls = this.resolveAssetClass(opts);
+          if (zoneConceptsFor(cls).concepts.length) await this.findZones({ ...opts, assetClass: cls }, signal);
+        }
         this.status('analyzing', 'Rendering six views of the model…');
         this.emit('progress', { stage: 'plan', message: 'Rendering six views of the model', progress: 0.1 });
         ({ views, sheet } = renderAxisViews(this.model.scene, { size: opts.viewSize ?? 384 }));
@@ -612,6 +624,12 @@ export class ReskinPlugin {
 
       this.areaClass = opts.assetClass;
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
+
+      // SAM zones: found once per model (the model shows its original look here).
+      if (opts.samZones !== undefined) this.setSamZones(opts.samZones);
+      if (this.samZonesActive && !opts.fixes && this.slotsWithoutSamZones().length) {
+        await this.findZones(opts, signal);
+      }
 
       const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
       // Small untextured parts (a button, an eye, an antenna ball) are tinted locally
@@ -1184,6 +1202,158 @@ export class ReskinPlugin {
    */
   setProfile(profile) {
     this.profile = profile ?? null;
+    // A profile's zones win over SAM-found ones, so the areas may change.
+    this.regionCache.clear();
+  }
+
+  // ---------------------------------------------------------------- SAM zones
+
+  /**
+   * Turns SAM zone finding on or off. When on, a model with no profile gets its paint
+   * zones from SAM 3.1 (found once per model, before the first paint). A loaded profile
+   * always wins: its model keeps the usual areas.
+   */
+  setSamZones(on) {
+    on = !!on;
+    if (on === this.samZonesOn) return;
+    this.samZonesOn = on;
+    this.regionCache.clear();
+    this.emit('locks', { locked: [...this.locked], areas: this.listAreas() });
+  }
+
+  /** True when SAM-found zones replace the usual areas (switched on, and no profile loaded). */
+  get samZonesActive() {
+    return this.samZonesOn && !this.profile;
+  }
+
+  /** Atlas slots that still need SAM zones. */
+  slotsWithoutSamZones() {
+    return (this.layout?.slots ?? []).filter((s) => s.texture && !s.tiled && !this.samZones.has(s.id));
+  }
+
+  /**
+   * Finds paint zones with SAM 3.1 now (the toggle is switched on too). Renders the six
+   * views of the original look, asks SAM for each noun phrase of the asset class and maps
+   * the masks back onto the UV layout. Returns the zones per slot, or null if none were found.
+   * @param {{ assetClass?: string, suggestion?: object, force?: boolean, signal?: AbortSignal }} [opts]
+   */
+  async postFindZones(opts = {}) {
+    this.guard();
+    if (!this.model || !this.layout) throw new Error('Post a model before finding zones');
+    this.setSamZones(true);
+    this.busy = true;
+    this.abort = new AbortController();
+    const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
+    const idMap = this.idMapVisible;
+    try {
+      if (idMap) this.showIdMap(false);
+      const shown = !!this.lastResult;
+      if (shown) this.showOriginal(true);
+      try {
+        if (opts.force) for (const s of this.layout.slots) this.samZones.delete(s.id);
+        const found = await this.findZones(opts, signal);
+        this.status('idle', found?.length ? 'SAM zones ready' : 'Using the usual areas');
+        return found;
+      } finally {
+        if (shown) this.showOriginal(false);
+      }
+    } finally {
+      if (idMap) this.showIdMap(true);
+      this.busy = false;
+      this.abort = null;
+    }
+  }
+
+  /**
+   * The SAM zone pass (see samZones.js). The model must show its original look. Never
+   * throws apart from a cancel: on any failure the usual areas are kept.
+   */
+  async findZones(opts, signal) {
+    const slots = this.slotsWithoutSamZones();
+    if (!slots.length) return this.samZonesSummary();
+    if (this.profile) {
+      this.emit('warning', {
+        message: `Profile "${this.profile.name ?? 'loaded'}" gives the zones; SAM zone finding skipped.`,
+      });
+      return null;
+    }
+    if (typeof this.provider.segment !== 'function') {
+      this.emit('warning', { message: `${this.provider.name} cannot run SAM 3.1; using the usual areas.` });
+      return null;
+    }
+    const assetClass = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    const partNames = (opts.suggestion?.parts ?? this.modelAnalysis?.parts ?? []).map((p) => p?.name);
+    const { concepts, rest } = zoneConceptsFor(assetClass, partNames);
+    if (!concepts.length) {
+      this.emit('warning', {
+        message:
+          'SAM zones: no part names to look for (pick an asset class or get a Muse suggestion first); using the usual areas.',
+      });
+      return null;
+    }
+    const before = this.usage.session.segments ?? 0;
+    const costBefore = usageCost(this.usage.session);
+    this.status('analyzing', `SAM 3.1 is finding zones: ${concepts.map((c) => c.concept).join(', ')}…`);
+    this.emit('progress', { stage: 'plan', message: 'SAM 3.1 is finding paint zones', progress: 0.05 });
+    try {
+      const res = await this.timed('sam zones', null, async () => {
+        const { views } = renderAxisViews(this.model.scene, { size: opts.zoneViewSize ?? 384 });
+        return findSamZones({
+          root: this.model.scene,
+          slots,
+          views,
+          concepts,
+          rest,
+          segment: (o) => this.provider.segment(o),
+          signal,
+        });
+      });
+      const names = new Set();
+      for (const slot of slots) {
+        const found = res.zones.get(slot.id) ?? [];
+        if (found.length < 2) {
+          this.samZones.set(slot.id, []); // tried: one zone is no better than the usual areas
+          continue;
+        }
+        const parts = slotParts(slot);
+        const base =
+          parts.length === 1 ? parts[0] : { name: slot.name, meshes: slot.meshes, up: null, mirrored: false };
+        const regions = found.slice(0, opts.maxPaintAreas ?? 12).map((z) => {
+          const data = regionData(slot, [...z.tris.keys()]);
+          names.add(z.zone);
+          return makeRegion(slot, { ...base, meshes: [...z.tris.keys()] }, z.zone, z, z.area / z.share, data);
+        });
+        this.samZones.set(slot.id, regions);
+      }
+      this.regionCache.clear();
+      this.emit('locks', { locked: [...this.locked], areas: this.listAreas() });
+      const images = (this.usage.session.segments ?? 0) - before;
+      const cost = usageCost(this.usage.session) - costBefore;
+      const missed = res.found.filter((f) => !f.masks).map((f) => f.concept);
+      this.emit('warning', {
+        message: names.size
+          ? `SAM 3.1 zones: ${[...names].join(', ')}${missed.length ? ` (not seen: ${missed.join(', ')})` : ''}. ${images} SAM image${images === 1 ? '' : 's'} ≈ ${formatDollars(cost)}.`
+          : `SAM 3.1 found no usable zones (${images} SAM images ≈ ${formatDollars(cost)}); using the usual areas.`,
+      });
+      const summary = this.samZonesSummary();
+      this.emit('zones', { slots: summary, sheet: res.sheet, found: res.found, images, cost });
+      return summary;
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      this.emit('warning', { message: `SAM zone finding failed (${toError(err).message}); using the usual areas.` });
+      return null;
+    }
+  }
+
+  /** SAM zones per slot: [{ slotId, slotName, zones: [{ name, zone, share }] }]. */
+  samZonesSummary() {
+    return (this.layout?.slots ?? [])
+      .filter((s) => this.samZones.get(s.id)?.length)
+      .map((s) => ({
+        slotId: s.id,
+        slotName: s.name,
+        zones: this.samZones.get(s.id).map((r) => ({ name: r.name, zone: r.zone, share: r.share })),
+      }));
   }
 
   /** Per-area theme descriptions (cached per theme + area list; failures fall back to the theme). */
@@ -1961,10 +2131,12 @@ export class ReskinPlugin {
   idRegions(slot, opts = {}) {
     const assetClass = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
     opts = { ...opts, assetClass };
-    const key = `${slot.id}|${opts.splitRegions !== false}|${opts.maxPaintAreas ?? 12}|${assetClass}`;
+    // SAM-found zones (switched on, no profile) replace the usual areas of this slot.
+    const sam = this.samZonesActive && this.samZones.get(slot.id)?.length ? this.samZones.get(slot.id) : null;
+    const key = `${slot.id}|${opts.splitRegions !== false}|${opts.maxPaintAreas ?? 12}|${assetClass}|${sam ? 'sam' : ''}`;
     const hit = this.regionCache.get(key);
     if (hit) return hit;
-    const regions = this.paintRegions(slot, slotParts(slot), opts);
+    const regions = sam ?? this.paintRegions(slot, slotParts(slot), opts);
     // Body zones always get the same color; other areas take the next unused one.
     const used = new Set();
     const fixed = regions.map((r) => {

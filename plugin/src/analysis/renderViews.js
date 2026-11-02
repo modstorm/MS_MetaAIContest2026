@@ -35,7 +35,7 @@ export const REVIEW_VIEWS = [
  *
  * @param {import('three').Object3D} object
  * @param {{ size?: number, background?: string, views?: typeof AXIS_VIEWS, cols?: number }} [opts]
- * @returns {{ views: { name: string, axis: string, canvas: HTMLCanvasElement }[], sheet: HTMLCanvasElement }}
+ * @returns {{ views: { name: string, axis: string, canvas: HTMLCanvasElement, projView: THREE.Matrix4, rootMatrix: THREE.Matrix4 }[], sheet: HTMLCanvasElement }}
  */
 export function renderAxisViews(object, opts = {}) {
   const size = opts.size ?? 384;
@@ -88,7 +88,10 @@ export function renderAxisViews(object, opts = {}) {
       renderer.render(scene, cam);
       const c = createCanvas(size, size);
       ctx2d(c).drawImage(renderer.domElement, 0, 0);
-      views.push({ name: v.name, axis: v.axis, canvas: c });
+      // The camera and the object's placement while rendering, so pixels can be matched to
+      // triangles afterwards (see samZones.js).
+      const projView = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+      views.push({ name: v.name, axis: v.axis, canvas: c, projView, rootMatrix: object.matrixWorld.clone() });
     }
   } finally {
     scene.remove(object);

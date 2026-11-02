@@ -153,6 +153,10 @@ plugin.onUpdate((e) => {
     case 'idMap':
       $('btn-idmap').classList.toggle('on', e.data.on);
       break;
+    case 'zones':
+      for (const s of e.data.slots)
+        log(`Zones in "${s.slotName}": ${s.zones.map((z) => `${z.zone} ${Math.round(z.share * 100)}%`).join(', ')}`);
+      break;
     case 'plan':
       if (e.data.plan) log(`Layout read: ${e.data.plan.subject} (${e.data.plan.regions.length} regions)`);
       break;
@@ -230,6 +234,7 @@ function setLoaded(on) {
   $('btn-export').disabled = !on;
   $('btn-idmap').disabled = !on;
   $('btn-idmap').classList.remove('on');
+  $('btn-samzones').disabled = !on || typeof plugin.getProvider().segment !== 'function';
   $('btn-review').disabled = true;
   $('review-section').hidden = true;
   $('history-section').hidden = true;
@@ -557,6 +562,7 @@ function paintOptions() {
     roughnessMaps: $('opt-rough').checked,
     maxTextureSize: Number($('opt-size').value),
     samCheck: $('opt-sam').checked,
+    samZones: $('opt-sam-zones').checked,
   };
 }
 
@@ -772,6 +778,25 @@ $('btn-idmap').onclick = () => {
   const on = !plugin.idMapVisible;
   plugin.showIdMap(on);
   $('btn-idmap').classList.toggle('on', on);
+};
+
+// SAM zones: switch them on, find them now (again), and show them as the ID map.
+$('opt-sam-zones').addEventListener('change', (e) => plugin.setSamZones(e.target.checked));
+$('btn-samzones').onclick = async () => {
+  if (plugin.isBusy) return;
+  $('opt-sam-zones').checked = true;
+  $('btn-samzones').disabled = true;
+  try {
+    const found = await plugin.postFindZones({ force: true, ...paintOptions() });
+    if (found?.length) {
+      if (plugin.idMapVisible) plugin.showIdMap(false);
+      plugin.showIdMap(true);
+    }
+  } catch (err) {
+    log(`Finding zones failed: ${err.message}`, 'error');
+  } finally {
+    $('btn-samzones').disabled = false;
+  }
 };
 
 // ------------------------------------------------------------------ image save names
@@ -1041,6 +1066,7 @@ settingsDialog.addEventListener('close', () => {
   localStorage.setItem(STORE, JSON.stringify(settings));
   plugin.setProvider(makeProvider(settings));
   log(`Backend: ${plugin.getProvider().name}`);
+  $('btn-samzones').disabled = !plugin.model || typeof plugin.getProvider().segment !== 'function';
   updateKeyBanner();
 });
 
