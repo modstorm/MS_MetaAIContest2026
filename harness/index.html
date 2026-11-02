@@ -207,26 +207,26 @@
 
     <dialog id="prompt-dialog" class="dialog">
       <form method="dialog" id="prompt-form">
-        <h2>Reskin with a prompt</h2>
-        <p class="muted" id="prompt-model-info"></p>
-        <label for="prompt-text">Theme</label>
+        <h2>Reskin</h2>
+        <p class="muted small" id="prompt-model-info"></p>
         <textarea
           id="prompt-text"
           rows="3"
           required
-          placeholder="e.g. haunted Halloween pumpkin armor with glowing orange cracks"
+          aria-label="Theme"
+          placeholder="Describe a theme, e.g. haunted Halloween pumpkin armor with glowing orange cracks"
         ></textarea>
         <div class="chips" id="prompt-chips"></div>
+        <label class="inline" id="suggest-row"
+          ><input id="opt-suggest" type="checkbox" checked /> Let Muse look at the model and improve my prompt</label
+        >
         <div class="style-row">
-          <label class="inline" id="suggest-row"
-            ><input id="opt-suggest" type="checkbox" checked /> Let Muse study the model and improve the prompt</label
-          >
           <label class="inline"
-            >Paint
+            >Quality
             <select id="opt-paint-mode">
-              <option value="auto" selected>Part by part (best, 1 image per area)</option>
-              <option value="atlas">One pass (cheapest, 1 image per texture)</option>
-              <option value="atlas-hq">One pass, high detail (Muse thinks longer)</option>
+              <option value="auto" selected>Best (part by part)</option>
+              <option value="atlas">Fast (one pass)</option>
+              <option value="atlas-hq">Fast, more detail</option>
             </select>
           </label>
           <label class="inline"
@@ -249,19 +249,7 @@
               </select>
             </label>
             <label
-              >Atlas orientation
-              <select id="opt-orient">
-                <option value="auto" selected>Auto (from the 3D model)</option>
-                <option value="none">As stored</option>
-                <option value="flipV">Flip vertically</option>
-                <option value="flipH">Flip horizontally</option>
-                <option value="rot180">Rotate 180°</option>
-                <option value="rot90">Rotate 90°</option>
-                <option value="rot270">Rotate 270°</option>
-              </select>
-            </label>
-            <label
-              >Max texture size
+              >Texture size
               <select id="opt-size">
                 <option>512</option>
                 <option selected>1024</option>
@@ -269,80 +257,78 @@
               </select>
             </label>
             <label
-              ><input id="opt-review" type="checkbox" /> Review &amp; fix after painting (Muse checks 8 views of the
-              result and repaints flagged areas once)</label
+              ><input id="opt-review" type="checkbox" /> Review &amp; fix: Muse checks the result and repaints what it
+              flags</label
             >
             <label
-              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check: stray text or logos on any model, and
-              faces, people or shoes in the wrong area on avatars; repaints that area once (part by part)</label
+              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check: repaint stray text or logos (and, on
+              avatars, faces or shoes in the wrong place)</label
             >
             <label
-              ><input id="opt-sam-zones" type="checkbox" /> Find paint zones with SAM 3.1 (models with no profile: one
-              SAM image per part, about $0.02 per model)</label
+              ><input id="opt-sam-zones" type="checkbox" /> Find paint zones with SAM 3.1 (models with no
+              profile)</label
             >
             <label
-              ><input id="opt-fast" type="checkbox" checked /> Fast mode (no Muse web search, low reasoning, smaller
-              uploads)</label
+              ><input id="opt-add-maps" type="checkbox" /> Add normal and roughness maps to models that don't have them
+              (existing ones are always regenerated)</label
             >
-            <label
-              ><input id="opt-plan" type="checkbox" checked /> Read the atlas layout first in whole-atlas mode (Muse
-              Spark vision)</label
-            >
-            <label
-              ><input id="opt-tiny" type="checkbox" checked /> Clean up tiny islands (fingers, buttons) to solid
-              colors</label
-            >
-            <label><input id="opt-pad" type="checkbox" checked /> Edge padding against dark seams</label>
-            <label
-              ><input id="opt-normal" type="checkbox" checked /> Regenerate normal maps (only where the model has
-              them)</label
-            >
-            <label
-              ><input id="opt-rough" type="checkbox" checked /> Regenerate roughness maps (only where the model has
-              them)</label
-            >
-            <label
-              ><input id="opt-debug" type="checkbox" /> Log Muse requests (bodies in the Log panel and console, images
-              shortened)</label
-            >
-            <label for="profile-file"
-              >Model profile
-              <span class="muted"
-                >(optional: a profile .json plus its template PNGs, selected together; artists' templates and exact
-                panels for your models)</span
-              ></label
-            >
-            <div class="row">
-              <input id="profile-file" type="file" accept=".json,application/json,image/png,image/jpeg" multiple />
-              <button type="button" id="profile-clear">Clear</button>
-              <span id="profile-name" class="muted"></span>
-            </div>
-            <label for="lessons"
-              >Learned tips
-              <span class="muted"
-                >(from review passes; one per line as "asset type: tip", added to future prompts)</span
-              ></label
-            >
-            <textarea
-              id="lessons"
-              rows="4"
-              placeholder="avatar: Keep chest details on front-facing areas only"
-            ></textarea>
-            <div class="row">
-              <button type="button" id="lessons-export">Export</button>
-              <button type="button" id="lessons-import">Import</button>
-              <button type="button" id="lessons-clear">Clear</button>
-              <input id="lessons-file" type="file" accept=".json,application/json" hidden />
-            </div>
-            <div class="row">
-              <button type="button" id="btn-probe">Run filter probe</button
-              ><span class="muted">5 small Muse calls (~$0.05) to find what the safety filter rejects</span>
-            </div>
-            <ul id="probe-results" class="probe" hidden></ul>
+            <details id="developer">
+              <summary>Developer options</summary>
+              <div class="opts">
+                <label
+                  >Atlas orientation
+                  <select id="opt-orient">
+                    <option value="auto" selected>Auto (from the 3D model)</option>
+                    <option value="none">As stored</option>
+                    <option value="flipV">Flip vertically</option>
+                    <option value="flipH">Flip horizontally</option>
+                    <option value="rot180">Rotate 180°</option>
+                    <option value="rot90">Rotate 90°</option>
+                    <option value="rot270">Rotate 270°</option>
+                  </select>
+                </label>
+                <label
+                  ><input id="opt-fast" type="checkbox" checked /> Fast mode (no web search, low reasoning, smaller
+                  uploads)</label
+                >
+                <label
+                  ><input id="opt-plan" type="checkbox" checked /> Read the atlas layout first (one-pass mode)</label
+                >
+                <label><input id="opt-tiny" type="checkbox" checked /> Tiny islands become solid colors</label>
+                <label><input id="opt-pad" type="checkbox" checked /> Edge padding against dark seams</label>
+                <label><input id="opt-debug" type="checkbox" /> Log Muse requests in the Log tab</label>
+                <label for="profile-file"
+                  >Model profile <span class="muted">(a profile .json plus its template PNGs)</span></label
+                >
+                <div class="row">
+                  <input id="profile-file" type="file" accept=".json,application/json,image/png,image/jpeg" multiple />
+                  <button type="button" id="profile-clear">Clear</button>
+                  <span id="profile-name" class="muted"></span>
+                </div>
+                <label for="lessons">Learned tips <span class="muted">(one per line as "asset type: tip")</span></label>
+                <textarea
+                  id="lessons"
+                  rows="3"
+                  placeholder="avatar: Keep chest details on front-facing areas only"
+                ></textarea>
+                <div class="row">
+                  <button type="button" id="lessons-export">Export</button>
+                  <button type="button" id="lessons-import">Import</button>
+                  <button type="button" id="lessons-clear">Clear</button>
+                  <input id="lessons-file" type="file" accept=".json,application/json" hidden />
+                </div>
+                <div class="row">
+                  <button type="button" id="btn-probe">Run filter probe</button
+                  ><span class="muted">5 small Muse calls (~$0.05) to see what the safety filter rejects</span>
+                </div>
+                <ul id="probe-results" class="probe" hidden></ul>
+              </div>
+            </details>
           </div>
         </details>
-        <div class="row">
-          <span class="muted" id="provider-label"></span>
+        <!-- Always visible at the bottom; everything above scrolls. -->
+        <div class="row dialog-foot">
+          <span class="muted small" id="provider-label"></span>
           <span class="spacer"></span>
           <button type="button" id="prompt-cancel">Cancel</button>
           <button type="submit" id="prompt-go" class="primary">Reskin</button>

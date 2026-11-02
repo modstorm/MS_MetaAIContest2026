@@ -390,24 +390,25 @@ function thumb(src, size) {
 }
 
 // ------------------------------------------------------------------ prompt popup
+// [chip label, theme it fills in]
 const PRESETS = [
-  'haunted Halloween pumpkin, glowing orange cracks',
-  'frozen ice crystal, frost and snow',
-  'molten lava rock with glowing magma veins',
-  'cyberpunk neon, chrome and magenta',
-  'mossy ancient stone ruin',
-  'gold and royal blue ceremonial armor',
-  'pastel candy, sprinkles and frosting',
-  'rusted steampunk copper and brass',
+  ['Halloween', 'haunted Halloween pumpkin, glowing orange cracks'],
+  ['Ice', 'frozen ice crystal, frost and snow'],
+  ['Lava', 'molten lava rock with glowing magma veins'],
+  ['Cyberpunk', 'cyberpunk neon, chrome and magenta'],
+  ['Stone ruin', 'mossy ancient stone ruin'],
+  ['Royal', 'gold and royal blue ceremonial armor'],
+  ['Candy', 'pastel candy, sprinkles and frosting'],
+  ['Steampunk', 'rusted steampunk copper and brass'],
 ];
 const dialog = $('prompt-dialog');
 const runDialog = $('run-dialog');
 const promptText = $('prompt-text');
 const chips = $('prompt-chips');
-for (const p of PRESETS) {
+for (const [label, p] of PRESETS) {
   const b = document.createElement('button');
   b.type = 'button';
-  b.textContent = p.split(',')[0];
+  b.textContent = label;
   b.title = p;
   b.onclick = () => {
     promptText.value = p;
@@ -616,8 +617,9 @@ function paintOptions() {
     variants: Number($('opt-variations').value),
     cleanTinyIslands: $('opt-tiny').checked,
     edgePadding: $('opt-pad').checked ? 12 : 0,
-    normalMaps: $('opt-normal').checked,
-    roughnessMaps: $('opt-rough').checked,
+    // Maps the model has are always regenerated; 'always' also adds them where missing.
+    normalMaps: $('opt-add-maps').checked ? 'always' : true,
+    roughnessMaps: $('opt-add-maps').checked ? 'always' : true,
     maxTextureSize: Number($('opt-size').value),
     samCheck: $('opt-sam').checked,
     samZones: $('opt-sam-zones').checked,
@@ -781,6 +783,7 @@ $('err-probe').onclick = () => {
   runDialog.close();
   openPrompt();
   $('advanced').open = true;
+  $('developer').open = true;
   runProbe();
 };
 

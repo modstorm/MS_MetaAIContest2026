@@ -833,3 +833,24 @@ button.on {
     background: #7a4f00;
   }
 }
+
+/* Developer options nest inside Advanced. */
+#developer {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+#prompt-text {
+  margin-top: 10px;
+}
+
+/* Prompt popup footer (Cancel / Reskin) stays at the bottom while the rest scrolls. */
+.dialog-foot {
+  position: sticky;
+  bottom: -18px;
+  margin: 14px -20px -18px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  z-index: 1;
+}
