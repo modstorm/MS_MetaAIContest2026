@@ -8,7 +8,8 @@
  * only things the paint ADDED count (a printed face that was already there is fine).
  *
  * Which phrases are checked for which zone comes from the asset class (`samCheck` in
- * assetClasses.js), so other kinds of models can add their own.
+ * assetClasses.js), so other kinds of models can add their own. Every area of every model is
+ * also checked for stray text and logos (STRAY_MARKS), which Muse sometimes adds unasked.
  */
 
 import { decodeMaskToRaster, recordsOfKind } from '@meta-sam/parser';
@@ -24,14 +25,31 @@ import { getAssetClass } from '../assetClasses.js';
 
 /** @typedef {{ concept: string, share: number, before: number, added: number, where: string, confidence?: number }} SamHit */
 
-/** The SAM rules for one zone of an asset class, minus concepts the theme asks for. */
+/**
+ * Checked in every area of every model: lettering, a logo or a watermark that Muse painted
+ * without being asked. Skipped when the theme asks for writing or decals (THEME_WANTS_MARKS).
+ */
+export const STRAY_MARKS = [
+  { concept: 'text', minConfidence: 0.6 },
+  { concept: 'logo', minConfidence: 0.6 },
+];
+const STRAY_CONCEPTS = new Set(STRAY_MARKS.map((r) => r.concept));
+const THEME_WANTS_MARKS =
+  /\b(text|letters?|lettering|words?|writing|written|signs?|signage|graffiti|numbers?|numbered|logos?|decals?|sponsors?|brand(s|ed|ing)?|emblems?|badges?|labels?|slogans?|typography|insignias?|livery)\b/i;
+
+/**
+ * The SAM rules for one area: the asset class's rules for its zone plus the stray text/logo
+ * check, minus concepts the theme asks for.
+ */
 export function samRulesFor(assetClassId, zone, theme = '') {
   const table = getAssetClass(assetClassId)?.samCheck;
   const list = (table && zone && table[zone]) || [];
   const t = String(theme).toLowerCase();
-  return list
+  const zoneRules = list
     .map((r) => (typeof r === 'string' ? { concept: r } : r))
     .filter((r) => r?.concept && !new RegExp(`\\b${escapeRe(r.concept)}s?\\b`, 'i').test(t));
+  const stray = THEME_WANTS_MARKS.test(t) ? [] : STRAY_MARKS.map((r) => ({ ...r }));
+  return [...zoneRules, ...stray];
 }
 
 /**
@@ -155,8 +173,19 @@ export function intrusionText(hits) {
 
 /** Correction line for the repaint prompt. */
 export function intrusionNote(hits, partName) {
-  const things = hits.map((h) => `a ${h.concept}${h.where ? ` at the ${h.where} of image 1` : ''}`).join(', ');
-  return `The last attempt drew ${things}. Those belong to other areas of the model, not to the ${partName}. Paint this area only as its own material, edge to edge, with no ${hits.map((h) => `${h.concept}s`).join(', ')} or figures anywhere in it.`;
+  const at = (h) => (h.where ? ` at the ${h.where} of image 1` : '');
+  const misplaced = hits.filter((h) => !STRAY_CONCEPTS.has(h.concept));
+  const stray = hits.filter((h) => STRAY_CONCEPTS.has(h.concept));
+  const notes = [];
+  if (misplaced.length)
+    notes.push(
+      `The last attempt drew ${misplaced.map((h) => `a ${h.concept}${at(h)}`).join(', ')}. Those belong to other areas of the model, not to the ${partName}. Paint this area only as its own material, edge to edge, with no ${misplaced.map((h) => `${h.concept}s`).join(', ')} or figures anywhere in it.`,
+    );
+  if (stray.length)
+    notes.push(
+      `The last attempt ${misplaced.length ? 'also ' : ''}added ${stray.map((h) => `${h.concept === 'text' ? 'lettering' : 'a logo'}${at(h)}`).join(', ')} that nobody asked for. Paint the ${partName} with no text, letters, numbers, logos or watermarks anywhere in it.`,
+    );
+  return notes.join(' ');
 }
 
 /**

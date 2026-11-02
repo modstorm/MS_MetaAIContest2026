@@ -725,6 +725,7 @@ try {
     const edits = [];
     await page.route('https://api.meta.ai/v1/**', async (route) => {
       const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone()); // SAM 3.1: nothing stray
       const body = req.postDataJSON();
       const ok = (json) =>
         route.fulfill({
@@ -1242,6 +1243,70 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'SAM 3.1 check: stray text on any model is repainted; skipped when the theme asks for decals',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const edits = [];
+      let asks = [];
+      let textAsks = 0;
+      await page.route('https://api.meta.ai/v1/**', (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) {
+          const body = req.postDataJSON();
+          const [text, image] = body.input[0].content;
+          asks.push(text.text);
+          // The largest area goes first: its original (clean), then its first paint (lettering).
+          if (text.text === 'text' && ++textAsks === 2) return route.fulfill(samWhole(image.image_url));
+          return route.fulfill(samNone());
+        }
+        if (!req.url().endsWith('/chat/completions')) edits.push(req.postDataJSON());
+        return museOk(route);
+      });
+      const glb = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+      });
+      const run = (theme) =>
+        page.evaluate(
+          async ({ bytes, theme }) => {
+            const p = window.reskin.plugin;
+            const w = [];
+            const off = p.on('warning', (e) => w.push(e.message));
+            await p.postModel(new Uint8Array(bytes).buffer, { name: 'stray-text' });
+            await p.postPrompt(theme, {
+              useVisionPlanning: false,
+              variants: 1,
+              normalMaps: false,
+              roughnessMaps: false,
+            });
+            off?.();
+            return w;
+          },
+          { bytes: glb, theme },
+        );
+      const warnings = await run('steampunk brass');
+      assert.ok(asks.includes('text') && asks.includes('logo'), `asked: ${asks}`);
+      assert.ok(!asks.includes('face'), 'no avatar rules on a non-avatar');
+      assert.ok(
+        warnings.some((m) => /SAM 3\.1 found text/.test(m)),
+        warnings.filter((m) => /SAM/.test(m)).join(' | '),
+      );
+      const fix = edits.find((e) => /nobody asked for/.test(e.prompt ?? ''));
+      assert.ok(fix, 'one area repainted without the lettering');
+      assert.match(fix.prompt, /no text, letters, numbers, logos or watermarks/);
+      assert.equal(edits.length, 3, 'two areas painted, one of them again');
+
+      // A theme that asks for decals or lettering is not checked for them.
+      asks = [];
+      edits.length = 0;
+      await run('race car livery with sponsor decals');
+      assert.deepEqual(asks, [], `asked: ${asks}`);
+      assert.equal(edits.length, 2);
+      await page.context().close();
+    },
+  );
+
   await step('SAM 3.1 check: shoes painted on the legs are found and the legs repainted once', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     await page.evaluate((d) => (window.__pluginDir = d), fileURLToPath(new URL('../../plugin/', import.meta.url)));
@@ -1444,6 +1509,7 @@ try {
     const chats = [];
     await page.route('https://api.meta.ai/v1/**', async (route) => {
       const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone()); // SAM 3.1: nothing stray
       const body = req.postDataJSON();
       const ok = (json) =>
         route.fulfill({

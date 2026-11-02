@@ -69,10 +69,36 @@ describe('SAM 3.1 responses', () => {
 
 describe('SAM rules', () => {
   it('comes from the asset class zone and skips what the theme asks for', () => {
-    expect(samRulesFor('avatar', 'legs', 'pirate').map((r) => r.concept)).toEqual(['shoe', 'face', 'person']);
-    expect(samRulesFor('avatar', 'torso', 'shirt with a skull face print').map((r) => r.concept)).toEqual(['person']);
-    expect(samRulesFor('vehicle', 'legs', '')).toEqual([]);
-    expect(samRulesFor('avatar', undefined, '')).toEqual([]);
+    const concepts = (...args) => samRulesFor(...args).map((r) => r.concept);
+    expect(concepts('avatar', 'legs', 'pirate')).toEqual(['shoe', 'face', 'person', 'text', 'logo']);
+    expect(concepts('avatar', 'torso', 'shirt with a skull face print')).toEqual(['person', 'text', 'logo']);
+    // Every model and area gets the stray text / logo check.
+    expect(concepts('vehicle', 'legs', '')).toEqual(['text', 'logo']);
+    expect(concepts('avatar', undefined, '')).toEqual(['text', 'logo']);
+    expect(concepts('prop', undefined, 'rusty steampunk copper')).toEqual(['text', 'logo']);
+  });
+
+  it('skips the text / logo check when the theme asks for writing or decals', () => {
+    const concepts = (theme) => samRulesFor('vehicle', undefined, theme).map((r) => r.concept);
+    expect(concepts('race car with sponsor decals')).toEqual([]);
+    expect(concepts('police car with POLICE lettering')).toEqual([]);
+    expect(concepts('graffiti covered subway train')).toEqual([]);
+    expect(concepts('a design with stripes')).toEqual(['text', 'logo']); // "design" is not "sign"
+    expect(samRulesFor('avatar', 'legs', 'jersey with a team logo').map((r) => r.concept)).toEqual([
+      'shoe',
+      'face',
+      'person',
+    ]);
+  });
+
+  it('asks for a repaint without stray lettering or logos', () => {
+    const note = intrusionNote([{ concept: 'text', where: 'upper left' }, { concept: 'logo' }], 'door');
+    expect(note).toMatch(/added lettering at the upper left of image 1, a logo that nobody asked for/);
+    expect(note).toMatch(/no text, letters, numbers, logos or watermarks/);
+    expect(note).not.toMatch(/belong to other areas/);
+    const both = intrusionNote([{ concept: 'shoe' }, { concept: 'text' }], 'legs');
+    expect(both).toMatch(/belong to other areas/);
+    expect(both).toMatch(/also added lettering/);
   });
 
   it('writes a repaint note naming what was found', () => {
