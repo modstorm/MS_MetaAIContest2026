@@ -272,12 +272,13 @@ try {
     await page.click('#run-cancel');
     await page.waitForSelector('#run-dialog:not([open])', { state: 'attached' });
     assert.equal(await page.locator('#history button.entry').count(), 4); // original + 3
+    assert.equal(await page.getAttribute('#history button.entry:first-child', 'data-index'), '2', 'newest first');
     await page.click('#btn-undo');
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 0);
-    await page.click('#history button.entry:nth-child(1)'); // original
+    await page.click('#history button.entry[data-index="-1"]'); // original
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
     assert.match(await page.textContent('#generated'), /Original textures/);
-    await page.click('#history button.entry:nth-child(3)');
+    await page.click('#history button.entry[data-index="1"]');
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.waitForTimeout(300);

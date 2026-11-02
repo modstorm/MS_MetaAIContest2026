@@ -179,16 +179,35 @@ button.icon {
   place-items: center;
   margin: 0 auto;
 }
-.status {
+/* Bottom left of the viewport: the run's progress, else the last status line. */
+.status-box {
   position: absolute;
   left: 12px;
   bottom: 12px;
+  max-width: 50%;
+  z-index: 5;
+}
+.status-box .progress {
+  width: min(380px, 40vw);
+  margin: 0;
+  background: rgba(14, 15, 19, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.status-box .progress #prompt-stage {
+  margin-bottom: 6px;
+}
+.status-box .progress:not([hidden]) + .status {
+  display: none;
+}
+.status {
   background: rgba(14, 15, 19, 0.8);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 12px;
-  max-width: 50%;
 }
 .status:empty {
   display: none;
@@ -499,6 +518,9 @@ summary {
   align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+.run-buttons {
+  margin-top: 10px;
 }
 .suggestion {
   margin-top: 12px;

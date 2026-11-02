@@ -48,7 +48,14 @@
               Or <a href="#" id="link-sample">try the sample model</a>.
             </p>
           </div>
-          <div id="status" class="status"></div>
+          <!-- Bottom left: the run's progress while painting, otherwise the last status line. -->
+          <div class="status-box">
+            <div class="progress" id="prompt-progress" hidden>
+              <div id="prompt-stage"></div>
+              <div class="bar"><span id="prompt-bar"></span></div>
+            </div>
+            <div id="status" class="status"></div>
+          </div>
           <div class="view-tools">
             <button id="btn-compare" disabled title="Drag the handle to compare the original and the reskin">
               ⇆ Compare
@@ -81,28 +88,23 @@
             <dialog id="run-dialog" class="dialog run-panel">
               <h2 id="run-title">Painting</h2>
               <p class="muted" id="run-theme"></p>
-              <div class="progress" id="prompt-progress">
-                <div class="bar"><span id="prompt-bar"></span></div>
-                <div id="prompt-stage" class="muted"></div>
-              </div>
-              <section id="suggestion" class="suggestion" hidden>
-                <div id="sugg-sheet" class="sheet"></div>
-                <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
-                <div id="sugg-parts" class="chips static"></div>
-                <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
-                <textarea id="sugg-prompt" rows="5"></textarea>
-                <p class="muted" id="sugg-tips"></p>
-                <details>
-                  <summary>Paint plan per texture region</summary>
-                  <ul id="sugg-regions" class="regions"></ul>
-                </details>
-              </section>
+              <!-- Newest things first (variations, then the prompt and buttons), so nothing new sits below the scroll. -->
               <section id="variations" hidden>
                 <p>
                   <strong>Pick your favorite</strong> <span class="muted">(you can switch any time in History)</span>
                 </p>
                 <div id="variation-list" class="variation-list"></div>
               </section>
+              <section id="suggestion" class="suggestion" hidden>
+                <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
+                <textarea id="sugg-prompt" rows="5"></textarea>
+              </section>
+              <div class="row run-buttons">
+                <span class="spacer"></span>
+                <button type="button" id="run-cancel">Stop</button>
+                <button type="button" id="prompt-original" hidden>Use my prompt</button>
+                <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
+              </div>
               <div class="error-box" id="prompt-error" hidden>
                 <strong id="err-title">Something went wrong</strong>
                 <p id="err-text"></p>
@@ -113,12 +115,16 @@
                   <button type="button" id="err-probe">Run filter probe</button>
                 </div>
               </div>
-              <div class="row">
-                <span class="spacer"></span>
-                <button type="button" id="run-cancel">Stop</button>
-                <button type="button" id="prompt-original" hidden>Use my prompt</button>
-                <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
-              </div>
+              <section id="suggestion-more" class="suggestion" hidden>
+                <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
+                <div id="sugg-parts" class="chips static"></div>
+                <p class="muted" id="sugg-tips"></p>
+                <div id="sugg-sheet" class="sheet"></div>
+                <details>
+                  <summary>Paint plan per texture region</summary>
+                  <ul id="sugg-regions" class="regions"></ul>
+                </details>
+              </section>
             </dialog>
             <div id="result-actions" class="row" hidden>
               <button type="button" id="btn-export-run" class="primary">Export GLB</button>

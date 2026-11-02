@@ -481,20 +481,30 @@ $('prompt-form').addEventListener('submit', (e) => {
 // The suggestion waiting for the user's OK (art-director step), if any.
 let pending = null;
 
-/** The run panel lives in the side panel's Run tab, beside the model. */
+/** Muse's suggestion: the editable prompt at the top of the Run tab, the views and notes below. */
+function showSuggestionPanels(on) {
+  $('suggestion').hidden = !on;
+  $('suggestion-more').hidden = !on;
+}
+
+/** The run panel lives in the side panel's Run tab; its progress bar sits on the viewport. */
 function showRun() {
+  $('prompt-progress').hidden = false;
   $('result-actions').hidden = true;
   if (compareOn) setCompare(false);
   runDialog.show();
   showTab('run');
 }
-runDialog.addEventListener('close', () => ($('result-actions').hidden = !plugin.lastResult));
+runDialog.addEventListener('close', () => {
+  $('result-actions').hidden = !plugin.lastResult;
+  $('prompt-progress').hidden = true;
+});
 
 function openRun(prompt) {
   pending = null;
   $('run-title').textContent = 'Painting';
   $('run-theme').textContent = `"${prompt}"`;
-  $('suggestion').hidden = true;
+  showSuggestionPanels(false);
   $('variations').hidden = true;
   $('variation-list').innerHTML = '';
   $('prompt-bar').style.width = '0%';
@@ -542,7 +552,7 @@ function showSuggestion(s) {
     );
   });
   $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
-  $('suggestion').hidden = false;
+  showSuggestionPanels(true);
   $('run-title').textContent = 'Muse suggests';
   setRunButtons({ go: true });
   $('sugg-prompt').focus();
@@ -589,7 +599,7 @@ $('err-skip').onclick = () => {
   hideError();
   $('opt-suggest').checked = false;
   pending = null;
-  $('suggestion').hidden = true;
+  showSuggestionPanels(false);
   runReskin(promptText.value.trim());
 };
 
@@ -1022,6 +1032,7 @@ function renderHistory(h) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = `entry${index === h.index ? ' current' : ''}`;
+    b.dataset.index = String(index);
     b.title = label;
     if (canvas) b.append(named(thumb(canvas, 160), label, canvas));
     const cap = document.createElement('span');
@@ -1032,7 +1043,7 @@ function renderHistory(h) {
       plugin.goToHistory(index);
       if (compareOn) setCompare(true);
     };
-    host.append(b);
+    host.prepend(b); // newest first, the original last
   };
   add(-1, 'Original', null);
   h.entries.forEach((e, i) =>
