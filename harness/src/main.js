@@ -231,6 +231,7 @@ function setLoaded(on) {
   $('run-hint').hidden = on;
   $('result-actions').hidden = true;
   $('btn-export').disabled = !on;
+  $('btn-export-textures').disabled = !on;
   $('btn-idmap').disabled = !on;
   $('btn-idmap').classList.remove('on');
   $('btn-samzones').disabled = !on || typeof plugin.getProvider().segment !== 'function';
@@ -1087,6 +1088,24 @@ async function exportGlb() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
+/** Current textures: one PNG, or a .zip of all of them when there is more than one. */
+async function exportTextures() {
+  if (compareOn) setCompare(false);
+  if (plugin.idMapVisible) $('btn-idmap').click();
+  try {
+    const { data, filename, type } = await plugin.postExportTextures();
+    const url = URL.createObjectURL(new Blob([data], { type }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) {
+    log(`Texture export failed: ${err.message}`, 'err');
+  }
+}
+$('btn-export-textures').onclick = exportTextures;
+$('btn-export-textures-run').onclick = exportTextures;
 $('btn-export').onclick = exportGlb;
 $('btn-export-run').onclick = exportGlb;
 

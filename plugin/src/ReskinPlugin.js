@@ -26,6 +26,7 @@ import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.
 import { findSamZones, regionData, zoneConceptsFor } from './analysis/samZones.js';
 import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
+import { makeZip } from './io/zip.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
 import { addUsage, emptyUsage, formatDollars, formatUsage, priceFor, usageCost } from './muse/pricing.js';
@@ -1392,6 +1393,37 @@ export class ReskinPlugin {
       this.emit('exported', { glb, filename: name });
       this.status('idle', `Exported ${name} (${(glb.byteLength / 1024 / 1024).toFixed(2)} MB)`);
       return { glb, filename: name };
+    } catch (err) {
+      this.fail(err, 'export');
+      throw err;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /**
+   * The textures on the model as it looks now (the reskin, or the original if nothing was
+   * painted), as PNG files: one file per texture, named "<material>_<map>.png". More than
+   * one comes back as a single .zip. Returns { data: Uint8Array, filename, type, count }.
+   */
+  async postExportTextures(baseName) {
+    this.guard();
+    if (!this.model) throw new Error('No model loaded');
+    this.showIdMap(false); // never export the ID-map preview colors
+    this.busy = true;
+    try {
+      this.status('exporting', 'Exporting textures…');
+      const files = await collectTexturePngs(this.model.scene);
+      if (!files.length) throw new Error('This model has no textures to export');
+      const base = baseName ?? `${this.model.name}${this.lastPrompt ? '-' + slug(this.lastPrompt) : ''}`;
+      const out =
+        files.length === 1
+          ? { data: files[0].data, filename: `${base}-${files[0].name}`, type: 'image/png' }
+          : { data: makeZip(files), filename: `${base}-textures.zip`, type: 'application/zip' };
+      out.count = files.length;
+      this.emit('texturesExported', { ...out });
+      this.status('idle', `Exported ${out.filename} (${files.length} texture${files.length === 1 ? '' : 's'})`);
+      return out;
     } catch (err) {
       this.fail(err, 'export');
       throw err;
@@ -2886,6 +2918,56 @@ export const ZONE_COLORS = {
   shoes: 'aqua',
   arms: 'pink',
 };
+
+/** Material maps written out by postExportTextures, with their file name suffix. */
+const EXPORT_MAPS = [
+  ['map', 'baseColor'],
+  ['normalMap', 'normal'],
+  ['roughnessMap', 'roughness'],
+  ['metalnessMap', 'metalness'],
+  ['emissiveMap', 'emissive'],
+  ['aoMap', 'occlusion'],
+];
+
+/** Every distinct texture on the scene's materials as a PNG: [{ name, data: Uint8Array }]. */
+async function collectTexturePngs(scene) {
+  const seen = new Map(); // texture (or its image) -> file
+  const names = new Set();
+  const files = [];
+  const mats = [];
+  scene.traverse((o) => {
+    if (o.isMesh) for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) mats.push(m);
+  });
+  for (const m of mats) {
+    for (const [key, suffix] of EXPORT_MAPS) {
+      const tex = m[key];
+      const img = tex?.image;
+      if (!img || !(img.width > 0) || seen.has(img)) continue;
+      // roughnessMap and metalnessMap are often one packed texture: write it once.
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+      if (!blob) continue;
+      let name = `${fileSafe(m.name || 'material')}_${suffix}`;
+      for (let i = 2; names.has(name); i++) name = `${fileSafe(m.name || 'material')}_${suffix}_${i}`;
+      names.add(name);
+      const file = { name: `${name}.png`, data: new Uint8Array(await blob.arrayBuffer()) };
+      seen.set(img, file);
+      files.push(file);
+    }
+  }
+  return files;
+}
+
+function fileSafe(s) {
+  return (
+    String(s)
+      .replace(/[^\w.-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'material'
+  );
+}
 
 export function slug(s) {
   return (

@@ -7,7 +7,7 @@
 import { createServer } from 'vite';
 import { createRequire } from 'node:module';
 import { deflateSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { encodeSegmentationMask } from '../../node_modules/@meta-sam/parser/dist/mask-codec.js';
@@ -123,7 +123,7 @@ function museOk(route) {
 }
 
 // Ids that live in the top-bar menu or on the side panel's Model tab: open those first.
-const MENU_IDS = ['btn-open', 'btn-sample', 'btn-export', 'btn-settings'];
+const MENU_IDS = ['btn-open', 'btn-sample', 'btn-export', 'btn-export-textures', 'btn-settings'];
 const MODEL_TAB_IDS = ['btn-idmap', 'btn-samzones', 'btn-review'];
 
 /** Clicks a control, opening the menu or the Model tab it sits in first. */
@@ -242,6 +242,15 @@ try {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${outDir}02-reskinned-offline.png` });
     exported = await exportAndCheck(page, 'offline.glb');
+    // Export textures: PNGs straight from the reskinned materials (a .zip when there are several).
+    const [texDl] = await Promise.all([page.waitForEvent('download'), ui(page, 'btn-export-textures')]);
+    const texName = texDl.suggestedFilename();
+    const texPath = `${outDir}${texName}`;
+    await texDl.saveAs(texPath);
+    const head = readFileSync(texPath).subarray(0, 4);
+    if (texName.endsWith('.zip')) assert.equal(head.readUInt32LE(0), 0x04034b50, 'zip header');
+    else assert.ok(texName.endsWith('_baseColor.png') && head.toString('latin1', 1, 4) === 'PNG', texName);
+    assert.match(texName, /sample-robot-molten-lava/);
     assert.match(exported.name, /sample-robot-molten-lava/);
     // The before/after slider turned on by itself; export turned it off; it toggles back on.
     await page.click('#btn-compare');

@@ -33,6 +33,8 @@ body {
 }
 
 .topbar {
+  position: relative;
+  min-height: 60px; /* the centered Reskin button is out of the flow */
   display: flex;
   align-items: center;
   gap: 16px;
@@ -88,8 +90,12 @@ body {
   border-top: 1px solid var(--line);
   margin: 4px 0;
 }
+/* Centered in the top bar. */
 .reskin-btn {
-  margin-left: auto;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   padding: 9px 26px;
   font-size: 16px;
   font-weight: 650;
