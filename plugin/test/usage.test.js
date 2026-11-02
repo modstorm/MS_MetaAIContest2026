@@ -109,3 +109,13 @@ describe('advice model (Muse Wonder)', () => {
     expect(notices).toHaveLength(1);
   });
 });
+
+describe('SAM 3.1 usage', () => {
+  it('prices segmented images at $2.50 per 1,000 and lists them', () => {
+    const u = emptyUsage();
+    for (let i = 0; i < 4; i++) addUsage(u, { model: 'sam-3.1', segments: 1 });
+    addUsage(u, { model: 'muse-image-1.0', images: 2 });
+    expect(usageCost(u)).toBeCloseTo(0.03, 6);
+    expect(formatUsage(u)).toBe('2 images + 4 SAM checks ≈ $0.03');
+  });
+});

@@ -148,8 +148,16 @@ export class MuseClient {
       stream: true,
     };
     const raw = await this.post('/responses', body, o.signal, true);
-    // Counted as a call; SAM is not in the price table, so it shows as unpriced.
-    this.reportUsage({ model: body.model, kind: 'sam', images: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 });
+    // SAM is billed per segmented image ($2.50 / 1,000, see pricing.js).
+    this.reportUsage({
+      model: body.model,
+      kind: 'sam',
+      images: 0,
+      segments: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+    });
     const events = [...toResponsesEvents(raw)];
     return parseImageStream(
       (async function* () {

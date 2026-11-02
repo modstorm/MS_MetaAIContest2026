@@ -6,6 +6,7 @@
  *  - muse-spark-1.3   $1.25 / 1M input, $4.25 / 1M output, $0.15 / 1M cached input tokens.
  *  - muse-wonder-1.0  $4 / 1M input, $20 / 1M output (Preview; no cached price listed, so
  *                     cached tokens are counted at the input price).
+ *  - sam-3.1          $2.50 per 1,000 segmented images (billed per image, not per token).
  * The estimate is only as good as this table: check the page if Meta changes its prices.
  */
 
@@ -16,6 +17,7 @@ export const MUSE_PRICES = {
   'muse-image-1.0': { image: 0.01 },
   'muse-spark-1.3': { input: 1.25, output: 4.25, cached: 0.15 },
   'muse-wonder-1.0': { input: 4, output: 20 },
+  'sam-3.1': { segment: 0.0025 },
 };
 
 /** Price entry for a model id (also matches later versions, e.g. muse-spark-1.4 → spark prices). */
@@ -28,19 +30,27 @@ export function priceFor(model) {
 
 /** An empty tally. */
 export function emptyUsage() {
-  return { calls: 0, images: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, byModel: {} };
+  return { calls: 0, images: 0, segments: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, byModel: {} };
 }
 
 /**
  * Adds one billed request to a tally (mutates and returns it).
  * @param {ReturnType<typeof emptyUsage>} usage
- * @param {{ model: string, images?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number }} entry
+ * @param {{ model: string, images?: number, segments?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number }} entry
  */
 export function addUsage(usage, entry) {
-  const m = (usage.byModel[entry.model] ??= { calls: 0, images: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 });
+  const m = (usage.byModel[entry.model] ??= {
+    calls: 0,
+    images: 0,
+    segments: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+  });
   for (const t of [usage, m]) {
     t.calls += 1;
     t.images += entry.images ?? 0;
+    t.segments = (t.segments ?? 0) + (entry.segments ?? 0);
     t.inputTokens += entry.inputTokens ?? 0;
     t.outputTokens += entry.outputTokens ?? 0;
     t.cachedTokens += entry.cachedTokens ?? 0;
@@ -55,6 +65,7 @@ export function usageCost(usage) {
     const p = priceFor(model);
     if (!p) continue;
     total += (p.image ?? 0) * u.images;
+    total += (p.segment ?? 0) * (u.segments ?? 0);
     // Cached input tokens are part of the input count; bill them at the cached price where one exists.
     const cached = Math.min(u.cachedTokens, u.inputTokens);
     total += ((u.inputTokens - cached) * (p.input ?? 0)) / 1e6;
@@ -75,6 +86,7 @@ export function formatUsage(usage) {
   const parts = [];
   if (usage.images) parts.push(`${usage.images} image${usage.images === 1 ? '' : 's'}`);
   if (tokens) parts.push(`${formatTokens(tokens)} tokens`);
+  if (usage.segments) parts.push(`${usage.segments} SAM check${usage.segments === 1 ? '' : 's'}`);
   if (!parts.length) return usage.calls ? `${usage.calls} calls ≈ $0.00` : 'no Muse calls';
   return `${parts.join(' + ')} ≈ ${formatDollars(usageCost(usage))}`;
 }
