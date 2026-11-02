@@ -83,6 +83,32 @@ function samWhole(dataUrl, confidence = 0.9) {
   };
 }
 
+/** SAM 3.1 mock reply with one object per rect ([x0, y0, x1, y1] in image pixels). */
+function samRects(rects, w, h, confidence = 0.9) {
+  const m = encodeSegmentationMask(new Uint8Array(64).fill(1), 8, 8);
+  const text =
+    '<0f>' +
+    rects
+      .map(
+        ([x1, y1, x2, y2], i) =>
+          `${i ? ',' : ''}${i}<|box;x1=${x1};y1=${y1};x2=${x2 - 1};y2=${y2 - 1};w=${w};h=${h};c=${confidence}|><|mask;x=0;y=0;data=8,8,${m.payload};c=${confidence}|>`,
+      )
+      .join('') +
+    '\n';
+  const lane = { item_id: 'm1', output_index: 0, content_index: 0 };
+  const events = [
+    { type: 'response.output_text.delta', ...lane, delta: text },
+    { type: 'response.output_text.done', ...lane, text },
+    { type: 'response.completed' },
+  ];
+  return {
+    status: 200,
+    contentType: 'text/event-stream',
+    headers: { 'access-control-allow-origin': '*' },
+    body: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''),
+  };
+}
+
 /** Plain Muse mock: '{}' for chat, a 64x64 PNG for image calls; optional hook per request. */
 function museOk(route) {
   const isChat = route.request().url().endsWith('/chat/completions');
@@ -1314,6 +1340,85 @@ try {
       }),
     );
     assert.equal(samCalls, before, 'samCheck: false sends no SAM calls');
+    await page.context().close();
+  });
+
+  await step('SAM zones: masks on the six views become paint zones; a profile wins; cost is counted', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const sams = [];
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) {
+        const [text, image] = req.postDataJSON().input[0].content;
+        const png = Buffer.from(image.image_url.split(',')[1], 'base64');
+        const w = png.readUInt32BE(16),
+          h = png.readUInt32BE(20);
+        sams.push({ prompt: text.text, w, h });
+        // The sheet is 3 x 2 views. "face": the top 14% of each side view; "shoe": the bottom 7%.
+        const tile = w / 3;
+        const sides = [0, 1, 2, 3].map((i) => [(i % 3) * tile, Math.floor(i / 3) * tile]);
+        if (text.text === 'face')
+          return route.fulfill(samRects(sides.map(([x, y]) => [x, y, x + tile, y + Math.round(tile * 0.14)]), w, h));
+        if (text.text === 'shoe')
+          return route.fulfill(
+            samRects(sides.map(([x, y]) => [x, y + Math.round(tile * 0.93), x + tile, y + tile]), w, h),
+          );
+        return route.fulfill(samNone());
+      }
+      if (!req.url().endsWith('/chat/completions')) edits.push(req.postDataJSON());
+      return museOk(route);
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildAvatarTestGlb({ oneMesh: true })));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      const w = [];
+      p.on('warning', (e) => w.push(e.message));
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'avatar-zones' });
+      const slot = p.layout.slots.find((s) => s.texture);
+      const before = p.idRegions(slot).map((r) => r.name);
+      // Only face and shoes are found: fewer zones than the usual 7 areas, so those are kept...
+      const kept = await p.postFindZones({ assetClass: 'avatar' });
+      const keptAreas = p.idRegions(slot).map((r) => r.name);
+      // ...unless SAM is preferred (found again: no extra calls counted below come from this).
+      const found = await p.postFindZones({ assetClass: 'avatar', force: true, preferSam: true });
+      const after = p.idRegions(slot).map((r) => r.zone);
+      const usage = p.getUsage();
+      await p.postPrompt('pirate', {
+        useVisionPlanning: false,
+        variants: 1,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      // A profile wins over SAM zones (no SAM calls, usual areas).
+      p.setProfile({ name: 'test', templates: [], panels: [] });
+      const withProfile = p.idRegions(slot).map((r) => r.name);
+      p.setProfile(null);
+      const off = (p.setSamZones(false), p.idRegions(slot).map((r) => r.name));
+      return { w, before, kept, keptAreas, found, after, segments: usage.session.segments, withProfile, off };
+    }, glb);
+    assert.equal(sams.length, 12, `one SAM image per phrase, twice: ${sams.map((s) => s.prompt).join(', ')}`);
+    assert.deepEqual(res.keptAreas, res.before, 'fewer SAM zones than usual areas: usual areas kept');
+    assert.ok(!res.kept?.length);
+    assert.ok(res.w.some((m) => /fewer than the usual 7 areas/.test(m)));
+    assert.ok(sams.every((s) => s.w === 3 * 384 && s.h === 2 * 384), `sheet size ${sams[0].w}x${sams[0].h}`);
+    assert.equal(res.segments, 12, 'cost badge counts 12 SAM images');
+    for (const z of ['face', 'shoes', 'torso']) assert.ok(res.after.includes(z), `zone ${z}: ${res.after.join(', ')}`);
+    assert.ok(res.found?.length, `zones returned: ${res.w.join(' | ')}`);
+    assert.ok(
+      res.w.some((m) => /SAM 3\.1 zones: .*face.*6 SAM images ≈ \$0\.0\d/.test(m)),
+      res.w.filter((m) => /SAM/.test(m)).join(' | '),
+    );
+    // Painting used the SAM zones (one Muse image per zone), and found them only once.
+    const areas = edits.map((e) => (e.prompt?.match(/"([^"]+)" area/) ?? [])[1]).filter(Boolean);
+    assert.ok(areas.some((a) => /\(face\)/.test(a)) && areas.some((a) => /\(shoes\)/.test(a)), areas.join(', '));
+    assert.equal(sams.length, 12, 'zones are not found again when painting');
+    assert.deepEqual(res.withProfile, res.before, 'profile: usual areas');
+    assert.deepEqual(res.off, res.before, 'switched off: usual areas');
     await page.context().close();
   });
 

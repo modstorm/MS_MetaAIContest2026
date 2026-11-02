@@ -28,6 +28,13 @@
           <button id="btn-idmap" disabled title="Show every texture area in its own flat color on the model">
             ID map
           </button>
+          <button
+            id="btn-samzones"
+            disabled
+            title="SAM 3.1 finds the paint zones (face, hands, wheels…) from renders of the model; for models with no profile"
+          >
+            Find zones
+          </button>
           <button id="btn-review" disabled title="Muse checks renders of the result and repaints the areas it flags">
             Review &amp; fix
           </button>
@@ -177,8 +184,12 @@
               the result and repaints flagged areas once)</label
             >
             <label
-              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check: look for faces, people or shoes painted
-              in the wrong area and repaint that area once</label
+              ><input id="opt-sam" type="checkbox" checked /> SAM 3.1 check: look for faces, people or shoes painted in
+              the wrong area and repaint that area once</label
+            >
+            <label
+              ><input id="opt-sam-zones" type="checkbox" /> Find paint zones with SAM 3.1 (models with no profile: one
+              SAM image per part, about $0.02 per model)</label
             >
             <label
               ><input id="opt-fast" type="checkbox" checked /> Fast mode (no Muse web search, low reasoning, smaller

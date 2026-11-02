@@ -12,6 +12,9 @@
  *   seamless  true if the texture should wrap around (sky, terrain)
  *   samCheck  { zone: [noun phrase | { concept, minShare, maxShare, minConfidence }] } things SAM 3.1
  *             must NOT find newly painted in that zone; a hit repaints the area once (see samCheck.js)
+ *   samZones  { concepts: [{ zone, concept }], rest } noun phrases SAM 3.1 looks for to find paint zones on
+ *             a model with no profile (samZones.js); `rest` names what no phrase covered. Without
+ *             a list, the part names from Muse's suggestion are used.
  */
 
 /** @typedef {{ id: string, label: string, keywords?: RegExp, rules: string[], parts?: { match: RegExp, rules: string[] }[], seamless?: boolean }} AssetClass */
@@ -94,6 +97,19 @@ export const ASSET_CLASSES = [
       legs: ['shoe', { concept: 'face', minConfidence: 0.8 }, 'person'],
       shoes: [{ concept: 'face', minConfidence: 0.8 }, 'person'],
     },
+    // Zone finding: one SAM image per phrase. Zone names match the body zones above.
+    samZones: {
+      concepts: [
+        { zone: 'face', concept: 'face' },
+        { zone: 'hair', concept: 'hair' },
+        { zone: 'hands', concept: 'hand' },
+        { zone: 'arms', concept: 'arm' },
+        { zone: 'shoes', concept: 'shoe' },
+        { zone: 'legs', concept: 'leg' },
+      ],
+      // "shirt" found nothing on any model in the live run; what no phrase covers is the torso.
+      rest: 'torso',
+    },
   },
   {
     id: 'creature',
@@ -105,6 +121,7 @@ export const ASSET_CLASSES = [
       'Eyes, mouth and nose stay exactly where they are.',
       NO_SEAM_CROSSING,
     ],
+    samZones: { concepts: ['head', 'leg', 'tail', 'wing'], rest: 'body' },
   },
   {
     id: 'vehicle',
@@ -117,6 +134,14 @@ export const ASSET_CLASSES = [
       'No readable text, numbers or brand logos.',
       NO_SEAM_CROSSING,
     ],
+    samZones: {
+      concepts: [
+        { zone: 'wheels', concept: 'wheel' },
+        { zone: 'windows', concept: 'window' },
+        { zone: 'lights', concept: 'headlight' },
+      ],
+      rest: 'body',
+    },
   },
   {
     id: 'weapon',
@@ -126,6 +151,13 @@ export const ASSET_CLASSES = [
       'This is a handheld item. Keep the grip, metal and trim zones as separate materials; edges and bevels stay where they are.',
       'Decorations follow the length of the item and stay inside one area.',
     ],
+    samZones: {
+      concepts: [
+        { zone: 'blade', concept: 'blade' },
+        { zone: 'handle', concept: 'handle' },
+      ],
+      rest: 'body',
+    },
   },
   {
     id: 'furniture',
@@ -135,6 +167,13 @@ export const ASSET_CLASSES = [
       'This is furniture. Wood grain runs along the long side of each piece; upholstery and cushions get fabric, legs and frames get wood or metal.',
       NO_SEAM_CROSSING,
     ],
+    samZones: {
+      concepts: [
+        { zone: 'cushions', concept: 'cushion' },
+        { zone: 'legs', concept: 'furniture leg' },
+      ],
+      rest: 'frame',
+    },
   },
   {
     id: 'building',
@@ -144,6 +183,14 @@ export const ASSET_CLASSES = [
       'This is a building. Windows, doors and trim stay exactly where they are; walls get brick, stone, wood or plaster in even courses; top (magenta) areas are roofs.',
       'Keep the scale of bricks and planks consistent across all walls. No readable signs or text.',
     ],
+    samZones: {
+      concepts: [
+        { zone: 'windows', concept: 'window' },
+        { zone: 'doors', concept: 'door' },
+        { zone: 'roof', concept: 'roof' },
+      ],
+      rest: 'walls',
+    },
   },
   {
     id: 'terrain',
@@ -159,6 +206,13 @@ export const ASSET_CLASSES = [
     label: 'Vegetation',
     keywords: /\b(tree|plant|bush|leaf|leaves|flower|foliage|grass|vine|bark|trunk|branch)\b/i,
     rules: ['This is vegetation. Leaves keep their silhouettes exactly; bark runs along the trunk and branches.'],
+    samZones: {
+      concepts: [
+        { zone: 'leaves', concept: 'leaves' },
+        { zone: 'trunk', concept: 'tree trunk' },
+      ],
+      rest: 'plant',
+    },
   },
   {
     id: 'sky',

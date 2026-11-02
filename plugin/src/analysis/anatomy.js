@@ -572,7 +572,7 @@ function splitHead(slot, data, zones, head) {
   return out;
 }
 
-function makeRegion(slot, part, label, r, total, data) {
+export function makeRegion(slot, part, label, r, total, data) {
   // Orientation of the islands mostly inside this region.
   const votes = { up: 0, down: 0, left: 0, right: 0 };
   let area = 0,

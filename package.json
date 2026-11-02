@@ -15,6 +15,7 @@
     "test": "npm run test -w plugin",
     "test:e2e": "npm run test:e2e -w harness",
     "test:sam-live": "node harness/tests/sam-live.mjs",
-    "test:cost": "node harness/tests/cost-modes.mjs"
+    "test:cost": "node harness/tests/cost-modes.mjs",
+    "test:zones-live": "node harness/tests/zones-live.mjs"
   }
 }
