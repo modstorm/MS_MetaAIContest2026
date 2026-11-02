@@ -90,6 +90,42 @@ export function seamlessTexturePrompt(theme, materialName, extra) {
     .trim();
 }
 
+/**
+ * One standalone texture (not a model atlas): a tiling material, a track surface or an
+ * equirectangular sky panorama. `wrap` says which edges must join.
+ * @param {string} theme
+ * @param {{ name?: string, context?: string, classRules?: string[], wrap?: 'both' | 'x' | 'y' | 'none' | 'equirect' }} [o]
+ */
+export function reskinTexturePrompt(theme, { name, context, classRules = [], wrap = 'none' } = {}) {
+  const sky = wrap === 'equirect';
+  return [
+    sky
+      ? 'The image is an equirectangular 360° sky panorama (2:1). The left and right edges are the same direction, the top row is straight up and the bottom row straight down.'
+      : `The image is a ${wrap === 'none' ? '' : 'seamless, tiling '}game surface texture${name ? ` ("${name}")` : ''} (base color / albedo), seen flat on, not a photo of an object.`,
+    `Repaint it in this theme: "${theme}".`,
+    context ? `What it is used for: ${context}.` : '',
+    sky
+      ? 'Keep the horizon at exactly the same height and keep it level and straight. Keep the same projection: no fisheye, no perspective change, no frame or border. The zenith and nadir rows stay calm (sky or ground color only, no objects). The left and right edges must join seamlessly.'
+      : 'Keep the same layout and scale of the pattern (stripes, lines, tiles, markings stay where they are and the same size). Flat even lighting: no shadows, no highlights, no vignette, no perspective.',
+    wrap === 'both'
+      ? 'The left/right and top/bottom edges must tile seamlessly: nothing may touch or cross an edge differently on the opposite side.'
+      : '',
+    wrap === 'x' ? 'The left and right edges must join seamlessly.' : '',
+    wrap === 'y' ? 'The top and bottom edges must join seamlessly.' : '',
+    ...classRules,
+    'No text, no logos, no watermark, no border.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Plain fallback for reskinTexturePrompt after a safety-filter rejection. */
+export function plainReskinTexturePrompt(theme, wrap = 'none') {
+  return wrap === 'equirect'
+    ? `Recolor this 360° sky panorama in a "${theme}" style. Keep the horizon level at the same height; the left and right edges must join.`
+    : `Recolor this game surface texture in a "${theme}" style. Keep the pattern in the same place and size; flat even lighting${wrap === 'none' ? '' : '; the edges must tile seamlessly'}.`;
+}
+
 export function normalMapPrompt(theme) {
   return [
     'Image 1 is a tangent-space normal map for a UV texture atlas. Image 2 is the new base color atlas for the same model.',

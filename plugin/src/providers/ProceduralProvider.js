@@ -47,6 +47,11 @@ export class ProceduralProvider {
     return this.reskinAtlas({ theme: req.theme, atlas: req.image, extraInstructions: req.extra });
   }
 
+  /** One standalone texture: the same gradient map (the plugin fixes the wrap seams after). */
+  reskinTexture(req) {
+    return this.reskinAtlas({ theme: req.theme, atlas: req.image, extraInstructions: req.extra });
+  }
+
   async generateTexture(req) {
     const palette = paletteForTheme(req.theme + req.materialName);
     const w = Math.min(1024, req.width);

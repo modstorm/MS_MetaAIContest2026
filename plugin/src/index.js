@@ -1,4 +1,4 @@
-export { ReskinPlugin, slug, softenTheme, sanitizePrompt } from './ReskinPlugin.js';
+export { ReskinPlugin, slug, softenTheme, sanitizePrompt, resolveWrap } from './ReskinPlugin.js';
 
 export {
   MuseClient,
@@ -48,3 +48,4 @@ export {
 export { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 export { ASSET_CLASSES, registerAssetClass, getAssetClass, detectAssetClass, assetClassRules } from './assetClasses.js';
 export { drawFacingMap, splitPartRegions, FACINGS } from './analysis/facing.js';
+export { makeSeamless, canvasSeams, seamRatio, wrapAxis, calmPoles } from './texture/seamless.js';

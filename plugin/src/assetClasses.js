@@ -176,6 +176,15 @@ export const ASSET_CLASSES = [
       NO_SEAM_CROSSING,
     ],
   },
+  {
+    id: 'material',
+    label: 'Tiling material / track',
+    keywords: /\b(track|road|asphalt|pavement|tiles?|tiling|tileable|seamless)\b/i,
+    seamless: true,
+    rules: [
+      'This is a tiling surface material. Keep the scale of the pattern; no single objects, no perspective, no lighting baked in.',
+    ],
+  },
   { id: 'generic', label: 'Other', rules: [] },
 ];
 
