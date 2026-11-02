@@ -77,6 +77,8 @@ export function areaCoverage(result, area, w, h, minConfidence = 0.4) {
     share: total ? hit / total : 0,
     where: best && best.n ? whereText(best.cx, best.cy) : '',
     confidence: best?.c,
+    /** 1 where a mask covers the area, at w x h (for a masked repaint). */
+    mask: hitMap,
   };
 }
 
@@ -121,7 +123,16 @@ export async function findIntrusions(o) {
       const added = now.share - b;
       if (added < (r.minShare ?? 0.01)) return null;
       if (r.maxShare !== undefined && now.share > r.maxShare) return null;
-      return { concept: r.concept, share: now.share, before: b, added, where: now.where, confidence: now.confidence };
+      return {
+        concept: r.concept,
+        share: now.share,
+        before: b,
+        added,
+        where: now.where,
+        confidence: now.confidence,
+        mask: now.mask,
+        maskSize: size,
+      };
     }),
   );
   return hits.filter(Boolean);
@@ -141,6 +152,63 @@ export function intrusionText(hits) {
 export function intrusionNote(hits, partName) {
   const things = hits.map((h) => `a ${h.concept}${h.where ? ` at the ${h.where} of image 1` : ''}`).join(', ');
   return `The last attempt drew ${things}. Those belong to other areas of the model, not to the ${partName}. Paint this area only as its own material, edge to edge, with no ${hits.map((h) => `${h.concept}s`).join(', ')} or figures anywhere in it.`;
+}
+
+/**
+ * Masked repaint: `base` with only the pixels SAM marked in `hits` taken from `patch`, so a fix
+ * never spreads into the rest of the area. The marks are grown by `grow` (share of the longer
+ * side, default 0.03) and feathered so the patch blends in. Returns a new canvas at base size.
+ */
+export function maskedBlend(base, patch, hits, { grow = 0.03 } = {}) {
+  const withMask = hits.filter((h) => h.mask && h.maskSize);
+  const out = document.createElement('canvas');
+  out.width = base.width;
+  out.height = base.height;
+  const g = out.getContext('2d');
+  g.drawImage(base, 0, 0);
+  if (!withMask.length) return out;
+  const { w, h } = withMask[0].maskSize;
+  const small = document.createElement('canvas');
+  small.width = w;
+  small.height = h;
+  const sg = small.getContext('2d');
+  const id = sg.createImageData(w, h);
+  for (const hit of withMask) {
+    for (let i = 0; i < hit.mask.length; i++) if (hit.mask[i]) id.data[i * 4 + 3] = 255;
+  }
+  sg.putImageData(id, 0, 0);
+  // Grow and feather at full size: blur the alpha, then stretch it so the core stays solid.
+  const r = Math.max(1, Math.round(Math.max(base.width, base.height) * grow));
+  const alpha = document.createElement('canvas');
+  alpha.width = base.width;
+  alpha.height = base.height;
+  const ag = alpha.getContext('2d');
+  ag.filter = `blur(${r}px)`;
+  ag.drawImage(small, 0, 0, base.width, base.height);
+  ag.filter = 'none';
+  const ad = ag.getImageData(0, 0, base.width, base.height);
+  for (let i = 3; i < ad.data.length; i += 4) ad.data[i] = Math.min(255, ad.data[i] * 3);
+  ag.putImageData(ad, 0, 0);
+  // Patch pixels where the alpha is set, drawn over the base.
+  const p = document.createElement('canvas');
+  p.width = base.width;
+  p.height = base.height;
+  const pg = p.getContext('2d');
+  pg.drawImage(patch, 0, 0, base.width, base.height);
+  pg.globalCompositeOperation = 'destination-in';
+  pg.drawImage(alpha, 0, 0);
+  g.drawImage(p, 0, 0);
+  return out;
+}
+
+/** Share of the image the masks of `hits` cover (for the log). */
+export function maskedShare(hits) {
+  const withMask = hits.filter((h) => h.mask);
+  if (!withMask.length) return 0;
+  const n = withMask[0].mask.length;
+  let c = 0;
+  for (let i = 0; i < n; i++) if (withMask.some((h) => h.mask[i])) c++;
+  return c / n;
 }
 
 function fitWithin(w, h, max) {

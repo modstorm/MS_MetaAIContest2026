@@ -534,77 +534,88 @@ try {
     await page.context().close();
   });
 
-  await step('car: same-named materials, stacked wheels painted once, a failed texture is shown and retried', async () => {
-    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
-    let failWheels = true;
-    const edits = [];
-    await page.route('https://api.meta.ai/v1/**', (route) => {
-      const isChat = route.request().url().endsWith('/chat/completions');
-      const body = route.request().postDataJSON();
-      if (!isChat) edits.push(body.prompt);
-      if (!isChat && failWheels && /^- tire, bbox/m.test(body.prompt))
+  await step(
+    'car: same-named materials, stacked wheels painted once, a failed texture is shown and retried',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      let failWheels = true;
+      const edits = [];
+      await page.route('https://api.meta.ai/v1/**', (route) => {
+        const isChat = route.request().url().endsWith('/chat/completions');
+        const body = route.request().postDataJSON();
+        if (!isChat) edits.push(body.prompt);
+        if (!isChat && failWheels && /^- tire, bbox/m.test(body.prompt))
+          return route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify({ error: { message: 'mock wheel failure' } }),
+          });
+        const png = makePng(64, 64, () => [220, 40, 40]).toString('base64');
         return route.fulfill({
-          status: 500,
+          status: 200,
           contentType: 'application/json',
           headers: { 'access-control-allow-origin': '*' },
-          body: JSON.stringify({ error: { message: 'mock wheel failure' } }),
+          body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: png }] }),
         });
-      const png = makePng(64, 64, () => [220, 40, 40]).toString('base64');
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        headers: { 'access-control-allow-origin': '*' },
-        body: JSON.stringify(isChat ? { choices: [{ message: { content: '{}' } }] } : { data: [{ b64_json: png }] }),
       });
-    });
-    const bytes = await page.evaluate(async () => {
-      const mod = await import('/src/sampleModel.js');
-      return Array.from(new Uint8Array(await mod.buildCarTestGlb()));
-    });
-    await page.setInputFiles('#file-input', { name: 'car.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(bytes) });
-    await page.waitForSelector('#prompt-dialog[open]');
-    const layout = await page.evaluate(() => {
-      const p = window.reskin.plugin;
-      return p.layout.slots.map((s) => ({ id: s.id, name: s.name, areas: p.idRegions(s).map((r) => r.name) }));
-    });
-    // Both materials are "lambert1": the slots are told apart by their first mesh.
-    assert.deepEqual(
-      layout.map((s) => s.name),
-      ['lambert1 · carBody', 'lambert1 · tireBackR'],
-    );
-    // Four wheels stacked on the same UVs are one area, painted once.
-    assert.deepEqual(layout[1].areas, ['tire']);
-    await reskinViaPopup(page, 'pepperoni pizza', { variations: 1 });
-    // One paint per texture (the failing wheel call is retried by the client on a 500).
-    assert.equal(edits.filter((e) => !/^- tire, bbox/m.test(e)).length, 1);
-    assert.equal(new Set(edits.filter((e) => /^- tire, bbox/m.test(e))).size, 1);
-    const failedCard = await page.$('#generated .slot.failed');
-    assert.ok(failedCard, 'failed wheel texture has a card');
-    assert.match(await failedCard.textContent(), /lambert1 · tireBackR.*not painted.*mock wheel failure/s);
-    assert.match(await page.textContent('#log'), /Not painted: "lambert1 · tireBackR"/);
-    const wheelMap = () =>
-      page.evaluate(() => {
-        const s = window.reskin.plugin.layout.slots[1];
-        return s.materials[0].map === s.texture;
+      const bytes = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        return Array.from(new Uint8Array(await mod.buildCarTestGlb()));
       });
-    assert.ok(await wheelMap(), 'wheels keep their original texture');
-    // Retry only the wheels: they get painted, the body keeps its paint.
-    const bodyBefore = await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid);
-    failWheels = false;
-    await failedCard.$eval('button', (b) => b.click());
-    await page.waitForFunction(() => !window.reskin.plugin.busy && !document.querySelector('#generated .slot.failed'), null, {
-      timeout: 60_000,
-    });
-    assert.equal(await wheelMap(), false, 'wheels repainted');
-    assert.equal(
-      await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid),
-      bodyBefore,
-      'body paint kept on retry',
-    );
-    const kinds = await page.$$eval('#generated .slot', (g) => g.map((x) => x.dataset.slot));
-    assert.deepEqual(kinds.sort(), ['slot0', 'slot1']);
-    await page.context().close();
-  });
+      await page.setInputFiles('#file-input', {
+        name: 'car.glb',
+        mimeType: 'model/gltf-binary',
+        buffer: Buffer.from(bytes),
+      });
+      await page.waitForSelector('#prompt-dialog[open]');
+      const layout = await page.evaluate(() => {
+        const p = window.reskin.plugin;
+        return p.layout.slots.map((s) => ({ id: s.id, name: s.name, areas: p.idRegions(s).map((r) => r.name) }));
+      });
+      // Both materials are "lambert1": the slots are told apart by their first mesh.
+      assert.deepEqual(
+        layout.map((s) => s.name),
+        ['lambert1 · carBody', 'lambert1 · tireBackR'],
+      );
+      // Four wheels stacked on the same UVs are one area, painted once.
+      assert.deepEqual(layout[1].areas, ['tire']);
+      await reskinViaPopup(page, 'pepperoni pizza', { variations: 1 });
+      // One paint per texture (the failing wheel call is retried by the client on a 500).
+      assert.equal(edits.filter((e) => !/^- tire, bbox/m.test(e)).length, 1);
+      assert.equal(new Set(edits.filter((e) => /^- tire, bbox/m.test(e))).size, 1);
+      const failedCard = await page.$('#generated .slot.failed');
+      assert.ok(failedCard, 'failed wheel texture has a card');
+      assert.match(await failedCard.textContent(), /lambert1 · tireBackR.*not painted.*mock wheel failure/s);
+      assert.match(await page.textContent('#log'), /Not painted: "lambert1 · tireBackR"/);
+      const wheelMap = () =>
+        page.evaluate(() => {
+          const s = window.reskin.plugin.layout.slots[1];
+          return s.materials[0].map === s.texture;
+        });
+      assert.ok(await wheelMap(), 'wheels keep their original texture');
+      // Retry only the wheels: they get painted, the body keeps its paint.
+      const bodyBefore = await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid);
+      failWheels = false;
+      await failedCard.$eval('button', (b) => b.click());
+      await page.waitForFunction(
+        () => !window.reskin.plugin.busy && !document.querySelector('#generated .slot.failed'),
+        null,
+        {
+          timeout: 60_000,
+        },
+      );
+      assert.equal(await wheelMap(), false, 'wheels repainted');
+      assert.equal(
+        await page.evaluate(() => window.reskin.plugin.layout.slots[0].materials[0].map.uuid),
+        bodyBefore,
+        'body paint kept on retry',
+      );
+      const kinds = await page.$$eval('#generated .slot', (g) => g.map((x) => x.dataset.slot));
+      assert.deepEqual(kinds.sort(), ['slot0', 'slot1']);
+      await page.context().close();
+    },
+  );
 
   console.log('UV orientation');
   await step('an upside-down head island is painted upright and turned back (whole-atlas mode)', async () => {
@@ -1193,6 +1204,7 @@ try {
 
   await step('SAM 3.1 check: shoes painted on the legs are found and the legs repainted once', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    await page.evaluate((d) => (window.__pluginDir = d), fileURLToPath(new URL('../../plugin/', import.meta.url)));
     const edits = [];
     const sams = [];
     let shoeAsks = 0;
@@ -1233,7 +1245,36 @@ try {
       warnings.some((m) => /SAM 3\.1 found shoe/.test(m)),
       warnings.filter((m) => /SAM/.test(m)).join(' | '),
     );
-    assert.ok(warnings.some((m) => /using the repaint/.test(m)));
+    assert.ok(
+      warnings.some((m) => /repainting only the marked/.test(m)),
+      warnings.join(' | '),
+    );
+    assert.ok(
+      warnings.some((m) => /using the masked repaint/.test(m)),
+      warnings.filter((m) => /SAM/.test(m)).join(' | '),
+    );
+
+    // Masked repaint keeps the first paint outside SAM's mask and feathers the edge.
+    const blend = await page.evaluate(async () => {
+      const { maskedBlend } = await import('/@fs' + window.__pluginDir + 'src/analysis/samCheck.js');
+      const mk = (color) => {
+        const c = document.createElement('canvas');
+        c.width = 200;
+        c.height = 200;
+        const g = c.getContext('2d');
+        g.fillStyle = color;
+        g.fillRect(0, 0, 200, 200);
+        return c;
+      };
+      const mask = new Uint8Array(100 * 100);
+      mask.fill(1, 50 * 100); // bottom half
+      const out = maskedBlend(mk('#0000ff'), mk('#ff0000'), [{ mask, maskSize: { w: 100, h: 100 } }]);
+      const px = (x, y) => Array.from(out.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3));
+      return { top: px(100, 10), bottom: px(100, 190), edge: px(100, 100) };
+    });
+    assert.deepEqual(blend.top, [0, 0, 255], JSON.stringify(blend));
+    assert.deepEqual(blend.bottom, [255, 0, 0], JSON.stringify(blend));
+    assert.ok(blend.edge[0] > 0, `edge feathered/grown: ${JSON.stringify(blend)}`);
 
     // A SAM error turns the check off for the run; painting still finishes. Unticked: no SAM calls.
     await page.unroute('https://api.meta.ai/v1/**');

@@ -207,7 +207,13 @@ export function uniqueSlotNames(slots) {
   const taken = new Set(slots.filter((s) => count.get(s.name) === 1).map((s) => s.name));
   slots.forEach((s, i) => {
     if (count.get(s.name) === 1) return;
-    const mesh = s.meshes.map((m) => String(m.name || '').replace(/[_.]\d+$/, '').trim()).find(Boolean);
+    const mesh = s.meshes
+      .map((m) =>
+        String(m.name || '')
+          .replace(/[_.]\d+$/, '')
+          .trim(),
+      )
+      .find(Boolean);
     let name = mesh ? `${s.name} · ${mesh}` : `${s.name} (${i + 1})`;
     for (let n = 2; taken.has(name); n++) name = `${s.name} · ${mesh || 'texture'} ${n}`;
     taken.add(name);

@@ -101,6 +101,8 @@
  * @property {boolean} [samCheck] After each area is painted, ask SAM 3.1 whether things that belong to other areas
  *   (faces, people, shoes; per asset class) were painted into it, and repaint that area once if so. Turns itself off
  *   for the run if SAM cannot be reached. Default true (only with a provider that has segment()).
+ * @property {boolean} [samMaskedRepaint] When the SAM check flags an area, take only the pixels SAM marked (grown and
+ *   feathered) from the repaint and keep the first paint everywhere else; the whole repaint is the fallback. Default true.
  * @property {boolean} [plainNarrowStrips] Narrow pieces between two limbs (inseam strip) get the plain fabric color. Default true.
  * @property {{ image: CanvasImageSource, slot?: string, rect?: number[], flipY?: boolean }[]} [templates] Artists' templates (panel outlines and labels laid out like the texture); each area is sent to Muse with its part of the template. Also settable for every run with plugin.setProfile({ templates, panels }).
  * @property {{ zone?: string, area?: string, slot?: string, facing: 'front' | 'back', rect: number[] }[]} [panels] Exact front / back panels in texture fractions [u0, v0, u1, v1], used instead of reading them from the 3D data.

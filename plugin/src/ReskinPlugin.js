@@ -28,7 +28,15 @@ import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
 import { addUsage, emptyUsage, formatUsage, usageCost } from './muse/pricing.js';
-import { findIntrusions, intrusionNote, intrusionScore, intrusionText, samRulesFor } from './analysis/samCheck.js';
+import {
+  findIntrusions,
+  intrusionNote,
+  intrusionScore,
+  intrusionText,
+  maskedBlend,
+  maskedShare,
+  samRulesFor,
+} from './analysis/samCheck.js';
 import {
   applyDetailPreserve,
   accentColor,
@@ -1476,32 +1484,41 @@ export class ReskinPlugin {
       }
       const samRules =
         opts.samCheck !== false && this.provider.segment ? samRulesFor(opts.assetClass, part.zone, theme) : [];
+      let samUpright = null;
       if (samRules.length && !this.samOff) {
         // SAM 3.1 looks for things that belong to other areas (a face on the trousers, shoes
         // at the bottom of the legs) that this paint added; repaint once if it finds any.
         const areaMask = whiteMask(guide);
-        const find = (c) =>
-          this.samFind(
-            slot,
-            part.name,
-            unpad(c, padded.canvas, padded.box, crop.width, crop.height),
-            crop,
-            areaMask,
-            samRules,
-            signal,
-          );
-        const first = await find(painted);
+        const un = (c) => unpad(c, padded.canvas, padded.box, crop.width, crop.height);
+        const find = (u) => this.samFind(slot, part.name, u, crop, areaMask, samRules, signal);
+        const firstU = un(painted);
+        const first = await find(firstU);
         if (first?.length) {
+          const masked = opts.samMaskedRepaint !== false;
           this.emit('warning', {
-            message: `${part.name}: SAM 3.1 found ${intrusionText(first)} painted where it does not belong; repainting once.`,
+            message: `${part.name}: SAM 3.1 found ${intrusionText(first)} painted where it does not belong; repainting${masked ? ` only the marked ${Math.max(1, Math.round(maskedShare(first) * 100))}% of the area` : ' once'}.`,
           });
           const again = await this.toCanvas(await paintMuse(intrusionNote(first, part.name)));
           signal.throwIfAborted();
-          const second = (await find(again)) ?? first;
-          const better = intrusionScore(second) < intrusionScore(first);
-          if (better) painted = again;
+          const againU = un(again);
+          // Masked repaint first: only SAM's marked pixels come from the repaint, so the fix
+          // cannot spread into the rest of the area. The whole repaint is the fallback.
+          const tries = [];
+          if (masked) {
+            const mixed = maskedBlend(firstU, againU, first);
+            tries.push({ label: 'masked repaint', canvas: mixed, hits: (await find(mixed)) ?? first });
+          }
+          if (!tries.length || tries[0].hits.length) {
+            tries.push({ label: 'whole repaint', canvas: againU, padded: again, hits: (await find(againU)) ?? first });
+          }
+          const best = tries.reduce((a, b) => (intrusionScore(b.hits) < intrusionScore(a.hits) ? b : a));
+          const better = intrusionScore(best.hits) < intrusionScore(first);
+          if (better) {
+            if (best.padded) painted = best.padded;
+            else samUpright = best.canvas;
+          }
           this.emit('warning', {
-            message: `${part.name}: SAM 3.1 after the repaint: ${second.length ? intrusionText(second) : 'nothing out of place'}; using the ${better ? 'repaint' : 'first try'}.`,
+            message: `${part.name}: SAM 3.1 after the ${tries.map((t) => `${t.label}: ${t.hits.length ? intrusionText(t.hits) : 'nothing out of place'}`).join('; ')}; using the ${better ? best.label : 'first try'}.`,
           });
         } else if (first) {
           this.emit('warning', {
@@ -1509,7 +1526,7 @@ export class ReskinPlugin {
           });
         }
       }
-      const upright = unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
+      const upright = samUpright ?? unpad(painted, padded.canvas, padded.box, crop.width, crop.height);
       if (restoreLost) {
         // Still missing after the repaint: draw the original's eyes / brows / mouth lines back.
         restoreFeatures(upright, crop, restoreLost);
