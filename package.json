@@ -13,6 +13,7 @@
     "build": "npm run build -w harness",
     "preview": "npm run preview -w harness",
     "test": "npm run test -w plugin",
-    "test:e2e": "npm run test:e2e -w harness"
+    "test:e2e": "npm run test:e2e -w harness",
+    "test:sam-live": "node harness/tests/sam-live.mjs"
   }
 }
