@@ -440,12 +440,17 @@ export function fillBackgroundLeftovers(painted, mask, { maxFraction = 0.3, minS
  * Fills the mask of `crop` with a tiled material texture, shaded by the original's
  * light and dark (relative to its median), so creases and finger lines stay visible.
  */
-export function materialFill(crop, mask, tex) {
+/**
+ * opts.tile: tile size in pixels (default half the crop). opts.shade: 'full' shades the
+ * material by the original's light and dark; 'dark' keeps only clearly dark spots (vents,
+ * chimneys) and leaves the rest an even surface.
+ */
+export function materialFill(crop, mask, tex, { tile: tileSize, shade = 'full' } = {}) {
   const w = crop.width,
     h = crop.height;
   const out = createCanvas(w, h);
   const octx = ctx2d(out);
-  const tile = Math.max(64, Math.round(Math.max(w, h) / 2));
+  const tile = Math.max(32, Math.round(tileSize ?? Math.max(64, Math.max(w, h) / 2)));
   const t = resizeCanvas(tex, tile, tile);
   for (let y = 0; y < h; y += tile) for (let x = 0; x < w; x += tile) octx.drawImage(t, x, y);
   const o = octx.getImageData(0, 0, w, h);
@@ -465,7 +470,8 @@ export function materialFill(crop, mask, tex) {
       o.data[i + 3] = src[i + 3];
       continue;
     }
-    const k = Math.min(1.35, Math.max(0.55, lum(i) / med));
+    const r = lum(i) / med;
+    const k = shade === 'dark' ? (r < 0.5 ? Math.max(0.35, r * 1.4) : 1) : Math.min(1.35, Math.max(0.55, r));
     for (let c = 0; c < 3; c++) o.data[i + c] = Math.min(255, o.data[i + c] * k);
     o.data[i + 3] = 255;
   }

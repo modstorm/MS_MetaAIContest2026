@@ -30,6 +30,7 @@ import { exportGLB, loadModel } from './io/modelIO.js';
 import { makeZip } from './io/zip.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
+import { ROOF_SURFACE } from './muse/prompts.js';
 import { addUsage, emptyUsage, formatDollars, formatUsage, priceFor, usageCost } from './muse/pricing.js';
 import {
   findIntrusions,
@@ -268,6 +269,14 @@ export class ReskinPlugin {
         if (!small) out.images += variants;
         continue;
       }
+      // One pass on a building: one roofing material image too, shared by the variations.
+      if (
+        onePass &&
+        getAssetClass(assetClass)?.topBottom &&
+        opts.roofAsMaterial !== false &&
+        this.idRegions(slot, { ...opts, assetClass }).some((r) => r.zone === 'roof')
+      )
+        out.images += 1;
       const regions = onePass ? [] : this.idRegions(slot, { ...opts, assetClass });
       if (regions.length <= 1 && slotParts(slot).length <= 1) {
         out.images += variants;
@@ -1018,6 +1027,11 @@ export class ReskinPlugin {
 
     report(0.7, 'postprocess', `Post-processing "${slot.name}"`);
     let baseColor = resizeCanvas(raw, width, height); // always a fresh copy; `raw` stays as returned
+    // One pass on a building: roof and underside the same as part by part.
+    if (atlasMode && !ctx.partJobs && getAssetClass(opts.assetClass)?.topBottom) {
+      report(0.72, 'postprocess', `Roof and underside of "${slot.name}"`);
+      await this.fillTopBottom(slot, baseColor, original, theme, opts, signal);
+    }
     const islandMap = atlasMode ? islandIdMap(slot, width, height) : null;
     if (islandMap && (opts.cleanTinyIslands ?? true)) {
       // Fingers, buttons and other tiny packed islands: one solid color each, no stray patterns.
@@ -1952,26 +1966,24 @@ export class ReskinPlugin {
         // Hand islands are tiny and look like little figures to the image model (it drew a
         // shirt and trousers in them), so hands get a plain material: a seamless texture of
         // the area theme, shaded by the original's light and dark (finger lines, nails).
-        const tex = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
-          this.provider.generateTexture({
-            theme: plain
-              ? t
-              : (areaThemes.get(part.name) ??
-                `${roof ? `roofing material that fits "${t}"` : `${t}, hands (gloves or skin)`}`),
-            materialName: roof
-              ? 'roof covering seen from straight above, one roofing material that fits the theme'
-              : 'hand surface (glove material or skin)',
-            extraInstructions: roof
-              ? 'Simple, even roofing material only: no windows, doors, walls, ledges, figures or objects.'
-              : 'Plain material only: no hands, fingers, clothes, figures or objects drawn on it.',
-            width: 256,
-            height: 256,
-            signal,
-          }),
-        );
+        const tex = roof
+          ? await this.roofTexture(slot, theme, areaThemes.get(part.name), signal)
+          : await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
+              this.provider.generateTexture({
+                theme: plain ? t : (areaThemes.get(part.name) ?? `${t}, hands (gloves or skin)`),
+                materialName: 'hand surface (glove material or skin)',
+                extraInstructions: 'Plain material only: no hands, fingers, clothes, figures or objects drawn on it.',
+                width: 256,
+                height: 256,
+                signal,
+              }),
+            );
         signal.throwIfAborted();
-        // Shaded by the original's light and dark, so finger lines, nails and roof vents stay.
-        const upright = materialFill(crop, whiteMask(guide), await this.toCanvas(tex));
+        // Hands: shaded by the original's light and dark (finger lines, nails). Roofs: an even
+        // surface in small units; only clearly dark spots (vents, chimneys) stay.
+        const upright = roof
+          ? materialFill(crop, whiteMask(guide), tex, { tile: roofTile(crop), shade: 'dark' })
+          : materialFill(crop, whiteMask(guide), await this.toCanvas(tex));
         pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
         job.painted = upright;
         if (live) {
@@ -2760,6 +2772,102 @@ export class ReskinPlugin {
    * the smallest parts are left whole if there are more.
    */
   /**
+   * One simple roofing surface for `theme` (asphalt, shingles, thatch…, picked by Muse to
+   * fit it), as a seamless canvas. Cached per slot and theme, so variations share it.
+   */
+  async roofTexture(slot, theme, areaTheme, signal) {
+    this.roofCache ??= new Map();
+    const key = `${slot.id}|${theme}|${areaTheme ?? ''}`;
+    if (!this.roofCache.has(key)) {
+      const p = this.withFilterRetry('paint roof', slot, theme, (plain, t) =>
+        this.provider.generateTexture({
+          theme: plain
+            ? `simple roofing for "${t}"`
+            : areaTheme
+              ? `${areaTheme} (theme: "${t}")`
+              : `roofing for "${t}"`,
+          materialName: 'roof covering seen from straight above',
+          extraInstructions: `Choose ${ROOF_SURFACE} Fill the whole image evenly.`,
+          width: 512,
+          height: 512,
+          signal,
+        }),
+      ).then((img) => this.toCanvas(img));
+      p.catch(() => this.roofCache.delete(key));
+      this.roofCache.set(key, p);
+    }
+    return this.roofCache.get(key);
+  }
+
+  /**
+   * Fast (one pass) mode for buildings: the single atlas image paints walls everywhere, so
+   * afterwards the roof gets the simple roofing surface and the underside its flat color,
+   * the same as part-by-part mode. Changes `baseColor` in place.
+   */
+  async fillTopBottom(slot, baseColor, original, theme, opts, signal) {
+    const regions = this.idRegions(slot, opts).filter((r) => r.zone === 'roof' || r.zone === 'underside');
+    if (!regions.length) return;
+    const W = baseColor.width,
+      H = baseColor.height;
+    const orig = original ? resizeCanvas(original, W, H) : baseColor;
+    const g = ctx2d(baseColor);
+    for (const r of regions) {
+      const layer = partLayer(slot, { ...r, hex: '#ffffff' }, W, H);
+      const ld = ctx2d(layer).getImageData(0, 0, W, H);
+      const mask = createCanvas(W, H);
+      const md = ctx2d(mask).createImageData(W, H);
+      let x0 = W,
+        y0 = H,
+        x1 = -1,
+        y1 = -1;
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          const on = ld.data[i + 3] >= 128;
+          md.data[i] = md.data[i + 1] = md.data[i + 2] = on ? 255 : 0;
+          md.data[i + 3] = 255;
+          if (on) {
+            x0 = Math.min(x0, x);
+            y0 = Math.min(y0, y);
+            x1 = Math.max(x1, x);
+            y1 = Math.max(y1, y);
+          }
+        }
+      if (x1 < 0) continue;
+      ctx2d(mask).putImageData(md, 0, 0);
+      let filled;
+      if (r.zone === 'underside') {
+        if (opts.undersideColor === null) continue;
+        filled = createCanvas(W, H);
+        const fg = ctx2d(filled);
+        fg.fillStyle = opts.undersideColor ?? '#000000';
+        fg.fillRect(0, 0, W, H);
+      } else {
+        if (opts.roofAsMaterial === false || !this.provider.generateTexture) continue;
+        const tex = await this.roofTexture(slot, theme, null, signal);
+        signal.throwIfAborted();
+        filled = materialFill(orig, mask, tex, {
+          tile: roofTile({ width: x1 - x0 + 1, height: y1 - y0 + 1 }),
+          shade: 'dark',
+        });
+      }
+      // Paste the filled pixels inside the mask only.
+      const fd = ctx2d(filled).getImageData(0, 0, W, H).data;
+      const bd = g.getImageData(0, 0, W, H);
+      for (let i = 0; i < bd.data.length; i += 4) {
+        if (md.data[i] < 128) continue;
+        bd.data[i] = fd[i];
+        bd.data[i + 1] = fd[i + 1];
+        bd.data[i + 2] = fd[i + 2];
+      }
+      g.putImageData(bd, 0, 0);
+      this.emit('warning', {
+        message: `"${slot.name}": ${r.zone === 'roof' ? 'roof painted as one simple roofing surface' : 'underside filled with a flat color'} (one-pass mode).`,
+      });
+    }
+  }
+
+  /**
    * Roof / underside pieces of a part (see splitTopBottom). A piece that shares its texture
    * space with the walls (overlapping UVs) can't be painted on its own and stays with them.
    */
@@ -3064,6 +3172,11 @@ export function slug(s) {
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'reskin'
   );
+}
+
+/** Roof material tile size: about a fifth of the roof, so shingles and tiles stay small. */
+function roofTile(c) {
+  return Math.max(48, Math.round(Math.max(c.width, c.height) / 5));
 }
 
 /**

@@ -1823,13 +1823,29 @@ try {
         for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
         return m.map((v) => v / (d.length / 4));
       };
+      // Fast (one pass): one atlas image, then the roof and underside are filled the same way.
+      const notes = [];
+      const off1 = p.on('warning', (w) => notes.push(w.message));
+      const fast = await p.postPrompt('mossy green stone ruin', { assetClass: 'building', paintMode: 'atlas' });
+      off1();
+      const fc = fast.slots[0].canvas;
+      const fd = fc.getContext('2d').getImageData((345 * fc.width) / 512, (335 * fc.width) / 512, 10, 10).data;
+      const fastDoor = Math.max(fd[0], fd[1], fd[2]);
       // Overlapping UVs: the underside shares the front wall's pixels, so it stays with the walls.
       const warnings = [];
       const off = p.on('warning', (w) => warnings.push(w.message));
       await p.postModel(await mod.buildBuildingTestGlb({ sharedUnderside: true }), { name: 'building-shared' });
       const shared = p.idRegions(p.layout.slots[0], { assetClass: 'building' }).map((r) => r.name);
       off();
-      return { names, door: mean(345, 335, 70, 110), beside: mean(270, 270, 60, 110), shared, warnings };
+      return {
+        names,
+        door: mean(345, 335, 70, 110),
+        beside: mean(270, 270, 60, 110),
+        shared,
+        warnings,
+        fastDoor,
+        fastNotes: notes.filter((n) => /one-pass mode/.test(n)),
+      };
     });
     assert.ok(
       out.names.some((n) => /\(roof\)/.test(n)),
@@ -1842,6 +1858,8 @@ try {
     assert.ok(!out.names.some((n) => /\(roof\)|\(underside\)/.test(n) && /walls/.test(n)));
     // Underside: flat black, the facade door is gone.
     assert.ok(Math.max(...out.door, ...out.beside) < 8, `underside not black: ${out.door} / ${out.beside}`);
+    assert.ok(out.fastDoor < 8, `one pass: underside not black (${out.fastDoor})`);
+    assert.equal(out.fastNotes.length, 2, out.fastNotes.join('\n'));
     assert.ok(
       out.shared.some((n) => /\(roof\)/.test(n)) && !out.shared.some((n) => /\(underside\)/.test(n)),
       out.shared.join(' | '),

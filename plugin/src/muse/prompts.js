@@ -443,6 +443,10 @@ export function reskinPartPrompt(
  * area's image prompt never mentions the whole character (Muse otherwise draws a small
  * portrait of the character inside the area).
  */
+/** What a building roof should be: one plain surface chosen to fit the theme. */
+export const ROOF_SURFACE =
+  'one simple, uniform roofing surface picked to fit the theme (for example asphalt, shingles, slate tiles, clay tiles, thatch, corrugated metal, tar paper), in colors that suit the theme. Small even units or a plain surface only: no cracks, glow, lava, symbols, large panels, borders or decorations.';
+
 export function areaThemesPrompt(theme, areas, subject) {
   return [
     `A 3D model${subject ? ` (${subject})` : ''} is being repainted in this theme: "${theme}".`,
@@ -452,7 +456,7 @@ export function areaThemesPrompt(theme, areas, subject) {
     'Never describe something that belongs to another listed area (for example no shoes or boots in the legs area, no gloves in the arms area, no shirt in the hands area).',
     'Never mention the character, a person, a figure, a body or a scene. Describe only the material and details of that area (for the face: skin tone, makeup, facial features; for hair: hair color and texture).',
     areas.some((a) => /\(roof\)/i.test(a))
-      ? 'An area named "(roof)" is a roof seen from straight above: name one roofing material that fits this theme and its look (for example moss-covered cracked slate for an overgrown ruin, rusted corrugated tin for a junkyard, candy-striped wafer tiles for candy land), with its colors. No walls, windows or doors.'
+      ? `An area named "(roof)" is a roof seen from straight above: ${ROOF_SURFACE} Name it with its colors in at most 12 words.`
       : '',
     'Areas:',
     ...areas.map((a) => `- ${a}`),
