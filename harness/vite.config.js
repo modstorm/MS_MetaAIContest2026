@@ -8,6 +8,10 @@ export default defineConfig(({ command, mode }) => {
   // .env lives at the repo root (one level up).
   const env = loadEnv(mode, root, '');
   const isDev = command === 'serve';
+  if (isDev && !env.MUSE_API_KEY)
+    console.warn(
+      '\n  No MUSE_API_KEY found. Copy .env.example to .env at the repo root, set MUSE_API_KEY, and restart "npm run dev".\n',
+    );
   return {
     // Relative base so the static build works on GitHub Pages under any repo name.
     base: './',

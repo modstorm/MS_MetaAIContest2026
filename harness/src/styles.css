@@ -649,3 +649,35 @@ button.on {
   font-size: 11px;
   font-weight: normal;
 }
+
+/* Missing Muse key: how to add one. */
+.key-banner {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(720px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border: 1px solid #f5a524;
+  border-radius: 8px;
+  background: #3d2800;
+  color: #ffe2a8;
+  font-size: 14px;
+  line-height: 1.45;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.4);
+}
+.key-banner[hidden] {
+  display: none;
+}
+.key-banner code {
+  color: #fff;
+}
+.key-banner.flash {
+  animation: key-flash 0.6s ease 2;
+}
+@keyframes key-flash {
+  50% {
+    background: #7a4f00;
+  }
+}

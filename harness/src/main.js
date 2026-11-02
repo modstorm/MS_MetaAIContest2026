@@ -24,15 +24,29 @@ const STORE = 'muse-reskin-settings';
 
 function loadSettings() {
   const saved = JSON.parse(localStorage.getItem(STORE) ?? '{}');
-  const hasKey = !!(saved.apiKey || __MUSE_DEV_KEY__);
   return {
-    // Default to Muse when a key is known, otherwise offline so it works out of the box.
-    provider: saved.provider ?? (hasKey ? 'muse' : 'offline'),
+    // Muse by default: the demo needs a key (MUSE_API_KEY in .env). Offline stays in Settings for testing.
+    provider: saved.provider ?? 'muse',
     apiKey: saved.apiKey ?? '',
     useProxy: saved.useProxy ?? false,
   };
 }
 let settings = loadSettings();
+
+/** Muse is selected but no key is known: show how to add one. */
+const missingKey = () => settings.provider === 'muse' && !(settings.apiKey || __MUSE_DEV_KEY__);
+function updateKeyBanner(flash = false) {
+  const el = $('key-banner');
+  el.hidden = !missingKey();
+  if (!__HAS_DEV_PROXY__)
+    el.innerHTML =
+      '<strong>AI reskins need a Meta Muse API key.</strong> Paste yours in Settings ⚙ (it stays in this browser only), or clone the repo and put <code>MUSE_API_KEY</code> in <code>.env</code>. Without a key you can still load a model and explore its texture layout, areas, facing map and animation.';
+  if (flash && !el.hidden) {
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
+}
 
 function makeProvider(s) {
   if (s.provider === 'offline') return new ProceduralProvider();
@@ -390,6 +404,12 @@ $('prompt-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const prompt = promptText.value.trim();
   if (!prompt) return;
+  if (missingKey()) {
+    dialog.close();
+    updateKeyBanner(true);
+    log('No Muse API key: add MUSE_API_KEY to .env and restart "npm run dev" (or paste a key in Settings).', 'error');
+    return;
+  }
   dialog.close();
   openRun(prompt);
   if (suggestEnabled()) runSuggest(prompt);
@@ -931,10 +951,12 @@ settingsDialog.addEventListener('close', () => {
   localStorage.setItem(STORE, JSON.stringify(settings));
   plugin.setProvider(makeProvider(settings));
   log(`Backend: ${plugin.getProvider().name}`);
+  updateKeyBanner();
 });
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+updateKeyBanner();
 log(`Ready. Backend: ${plugin.getProvider().name}. Drop a model or load the sample.`);
