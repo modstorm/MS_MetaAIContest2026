@@ -10,6 +10,8 @@
  *   rules     prompt lines for every paint call of this class
  *   parts     [{ match: regex on the part name, rules: [...] }] extra lines for matching parts
  *   seamless  true if the texture should wrap around (sky, terrain)
+ *   topBottom names for splitting a part by facing into rest / top / bottom areas (a building's
+ *             walls, roof and underside); see splitTopBottom
  *   samCheck  { zone: [noun phrase | { concept, minShare, maxShare, minConfidence }] } things SAM 3.1
  *             must NOT find newly painted in that zone; a hit repaints the area once (see samCheck.js)
  *   samZones  { concepts: [{ zone, concept }], rest } noun phrases SAM 3.1 looks for to find paint zones on
@@ -182,6 +184,23 @@ export const ASSET_CLASSES = [
     rules: [
       'This is a building. Windows, doors and trim stay exactly where they are; walls get brick, stone, wood or plaster in even courses; top (magenta) areas are roofs.',
       'Keep the scale of bricks and planks consistent across all walls. No readable signs or text.',
+    ],
+    // Up-facing surfaces are the roof (a simple material), down-facing ones the underside (flat black); see splitTopBottom.
+    topBottom: {
+      rest: 'walls',
+      restZone: 'walls',
+      top: 'roof',
+      topZone: 'roof',
+      bottom: 'underside',
+      bottomZone: 'underside',
+    },
+    parts: [
+      {
+        match: /\(roof\)/i,
+        rules: [
+          'This area is the roof, seen from straight above. Paint only roof covering (tiles, slates, shingles, gravel, planks or a flat slab) and keep any vents, chimneys or skylights already there. No walls, bricks in wall courses, windows, doors, ledges or a facade: it is not a wall.',
+        ],
+      },
     ],
     samZones: {
       concepts: [

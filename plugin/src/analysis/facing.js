@@ -156,7 +156,13 @@ export function splitPartRegions(slot, part, { gap = 0.02, minShare = 0.08, maxR
     if (!f) continue;
     const ids = islandIdPerTriangle(src);
     const byId = new Map();
+    // Only this part's own islands / triangles (it may already be a piece of a mesh).
+    const keepIsl = part.islands?.get(mesh);
+    const keepTri = part.tris?.get(mesh);
+    if ((part.islands && !keepIsl) || (part.tris && !keepTri)) continue;
     for (let t = 0; t < ids.length; t++) {
+      if (keepIsl && !keepIsl.has(ids[t])) continue;
+      if (keepTri && !keepTri[t]) continue;
       let isl = byId.get(ids[t]);
       if (!isl) {
         byId.set(
@@ -281,7 +287,7 @@ export function splitPartRegions(slot, part, { gap = 0.02, minShare = 0.08, maxR
     return {
       ...part,
       name: `${part.name} (${label})`,
-      baseName: part.name,
+      baseName: part.baseName ?? part.name,
       region: label,
       islands: keep,
       bbox: r.box.map(clamp),
@@ -291,6 +297,69 @@ export function splitPartRegions(slot, part, { gap = 0.02, minShare = 0.08, maxR
       mirrored: area > 0 ? mirroredArea / area > 0.5 : part.mirrored,
     };
   });
+}
+
+/**
+ * Splits a part by which way its surfaces face up or down: triangles facing up become the
+ * `top` piece (a building's roof), triangles facing down the `bottom` piece (its underside),
+ * the rest stays as `rest`. Pieces are triangle masks (`tris`: Map mesh → Uint8Array), so
+ * they work even when a roof and a wall share one UV island. A piece under `minShare` of
+ * the part's surface stays in `rest`. Returns null when there is no top or bottom worth
+ * its own area.
+ * @returns {{ rest: object, top: object | null, bottom: object | null, shares: { top: number, bottom: number } } | null}
+ */
+export function splitTopBottom(slot, part, { minShare = 0.04, names = {} } = {}) {
+  const maps = { top: new Map(), bottom: new Map(), rest: new Map() };
+  const area = { top: 0, bottom: 0, rest: 0 };
+  for (const mesh of part.meshes) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+    const f = triangleFacings(mesh, src);
+    if (!f) continue;
+    const keepIsl = part.islands?.get(mesh);
+    const keepTri = part.tris?.get(mesh);
+    if ((part.islands && !keepIsl) || (part.tris && !keepTri)) continue;
+    const islandOf = keepIsl ? islandIdPerTriangle(src) : null;
+    const n = f.facing.length;
+    const m = { top: new Uint8Array(n), bottom: new Uint8Array(n), rest: new Uint8Array(n) };
+    for (let t = 0; t < n; t++) {
+      if (keepIsl && !keepIsl.has(islandOf[t])) continue;
+      if (keepTri && !keepTri[t]) continue;
+      const k = f.facing[t] === 4 ? 'top' : f.facing[t] === 5 ? 'bottom' : 'rest';
+      m[k][t] = 1;
+      area[k] += f.area[t];
+    }
+    for (const k of ['top', 'bottom', 'rest']) if (m[k].some((v) => v)) maps[k].set(mesh, m[k]);
+  }
+  const total = area.top + area.bottom + area.rest || 1;
+  const shares = { top: area.top / total, bottom: area.bottom / total };
+  const wantTop = shares.top >= minShare && area.rest > 0;
+  const wantBottom = shares.bottom >= minShare && area.rest > 0;
+  if (!wantTop && !wantBottom) return null;
+  // Pieces too small for their own area go back into the rest.
+  for (const k of ['top', 'bottom']) {
+    if ((k === 'top' ? wantTop : wantBottom) || !maps[k].size) continue;
+    for (const [mesh, arr] of maps[k]) {
+      const r = maps.rest.get(mesh) ?? new Uint8Array(arr.length);
+      for (let t = 0; t < arr.length; t++) if (arr[t]) r[t] = 1;
+      maps.rest.set(mesh, r);
+    }
+  }
+  const piece = (k, label, zone) => ({
+    ...part,
+    meshes: [...maps[k].keys()],
+    name: `${part.name} (${label})`,
+    baseName: part.baseName ?? part.name,
+    region: label,
+    zone,
+    tris: maps[k],
+    share: (k === 'rest' ? area.rest + (wantTop ? 0 : area.top) + (wantBottom ? 0 : area.bottom) : area[k]) / total,
+  });
+  return {
+    rest: piece('rest', names.rest ?? 'sides', names.restZone ?? 'sides'),
+    top: wantTop ? piece('top', names.top ?? 'top', names.topZone ?? 'top') : null,
+    bottom: wantBottom ? piece('bottom', names.bottom ?? 'underside', names.bottomZone ?? 'underside') : null,
+    shares,
+  };
 }
 
 function nearestFacing(r, g, b) {

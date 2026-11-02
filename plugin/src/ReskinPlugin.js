@@ -20,6 +20,7 @@ import {
   facingShareText,
   facingSummary,
   splitPartRegions,
+  splitTopBottom,
   whiteMask,
 } from './analysis/facing.js';
 import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.js';
@@ -278,6 +279,7 @@ export class ReskinPlugin {
       }
       parts = true;
       for (const r of regions) {
+        if (r.zone === 'underside' && opts.undersideColor !== null) continue; // flat color, no Muse call
         out.images += variants * (r.zone === 'torso' && opts.frontPanelPass !== false ? 3 : 1);
         if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '').length;
       }
@@ -1916,21 +1918,56 @@ export class ReskinPlugin {
       const rules = this.rulesFor(opts.assetClass, [part.name]);
       const frontLine = part.zone === 'torso' ? frontSpanText(guide) : '';
       if (frontLine) this.emit('warning', { message: `${part.name} front: ${frontLine.split(':')[0]}.` });
-      if (part.zone === 'hands' && opts.handsAsMaterial !== false && this.provider.generateTexture) {
+      // Building undersides are hardly seen: one flat color (black by default), no Muse call.
+      if (part.zone === 'underside' && opts.undersideColor !== null) {
+        const upright = copyCanvas(crop);
+        const g = ctx2d(upright);
+        const m = ctx2d(whiteMask(guide)).getImageData(0, 0, upright.width, upright.height).data;
+        const img = g.getImageData(0, 0, upright.width, upright.height);
+        const hex = parseInt(String(opts.undersideColor ?? '#000000').replace('#', ''), 16);
+        for (let i = 0; i < m.length; i += 4) {
+          if (m[i] < 128) continue;
+          img.data[i] = hex >> 16;
+          img.data[i + 1] = (hex >> 8) & 255;
+          img.data[i + 2] = hex & 255;
+          img.data[i + 3] = 255;
+        }
+        g.putImageData(img, 0, 0);
+        pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
+        job.painted = upright;
+        if (live) {
+          live.needsUpdate = true;
+          this.emit('partPainted', { slotId: slot.id, area: part.name, canvas: out });
+        }
+        done++;
+        report(0.2 + (0.5 * done) / jobs.length, 'paint', `Filled ${part.name} (${done}/${jobs.length})`);
+        return upright;
+      }
+      // Hands and roofs get a plain material (simple, and no figures or facades drawn in them).
+      const asMaterial =
+        (part.zone === 'hands' && opts.handsAsMaterial !== false) ||
+        (part.zone === 'roof' && opts.roofAsMaterial !== false);
+      if (asMaterial && this.provider.generateTexture) {
+        const roof = part.zone === 'roof';
         // Hand islands are tiny and look like little figures to the image model (it drew a
         // shirt and trousers in them), so hands get a plain material: a seamless texture of
         // the area theme, shaded by the original's light and dark (finger lines, nails).
         const tex = await this.withFilterRetry(`paint ${part.name}`, slot, theme, (plain, t) =>
           this.provider.generateTexture({
-            theme: plain ? t : (areaThemes.get(part.name) ?? `${t}, hands (gloves or skin)`),
-            materialName: 'hand surface (glove material or skin)',
-            extraInstructions: 'Plain material only: no hands, fingers, clothes, figures or objects drawn on it.',
+            theme: plain ? t : (areaThemes.get(part.name) ?? `${t}, ${roof ? 'roof' : 'hands (gloves or skin)'}`),
+            materialName: roof
+              ? 'simple roof covering seen from above (one material: slates, tiles, gravel or a flat slab)'
+              : 'hand surface (glove material or skin)',
+            extraInstructions: roof
+              ? 'Simple, even roofing material only: no windows, doors, walls, ledges, figures or objects.'
+              : 'Plain material only: no hands, fingers, clothes, figures or objects drawn on it.',
             width: 256,
             height: 256,
             signal,
           }),
         );
         signal.throwIfAborted();
+        // Shaded by the original's light and dark, so finger lines, nails and roof vents stay.
         const upright = materialFill(crop, whiteMask(guide), await this.toCanvas(tex));
         pasteInsideMask(out, untransformCanvas(upright, orient), mask, rect);
         job.painted = upright;
@@ -2719,6 +2756,43 @@ export class ReskinPlugin {
    * in clearly separate groups (for example a torso and two sleeves). At most 12 in total;
    * the smallest parts are left whole if there are more.
    */
+  /**
+   * Roof / underside pieces of a part (see splitTopBottom). A piece that shares its texture
+   * space with the walls (overlapping UVs) can't be painted on its own and stays with them.
+   */
+  topBottomPieces(slot, part, names) {
+    const tb = splitTopBottom(slot, part, { names });
+    if (!tb) return null;
+    const S = 256;
+    const restLayer = partLayer(slot, tb.rest, S, S);
+    const rd = ctx2d(restLayer).getImageData(0, 0, S, S).data;
+    for (const k of ['top', 'bottom']) {
+      const piece = tb[k];
+      if (!piece) continue;
+      const d = ctx2d(partLayer(slot, piece, S, S)).getImageData(0, 0, S, S).data;
+      let on = 0,
+        shared = 0;
+      for (let i = 3; i < d.length; i += 4) {
+        if (d[i] < 128) continue;
+        on++;
+        if (rd[i] >= 128) shared++;
+      }
+      if (on && shared / on > 0.3) {
+        this.emit('warning', {
+          message: `"${slot.name}": the ${piece.region} uses the same part of the texture as the walls (${Math.round((100 * shared) / on)}% shared), so it is painted with them.`,
+        });
+        for (const [mesh, arr] of piece.tris) {
+          const r = tb.rest.tris.get(mesh) ?? new Uint8Array(arr.length);
+          for (let t = 0; t < arr.length; t++) if (arr[t]) r[t] = 1;
+          tb.rest.tris.set(mesh, r);
+          if (!tb.rest.meshes.includes(mesh)) tb.rest.meshes.push(mesh);
+        }
+        tb[k] = null;
+      }
+    }
+    return tb.top || tb.bottom ? tb : null;
+  }
+
   paintRegions(slot, parts, opts = {}) {
     if (opts.splitRegions === false) return parts;
     const max = opts.maxPaintAreas ?? 12;
@@ -2731,7 +2805,17 @@ export class ReskinPlugin {
         // Characters: body zones (head → face / hair, hands) from the 3D shape first.
         const zones = opts.assetClass === 'avatar' ? splitAvatarZones(slot, p, this.anatomy()) : [p];
         // Avatars keep each mesh whole apart from those zones (legs stay one "pants" area).
-        split = zones.length > 1 || opts.assetClass === 'avatar' ? zones : splitPartRegions(slot, p);
+        if (zones.length > 1 || opts.assetClass === 'avatar') split = zones;
+        else {
+          // Buildings: roofs and undersides are their own areas, so they are never painted
+          // as walls (windows and doors on the roof, a facade on the underside).
+          const tb = getAssetClass(opts.assetClass)?.topBottom
+            ? this.topBottomPieces(slot, p, getAssetClass(opts.assetClass).topBottom)
+            : null;
+          split = tb
+            ? [...splitPartRegions(slot, tb.rest), ...[tb.top, tb.bottom].filter(Boolean)]
+            : splitPartRegions(slot, p);
+        }
       }
       const take = split.length <= left - remainingParts ? split : [p];
       out.push(...take);

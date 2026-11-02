@@ -400,3 +400,54 @@ export async function buildCarTestGlb() {
   }
   return exportGLB(root);
 }
+
+/**
+ * Test asset for buildings: one box mesh named "Building". Walls (±X, ±Z) sit side by side
+ * in the top half of the atlas, each with two dark windows; the roof (+Y) is bottom-left,
+ * the underside (-Y) bottom-right with a red door on it (as in kit models that reuse a facade).
+ * `sharedUnderside` maps the underside onto the first wall instead (overlapping UVs).
+ */
+export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b0a080';
+  g.fillRect(0, 0, 512, 256);
+  g.fillStyle = '#202020';
+  for (let i = 0; i < 4; i++) {
+    g.fillRect(i * 128 + 20, 60, 30, 50);
+    g.fillRect(i * 128 + 78, 60, 30, 50);
+  }
+  g.fillStyle = '#606060';
+  g.fillRect(0, 256, 256, 256);
+  g.fillStyle = '#504030';
+  g.fillRect(256, 256, 256, 256);
+  g.fillStyle = '#c02020';
+  g.fillRect(340, 330, 80, 120);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'building' });
+  const geom = new THREE.BoxGeometry(2, 1.2, 1.6);
+  const uv = geom.getAttribute('uv');
+  // BoxGeometry faces, 4 vertices each: +X, -X, +Y, -Y, +Z, -Z.
+  const rects = [
+    [0.25, 0, 0.5, 0.5], // +X wall
+    [0.75, 0, 1, 0.5], // -X wall
+    [0, 0.5, 0.5, 1], // roof
+    sharedUnderside ? [0, 0, 0.25, 0.5] : [0.5, 0.5, 1, 1], // underside
+    [0, 0, 0.25, 0.5], // +Z wall (front)
+    [0.5, 0, 0.75, 0.5], // -Z wall
+  ];
+  for (let f = 0; f < 6; f++) {
+    const [u0, v0, u1, v1] = rects[f];
+    for (let k = 0; k < 4; k++) {
+      const i = f * 4 + k;
+      // three's box UVs have v up; glTF v grows downward.
+      uv.setXY(i, u0 + uv.getX(i) * (u1 - u0), v0 + (1 - uv.getY(i)) * (v1 - v0));
+    }
+  }
+  const m = new THREE.Mesh(geom, mat);
+  m.name = 'Building';
+  return exportGLB(m);
+}

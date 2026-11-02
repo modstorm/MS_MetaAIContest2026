@@ -1448,10 +1448,20 @@ try {
         const tile = w / 3;
         const sides = [0, 1, 2, 3].map((i) => [(i % 3) * tile, Math.floor(i / 3) * tile]);
         if (text.text === 'face')
-          return route.fulfill(samRects(sides.map(([x, y]) => [x, y, x + tile, y + Math.round(tile * 0.14)]), w, h));
+          return route.fulfill(
+            samRects(
+              sides.map(([x, y]) => [x, y, x + tile, y + Math.round(tile * 0.14)]),
+              w,
+              h,
+            ),
+          );
         if (text.text === 'shoe')
           return route.fulfill(
-            samRects(sides.map(([x, y]) => [x, y + Math.round(tile * 0.93), x + tile, y + tile]), w, h),
+            samRects(
+              sides.map(([x, y]) => [x, y + Math.round(tile * 0.93), x + tile, y + tile]),
+              w,
+              h,
+            ),
           );
         return route.fulfill(samNone());
       }
@@ -1494,7 +1504,10 @@ try {
     assert.deepEqual(res.keptAreas, res.before, 'fewer SAM zones than usual areas: usual areas kept');
     assert.ok(!res.kept?.length);
     assert.ok(res.w.some((m) => /fewer than the usual 7 areas/.test(m)));
-    assert.ok(sams.every((s) => s.w === 3 * 384 && s.h === 2 * 384), `sheet size ${sams[0].w}x${sams[0].h}`);
+    assert.ok(
+      sams.every((s) => s.w === 3 * 384 && s.h === 2 * 384),
+      `sheet size ${sams[0].w}x${sams[0].h}`,
+    );
     assert.equal(res.segments, 12, 'cost badge counts 12 SAM images');
     for (const z of ['face', 'shoes', 'torso']) assert.ok(res.after.includes(z), `zone ${z}: ${res.after.join(', ')}`);
     assert.ok(res.found?.length, `zones returned: ${res.w.join(' | ')}`);
@@ -1790,6 +1803,53 @@ try {
     assert.deepEqual(px.farAway, [0, 0, 0]); // far from any island: untouched
     assert.deepEqual(px.fingerA, px.fingerB, 'tiny island is one solid color');
     assert.match(await page.textContent('#log'), /cleaned up 10 tiny island/);
+    await page.context().close();
+  });
+
+  await step('building: roof and underside are their own areas; the underside is flat black', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      await p.postModel(await mod.buildBuildingTestGlb(), { name: 'building-test' });
+      const slot = p.layout.slots[0];
+      const names = p.idRegions(slot, { assetClass: 'building' }).map((r) => r.name);
+      const r = await p.postPrompt('mossy green stone ruin', { assetClass: 'building' });
+      const c = r.slots[0].canvas;
+      const k = c.width / 512;
+      const mean = (x, y, w, h) => {
+        const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+        const m = [0, 0, 0];
+        for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+        return m.map((v) => v / (d.length / 4));
+      };
+      // Overlapping UVs: the underside shares the front wall's pixels, so it stays with the walls.
+      const warnings = [];
+      const off = p.on('warning', (w) => warnings.push(w.message));
+      await p.postModel(await mod.buildBuildingTestGlb({ sharedUnderside: true }), { name: 'building-shared' });
+      const shared = p.idRegions(p.layout.slots[0], { assetClass: 'building' }).map((r) => r.name);
+      off();
+      return { names, door: mean(345, 335, 70, 110), beside: mean(270, 270, 60, 110), shared, warnings };
+    });
+    assert.ok(
+      out.names.some((n) => /\(roof\)/.test(n)),
+      out.names.join(' | '),
+    );
+    assert.ok(
+      out.names.some((n) => /\(underside\)/.test(n)),
+      out.names.join(' | '),
+    );
+    assert.ok(!out.names.some((n) => /\(roof\)|\(underside\)/.test(n) && /walls/.test(n)));
+    // Underside: flat black, the facade door is gone.
+    assert.ok(Math.max(...out.door, ...out.beside) < 8, `underside not black: ${out.door} / ${out.beside}`);
+    assert.ok(
+      out.shared.some((n) => /\(roof\)/.test(n)) && !out.shared.some((n) => /\(underside\)/.test(n)),
+      out.shared.join(' | '),
+    );
+    assert.ok(
+      out.warnings.some((w) => /underside uses the same part of the texture/.test(w)),
+      out.warnings.join('\n'),
+    );
     await page.context().close();
   });
 
