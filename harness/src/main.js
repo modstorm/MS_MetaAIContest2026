@@ -1,5 +1,11 @@
 import './styles.css';
-import { ASSET_CLASSES, MuseProvider, ProceduralProvider, ReskinPlugin } from '@metaai26/reskin-plugin';
+import {
+  ASSET_CLASSES,
+  MuseProvider,
+  ProceduralProvider,
+  ReskinPlugin,
+  formatDollars,
+} from '@metaai26/reskin-plugin';
 import { Viewer } from './viewer.js';
 import { buildSampleGlb } from './sampleModel.js';
 
@@ -29,6 +35,8 @@ function loadSettings() {
     provider: saved.provider ?? 'muse',
     apiKey: saved.apiKey ?? '',
     useProxy: saved.useProxy ?? false,
+    // Model for the suggest and review steps: '' = Muse Spark (default), or Muse Wonder.
+    adviceModel: saved.adviceModel ?? '',
   };
 }
 let settings = loadSettings();
@@ -58,6 +66,7 @@ function makeProvider(s) {
     fallbackBaseUrl: __HAS_DEV_PROXY__ ? '/api/muse' : undefined,
     imageModel: __MUSE_IMAGE_MODEL__,
     visionModel: __MUSE_VISION_MODEL__,
+    adviceModel: s.adviceModel || undefined,
   });
 }
 
@@ -131,6 +140,12 @@ plugin.onUpdate((e) => {
       break;
     case 'review':
       renderReview(e.data);
+      break;
+    case 'usage':
+      showUsage(e.data);
+      break;
+    case 'reskinned':
+      if (e.data.usage?.reskin.calls) log(`💲 This reskin so far: ${e.data.usage.text}`);
       break;
     case 'idMap':
       $('btn-idmap').classList.toggle('on', e.data.on);
@@ -932,6 +947,7 @@ $('btn-settings').onclick = () => {
   form.elements.namedItem('provider').value = settings.provider;
   $('set-key').value = settings.apiKey;
   $('set-proxy').checked = settings.useProxy;
+  $('set-advice').value = settings.adviceModel;
   $('set-proxy').disabled = !__HAS_DEV_PROXY__;
   $('key-source').textContent = __MUSE_DEV_KEY__
     ? 'A key from .env is active (dev server). A key typed here overrides it.'
@@ -947,12 +963,32 @@ settingsDialog.addEventListener('close', () => {
     provider: form.elements.namedItem('provider').value,
     apiKey: $('set-key').value.trim(),
     useProxy: $('set-proxy').checked,
+    adviceModel: $('set-advice').value,
   };
   localStorage.setItem(STORE, JSON.stringify(settings));
   plugin.setProvider(makeProvider(settings));
   log(`Backend: ${plugin.getProvider().name}`);
   updateKeyBanner();
 });
+
+// ------------------------------------------------------------------ cost
+/** Muse usage badge: this reskin (suggestion + paint + review) and the whole session. */
+function showUsage(u) {
+  const el = $('cost');
+  el.hidden = !u.session.calls;
+  $('cost-reskin').textContent = u.reskin.calls ? u.text : 'no Muse calls yet';
+  $('cost-session').textContent = u.session.calls ? `Session ${formatDollars(u.sessionCost)}` : '';
+  const models = Object.entries(u.reskin.byModel).map(
+    ([m, x]) =>
+      `${m}: ${x.calls} call(s)${x.images ? `, ${x.images} image(s)` : ''}${x.inputTokens || x.outputTokens ? `, ${x.inputTokens} in / ${x.outputTokens} out tokens` : ''}`,
+  );
+  el.title = [
+    'Estimated Muse cost for this reskin (suggestion, paint and review & fix).',
+    ...models,
+    'Prices: dev.meta.ai/docs/pricing-rate-limits. Filtered or failed images are free.',
+  ].join('\n');
+}
+$('cost-reset').onclick = () => plugin.resetUsage();
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);

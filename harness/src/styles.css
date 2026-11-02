@@ -148,7 +148,7 @@ button.icon {
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 12px;
-  max-width: 70%;
+  max-width: 50%;
 }
 .status:empty {
   display: none;
@@ -156,6 +156,34 @@ button.icon {
 .status.error {
   border-color: var(--err);
   color: var(--err);
+}
+
+/* Muse cost estimate for the current reskin (bottom right of the viewport). */
+.cost {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(14, 15, 19, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 6px 4px 10px;
+  font-size: 12px;
+  max-width: 45%;
+}
+.cost[hidden] {
+  display: none;
+}
+.cost-label {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.cost button.icon {
+  width: 24px;
+  padding: 2px 0;
+  font-size: 12px;
 }
 
 .panel {

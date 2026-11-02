@@ -44,6 +44,12 @@ export function isContentPolicyError(err) {
 export class MuseClient {
   /** Optional hook called after every request: { url, method, request, status, ms, error }. Images are shortened. */
   onExchange = null;
+  /**
+   * Optional hook called once per billed request:
+   * { model, kind: 'image'|'chat', images, inputTokens, outputTokens, cachedTokens }.
+   * Filtered or failed requests are not billed, so they are not reported.
+   */
+  onUsage = null;
   options;
   fetchImpl;
 
@@ -64,6 +70,7 @@ export class MuseClient {
   /** Text -> image. Returns the image as a Blob. */
   async generateImage(o) {
     const json = await this.post('/images/generations', this.imageBody(o), o.signal);
+    this.reportImages(json);
     return this.firstImage(json, o.outputFormat ?? 'png');
   }
 
@@ -72,6 +79,7 @@ export class MuseClient {
     if (!o.images.length || o.images.length > 10) throw new Error('editImage needs 1 to 10 images');
     const body = { ...this.imageBody(o), images: o.images.map((image_url) => ({ image_url })) };
     const json = await this.post('/images/edits', body, o.signal);
+    this.reportImages(json);
     return this.firstImage(json, o.outputFormat ?? 'png');
   }
 
@@ -84,10 +92,32 @@ export class MuseClient {
     if (o.reasoningEffort) body.reasoning_effort = o.reasoningEffort;
     if (o.temperature !== undefined) body.temperature = o.temperature;
     const json = await this.post('/chat/completions', body, o.signal);
+    const u = json?.usage ?? {};
+    this.reportUsage({
+      model: body.model,
+      kind: 'chat',
+      images: 0,
+      inputTokens: u.prompt_tokens ?? u.input_tokens ?? 0,
+      outputTokens: u.completion_tokens ?? u.output_tokens ?? 0,
+      cachedTokens: u.prompt_tokens_details?.cached_tokens ?? u.input_tokens_details?.cached_tokens ?? 0,
+    });
     const content = json?.choices?.[0]?.message?.content;
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) return content.map((p) => p?.text ?? '').join('');
     throw new MuseApiError('Unexpected chat response shape', 200, undefined, undefined, json);
+  }
+
+  reportImages(json) {
+    const n = Array.isArray(json?.data) ? json.data.filter((d) => d?.b64_json || d?.url).length : 0;
+    if (n) this.reportUsage({ model: this.options.imageModel, kind: 'image', images: n });
+  }
+
+  reportUsage(u) {
+    try {
+      this.onUsage?.(u);
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   imageBody(o) {
@@ -174,10 +204,7 @@ export class MuseClient {
       if (retryable && attempt < this.options.maxRetries) {
         attempt++;
         const retryAfter = Number(res.headers.get('retry-after'));
-        await sleep(
-          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * 2 ** (attempt - 1),
-          signal,
-        );
+        await sleep(retryDelay(attempt, retryAfter), signal);
         continue;
       }
       const e = json?.error ?? {};
@@ -214,6 +241,16 @@ export function base64ToBlob(b64, mime) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type: mime });
+}
+
+/**
+ * Wait before retry `attempt` (1-based): the server's Retry-After (seconds) when given,
+ * otherwise exponential backoff (1.5 s, 3 s, …). Random jitter (up to +50%) keeps parallel
+ * calls that hit a 429 together from all retrying at the same moment.
+ */
+export function retryDelay(attempt, retryAfter, random = Math.random) {
+  const base = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * 2 ** (attempt - 1);
+  return Math.round(base * (1 + 0.5 * random()));
 }
 
 function isNetworkError(err) {

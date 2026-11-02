@@ -133,6 +133,8 @@
  * @property {ReskinSlotResult[]} slots
  * @property {number} recoloredMaterials Materials tinted instead of textured (no UVs could be made).
  * @property {number} durationMs
+ * @property {{ reskin: object, session: object, reskinCost: number, sessionCost: number, text: string }} [usage]
+ *   Muse usage so far for this reskin (suggestion + paint) and the session, with cost estimates in dollars.
  */
 
 /**

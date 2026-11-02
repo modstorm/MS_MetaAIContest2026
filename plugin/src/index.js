@@ -9,6 +9,19 @@ export {
   MUSE_VISION_MODEL,
 } from './muse/MuseClient.js';
 
+export {
+  MUSE_PRICES,
+  MUSE_WONDER_MODEL,
+  priceFor,
+  emptyUsage,
+  addUsage,
+  usageCost,
+  unpriced,
+  formatUsage,
+  formatTokens,
+  formatDollars,
+} from './muse/pricing.js';
+
 export * as prompts from './muse/prompts.js';
 
 export { MuseProvider } from './providers/MuseProvider.js';

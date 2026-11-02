@@ -27,6 +27,7 @@ import { canvasToDataUrl, fitSize, museSizeFor, resizeCanvas } from '../texture/
  *   uploadMaxSize?: number,
  *   reasoningStrength?: 'low' | 'high',
  *   disableSearchTools?: boolean,
+ *   adviceModel?: string,
  * }} MuseProviderOptions
  *
  * fast (default true): turn off Muse's web / image search and shell tools, use low
@@ -35,6 +36,9 @@ import { canvasToDataUrl, fitSize, museSizeFor, resizeCanvas } from '../texture/
  * aiAuxMaps (default false): also ask Muse to repaint normal / roughness maps
  *   (2 extra image calls per texture). Otherwise they are derived locally.
  * uploadMaxSize: longest side of images uploaded to Muse. Default 1024 (fast) / 1536.
+ * adviceModel: chat model for the art-director steps (suggest a prompt, review the result).
+ *   Default: the vision model (muse-spark-1.3). 'muse-wonder-1.0' (Preview) reasons more but
+ *   costs about 3x as much per token. If it rejects a request, that step falls back to Spark.
  */
 
 /** Texture provider backed by Meta Muse: muse-spark reads the layout, muse-image paints. */
@@ -58,6 +62,8 @@ export class MuseProvider {
   }
 
   reskinAuxMap;
+  /** Optional hook for notices the host should show (e.g. a model fallback): (message) => void. */
+  onNotice = null;
 
   get fast() {
     return this.opts.fast ?? true;
@@ -66,6 +72,37 @@ export class MuseProvider {
   /** Turn fast mode on or off. */
   setFast(on) {
     this.opts = { ...this.opts, fast: on };
+  }
+
+  /** Chat model for the suggest and review steps (default: the vision model, Muse Spark). */
+  get adviceModel() {
+    return this.opts.adviceModel || this.client.options.visionModel;
+  }
+
+  /** Pick the suggest/review model, e.g. 'muse-wonder-1.0'. Empty → Muse Spark. */
+  setAdviceModel(model) {
+    this.opts = { ...this.opts, adviceModel: model || undefined };
+    this.adviceRejected = false;
+  }
+
+  /**
+   * Chat call for the art-director steps, on the advice model. If a non-default model
+   * (Muse Wonder) rejects the request (bad request, unknown model, no access), it is
+   * retried on Muse Spark and Spark is used for the rest of the session.
+   */
+  async adviceChat(args) {
+    const spark = this.client.options.visionModel;
+    const model = this.adviceRejected ? spark : this.adviceModel;
+    if (model === spark) return this.client.chat(args);
+    try {
+      return await this.client.chat({ ...args, model });
+    } catch (err) {
+      if (!(err instanceof MuseApiError) || ![400, 403, 404, 422].includes(err.status) || isContentPolicyError(err))
+        throw err;
+      this.adviceRejected = true;
+      this.onNotice?.(`${model} rejected the request (${err.status}: ${err.message}); using ${spark} instead.`);
+      return this.client.chat({ ...args, model: spark });
+    }
   }
 
   toUpload(c, kind = 'photo') {
@@ -153,7 +190,7 @@ export class MuseProvider {
     if (req.idSheet) images.push(this.toUploadSized(req.idSheet, this.fast ? 864 : 1152));
     for (const a of req.atlases.slice(0, 4)) images.push(this.toUploadSized(a.atlasWithUvs, this.fast ? 768 : 1024));
     const ask = (strict) =>
-      this.client.chat({
+      this.adviceChat({
         reasoningEffort: this.fast ? 'low' : 'medium',
         signal: req.signal,
         messages: [
@@ -193,7 +230,7 @@ export class MuseProvider {
   /** Art-director step reusing an earlier analysis of the same model (text only, no images). */
   async suggestFromAnalysis(req) {
     const ask = (strict) =>
-      this.client.chat({
+      this.adviceChat({
         reasoningEffort: this.fast ? 'low' : 'medium',
         signal: req.signal,
         messages: [
@@ -221,7 +258,7 @@ export class MuseProvider {
    * same angles as an ID map) and lists problems per texture area.
    */
   async reviewResult(req) {
-    const text = await this.client.chat({
+    const text = await this.adviceChat({
       reasoningEffort: this.fast ? 'low' : 'medium',
       signal: req.signal,
       messages: [

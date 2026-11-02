@@ -224,6 +224,7 @@ try {
                 },
               },
             ],
+            usage: { prompt_tokens: 30000, completion_tokens: 8000, total_tokens: 38000 },
           }
         : { created: 1, data: [{ b64_json: png }], output_format: 'png', background: 'opaque' };
       await route.fulfill({
@@ -260,6 +261,9 @@ try {
     const log = await page.textContent('#log');
     assert.match(log, /⏱ paint atlas \(robot_atlas\)/);
     assert.match(log, /⏱ read layout \(robot_atlas\)/);
+    // Cost badge: 1 image ($0.01) + 30k in / 8k out Spark tokens ($0.0375 + $0.034).
+    assert.equal(await page.textContent('#cost-reskin'), '1 image + 38k tokens ≈ $0.08');
+    assert.match(log, /This reskin so far: 1 image \+ 38k tokens/);
 
     // Second prompt on the same model: layout reading is cached, so only the paint call is made.
     const before = calls.length;
@@ -267,6 +271,9 @@ try {
     await reskinViaPopup(page, 'mossy ancient stone ruin', { paintMode: 'atlas' });
     const second = calls.slice(before).map((c) => c.url.split('/v1/')[1]);
     assert.deepEqual(second, ['images/edits']);
+    // A new prompt starts its own tally; the session total keeps both.
+    assert.equal(await page.textContent('#cost-reskin'), '1 image ≈ $0.01');
+    assert.equal(await page.textContent('#cost-session'), 'Session $0.09');
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${outDir}04-reskinned-muse-mock.png` });
     await exportAndCheck(page, 'muse-mock.glb');

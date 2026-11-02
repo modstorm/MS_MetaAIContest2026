@@ -53,6 +53,11 @@
             </p>
           </div>
           <div id="status" class="status"></div>
+          <div id="cost" class="cost" hidden>
+            <span class="cost-label">Muse cost</span> <span id="cost-reskin"></span>
+            <span id="cost-session" class="muted"></span>
+            <button id="cost-reset" type="button" class="icon small" title="Reset the cost counter">↺</button>
+          </div>
           <div id="compare" class="compare" hidden>
             <div id="compare-handle" class="compare-handle"><span>⇆</span></div>
             <span class="compare-label left">Original</span>
@@ -289,6 +294,12 @@
         />
         <p class="muted" id="key-source"></p>
         <label><input id="set-proxy" type="checkbox" /> Send requests through the local dev proxy (/api/muse)</label>
+        <label for="set-advice">Model for the suggest and review steps</label>
+        <select id="set-advice">
+          <option value="">Muse Spark (muse-spark-1.3, default)</option>
+          <option value="muse-wonder-1.0">Muse Wonder (muse-wonder-1.0, Preview, about 3x the token cost)</option>
+        </select>
+        <p class="muted">Painting always uses muse-image-1.0. If Wonder rejects a request, that step uses Spark.</p>
         <div class="row">
           <span class="spacer"></span>
           <button value="cancel">Close</button>

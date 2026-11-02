@@ -27,6 +27,7 @@ import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass }
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { MuseProvider } from './providers/MuseProvider.js';
 import { isContentPolicyError } from './muse/MuseClient.js';
+import { addUsage, emptyUsage, formatUsage, usageCost } from './muse/pricing.js';
 import {
   applyDetailPreserve,
   accentColor,
@@ -86,6 +87,8 @@ import {
  *   request         { url, method, request, status, ms, error? }   every raw Muse call (images shortened)
  *   probe           { name, description, ok, ms, error? }      one per filter-probe test (postProbe)
  *   timing          { step, slotId, slotName, ms, ok, provider }   one per model call
+ *   usage           { reskin, session, reskinCost, sessionCost, text, last? }   Muse usage + cost estimate
+ *                   (reskin = since the last new suggest/prompt, incl. its review & fix; see muse/pricing.js)
  *   warning         { message }
  *   error           { error: Error, stage }
  *
@@ -140,6 +143,8 @@ export class ReskinPlugin {
    */
   lessons = {};
   suggestionCache = new Map();
+  /** Muse usage: `reskin` restarts with each new suggestion or prompt; `session` never resets. */
+  usage = { reskin: emptyUsage(), session: emptyUsage() };
   busy = false;
   abort = null;
 
@@ -186,6 +191,50 @@ export class ReskinPlugin {
     if (provider?.client && 'onExchange' in provider.client) {
       provider.client.onExchange = (info) => this.emit('request', info);
     }
+    if (provider?.client && 'onUsage' in provider.client) {
+      provider.client.onUsage = (u) => this.recordUsage(u);
+    }
+    if (provider && 'onNotice' in provider) provider.onNotice = (message) => this.emit('warning', { message });
+  }
+
+  /**
+   * Chat model for the suggest and review steps: '' / undefined = Muse Spark (default),
+   * 'muse-wonder-1.0' = Muse Wonder (Preview, about 3x the token price).
+   */
+  setAdviceModel(model) {
+    this.provider?.setAdviceModel?.(model);
+  }
+
+  // ---------------------------------------------------------------- usage
+
+  /** Current Muse usage and estimated cost: { reskin, session, reskinCost, sessionCost, text }. */
+  getUsage() {
+    const { reskin, session } = this.usage;
+    return {
+      reskin,
+      session,
+      reskinCost: usageCost(reskin),
+      sessionCost: usageCost(session),
+      text: formatUsage(reskin),
+    };
+  }
+
+  recordUsage(u) {
+    addUsage(this.usage.reskin, u);
+    addUsage(this.usage.session, u);
+    this.emit('usage', { ...this.getUsage(), last: u });
+  }
+
+  /** Clears both tallies (reskin and session). */
+  resetUsage() {
+    this.usage = { reskin: emptyUsage(), session: emptyUsage() };
+    this.emit('usage', this.getUsage());
+  }
+
+  /** Starts a new per-reskin tally (the session total keeps counting). */
+  startReskinUsage() {
+    this.usage.reskin = emptyUsage();
+    this.emit('usage', this.getUsage());
   }
 
   getProvider() {
@@ -371,6 +420,8 @@ export class ReskinPlugin {
     if (!this.canSuggest) throw new Error(`${this.provider.name} cannot suggest prompts`);
     theme = theme.trim();
     if (!theme) throw new Error('Prompt is empty');
+    this.startReskinUsage(); // a suggestion starts a new reskin; the paint that follows adds to it
+    this.usageAfterSuggest = true;
     const cached = this.suggestionCache.get(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`);
     if (cached) {
       this.emit('suggestion', cached);
@@ -519,6 +570,9 @@ export class ReskinPlugin {
     if (!this.model || !this.layout) throw new Error('Post a model before posting a prompt');
     const theme = prompt.trim();
     if (!theme) throw new Error('Prompt is empty');
+    // A new reskin starts its own cost tally, unless it follows its suggestion or is a review fix.
+    if (!opts.fixes && !(this.usageAfterSuggest && opts.suggestion)) this.startReskinUsage();
+    if (!opts.fixes) this.usageAfterSuggest = false;
 
     this.busy = true;
     this.abort = new AbortController();
@@ -625,6 +679,7 @@ export class ReskinPlugin {
         recoloredMaterials: recolored,
         durationMs: performance.now() - started,
         variations: entries.map(({ id, variant, thumb }) => ({ id, variant, thumb })),
+        usage: this.getUsage(),
       };
       this.lastResult = result;
       this.lastPrompt = theme;
@@ -632,7 +687,11 @@ export class ReskinPlugin {
       this.lastRun = { theme, opts: runOpts };
       this.emit('progress', { stage: 'done', message: 'Done', progress: 1 });
       this.emit('reskinned', result);
-      this.status('idle', `Reskinned ${results.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s`);
+      this.status(
+        'idle',
+        `Reskinned ${results.length} texture(s) in ${(result.durationMs / 1000).toFixed(1)}s` +
+          (result.usage.reskin.calls ? ` · ${result.usage.text}` : ''),
+      );
       return result;
     } catch (err) {
       this.fail(err, 'reskin');
