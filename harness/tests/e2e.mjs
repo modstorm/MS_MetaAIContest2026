@@ -421,7 +421,7 @@ try {
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
-    assert.ok(await page.isVisible('#suggest-dialog[open]'), 'suggestion opens as a centered popup');
+    assert.ok(await page.isVisible('#prompt-dialog[open]'), 'the same popup expands with the suggestion');
     // Nothing painted yet: only the art-director call was made, with the 6-view sheet + 1 atlas.
     assert.deepEqual(
       calls.map((c) => c.url.split('/v1/')[1]),
@@ -434,14 +434,14 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
-    assert.equal(await page.textContent('#run-go'), 'Paint');
+    assert.equal(await page.textContent('#prompt-go'), 'Paint');
     const sheet = await page.$eval('#sugg-sheet canvas', (c) => [c.width, c.height]);
     assert.ok(sheet[0] > sheet[1], 'contact sheet is 3x2');
     await page.screenshot({ path: `${outDir}05-muse-suggestion.png` });
 
     await page.fill('#sugg-prompt', suggestion.prompt + ' Add tiny snowflakes.');
-    await page.click('#run-go');
-    assert.ok(!(await page.isVisible('#suggest-dialog')), 'popup closes as soon as painting starts');
+    await page.click('#prompt-go');
+    assert.ok(!(await page.isVisible('#prompt-dialog')), 'popup closes as soon as painting starts');
     await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
     const urls = calls.map((c) => c.url.split('/v1/')[1]);
     assert.deepEqual(urls, ['chat/completions', 'images/edits']); // region plan reused, no extra layout reading
@@ -452,9 +452,10 @@ try {
     // Reskin again reopens the same suggestion with the last prompt: no new Muse call.
     const n1 = calls.length;
     await page.click('#btn-reskin');
-    await page.waitForSelector('#suggest-dialog[open]');
+    await page.waitForSelector('#prompt-dialog[open]');
     assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
+    assert.equal(await page.textContent('#prompt-go'), 'Paint');
     assert.equal(calls.length, n1, 'no Muse call to reopen the suggestion');
     // "Use my prompt instead" switches the box to the typed theme and back, keeping edits.
     await page.check('#sugg-mine');
@@ -465,22 +466,28 @@ try {
     assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
     await page.check('#sugg-mine');
     assert.equal(await page.inputValue('#sugg-prompt'), 'ice and snow');
-    // New theme… goes back to the prompt popup.
-    await page.click('#sugg-new');
-    await page.waitForSelector('#prompt-dialog[open]');
-    assert.ok(!(await page.isVisible('#suggest-dialog')));
+    await page.uncheck('#sugg-mine');
+    // A new theme in the same popup: Muse only rewrites the prompt (one text call, no renders).
+    await page.fill('#prompt-text', 'lava');
+    assert.equal(await page.textContent('#prompt-go'), "Update Muse's prompt");
+    await page.click('#prompt-go');
+    await page.waitForFunction(() => document.querySelector('#prompt-go').textContent === 'Paint');
+    assert.equal(calls.length, n1 + 1, 'one Muse call for the new theme');
+    assert.equal(calls[n1].body.messages[0].content.filter((p) => p.type === 'image_url').length, 0, 'no images');
+    assert.match(calls[n1].body.messages[0].content[0].text, /already studied/);
+    assert.ok(await page.isVisible('#prompt-dialog[open]'));
     await page.click('#prompt-cancel');
     // A new theme on the same model reuses what Muse saw: one text-only call, no renders.
     const n0 = calls.length;
     const again = await page.evaluate(async () => {
-      const s = await window.reskin.plugin.postSuggest('lava');
+      const s = await window.reskin.plugin.postSuggest('mossy stone');
       return { subject: s.subject, regions: Object.values(s.plans).map((p) => p.regions.length) };
     });
     assert.equal(calls.length, n0 + 1);
     const reuseBody = calls[n0].body.messages[0].content;
     assert.equal(reuseBody.filter((p) => p.type === 'image_url').length, 0, 'no images on reuse');
     assert.match(reuseBody[0].text, /already studied/);
-    assert.match(reuseBody[0].text, /"lava"/);
+    assert.match(reuseBody[0].text, /"mossy stone"/);
     assert.equal(again.subject, suggestion.subject);
     await page.context().close();
   });
@@ -499,11 +506,14 @@ try {
     await page.waitForSelector('#prompt-dialog[open]');
     await page.fill('#prompt-text', 'gold armor');
     await page.click('#prompt-go');
+    // Muse's review fails inside the popup: the message shows there and the popup stays open.
     await page.waitForFunction(
-      () => /Invalid API key/.test(document.querySelector('#err-text')?.textContent ?? ''),
+      () => /Invalid API key/.test(document.querySelector('#sugg-status')?.textContent ?? ''),
       null,
       { timeout: 30_000 },
     );
+    assert.ok(await page.isVisible('#prompt-dialog[open]'));
+    assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
     await page.context().close();
   });
 
