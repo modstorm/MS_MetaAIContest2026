@@ -451,3 +451,66 @@ export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
   m.name = 'Building';
   return exportGLB(m);
 }
+
+/**
+ * Test asset for the vehicle rule: one 512² atlas shared by a body, a "Headlight_L", a
+ * "TailLight_R" and a "Wheel_FL" (tread = cylinder side, sidewalls = the two caps).
+ * Atlas (pixels): body 0-512 × 0-256 blue; headlight 0-128 × 256-384 yellow; taillight
+ * 128-256 × 256-384 red; tread 0-256 × 384-512 striped grey; sidewalls 256-384 / 384-512
+ * × 384-512 mid grey.
+ */
+export async function buildVehicleTestGlb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2050c0';
+  g.fillRect(0, 0, 512, 256);
+  g.fillStyle = '#ffe040';
+  g.fillRect(0, 256, 128, 128);
+  g.fillStyle = '#e02020';
+  g.fillRect(128, 256, 128, 128);
+  g.fillStyle = '#303030';
+  g.fillRect(0, 384, 256, 128);
+  g.fillStyle = '#b0b0b0';
+  for (let x = 8; x < 256; x += 24) g.fillRect(x, 384, 8, 128);
+  g.fillStyle = '#808080';
+  g.fillRect(256, 384, 256, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, name: 'car' });
+  const fit = (geom, [u0, v0, u1, v1], pick = () => true) => {
+    const uv = geom.getAttribute('uv');
+    for (let i = 0; i < uv.count; i++) {
+      if (!pick(i)) continue;
+      uv.setXY(i, u0 + uv.getX(i) * (u1 - u0), v0 + (1 - uv.getY(i)) * (v1 - v0));
+    }
+  };
+  const root = new THREE.Group();
+  const add = (geom, name, pos) => {
+    const m = new THREE.Mesh(geom, mat);
+    m.name = name;
+    m.position.set(...pos);
+    root.add(m);
+    return m;
+  };
+  const body = new THREE.BoxGeometry(2, 0.6, 1);
+  fit(body, [0.02, 0.02, 0.98, 0.48]);
+  add(body, 'Body', [0, 0.6, 0]);
+  const head = new THREE.BoxGeometry(0.1, 0.15, 0.3);
+  fit(head, [0.02, 0.52, 0.23, 0.73]);
+  add(head, 'Headlight_L', [1.02, 0.65, 0.3]);
+  const tail = new THREE.BoxGeometry(0.1, 0.15, 0.3);
+  fit(tail, [0.27, 0.52, 0.48, 0.73]);
+  add(tail, 'TailLight_R', [-1.02, 0.65, 0.3]);
+  // Wheel: axle along Z (the car's side axis here is Z: the wheel faces ±Z).
+  const wheel = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 24);
+  const n = wheel.getAttribute('normal');
+  const isCap = (i, s) => Math.abs(n.getY(i)) > 0.9 && Math.sign(n.getY(i)) === s;
+  fit(wheel, [0.02, 0.77, 0.48, 0.98], (i) => Math.abs(n.getY(i)) <= 0.9);
+  fit(wheel, [0.52, 0.77, 0.73, 0.98], (i) => isCap(i, 1));
+  fit(wheel, [0.77, 0.77, 0.98, 0.98], (i) => isCap(i, -1));
+  const w = add(wheel, 'Wheel_FL', [0.7, 0.3, 0.55]);
+  w.rotation.x = Math.PI / 2;
+  return exportGLB(root);
+}

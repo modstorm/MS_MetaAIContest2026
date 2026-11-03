@@ -101,3 +101,18 @@ describe('barrels are props', () => {
     expect(normalizeAssetClass('building')).toBe('building');
   });
 });
+
+describe('vehicle rule in prompts', () => {
+  it('puts the lights / tread rule right after the theme, in both paint modes', async () => {
+    const { reskinAtlasPrompt, reskinPartPrompt } = await import('../src/muse/prompts.js');
+    const { assetClassRules } = await import('../src/assetClasses.js');
+    const rules = assetClassRules('vehicle');
+    expect(rules[0]).toMatch(/^MOST IMPORTANT RULE: DO NOT CHANGE THE LIGHTS OR THE TYRE TREADS/);
+    expect(rules[0]).toMatch(/tail light/);
+    const atlas = reskinAtlasPrompt('lava', null, rules.join('\n')).split('\n');
+    expect(atlas.findIndex((l) => l.startsWith('MOST IMPORTANT RULE'))).toBe(2);
+    const part = reskinPartPrompt('lava', { partName: 'Body', classRules: rules }).split('\n');
+    expect(part.findIndex((l) => l.startsWith('MOST IMPORTANT RULE'))).toBeLessThan(4);
+    expect(part.filter((l) => /MOST IMPORTANT RULE/.test(l))).toHaveLength(1);
+  });
+});

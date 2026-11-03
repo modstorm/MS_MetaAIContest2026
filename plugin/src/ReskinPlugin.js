@@ -65,6 +65,7 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
+import { keptShare, vehicleKeepTriangles } from './analysis/keepAreas.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -362,6 +363,8 @@ export class ReskinPlugin {
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.topBottomNoted = null;
+      this.keepCache = null;
+      this.keepNoted = null;
       this.lastPartJobs.clear();
       this.regionCache.clear();
       this.locked.clear();
@@ -1077,6 +1080,8 @@ export class ReskinPlugin {
     }
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
+    // Areas that must never change (vehicle lights, tyre treads) get their original pixels back.
+    if (atlasMode && original) this.restoreKept(slot, baseColor, original, opts);
     if (islandMap && (opts.edgePadding ?? 12) > 0) {
       // Edge padding: grow island colors into the gaps so seams never sample dark pixels.
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
@@ -1782,6 +1787,7 @@ export class ReskinPlugin {
     const prev = opts.fixes || locked.size ? this.lastPartJobs.get(slot.id) : null;
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
+    const keepTris = this.keepTriangles(slot, opts);
     // Strip layouts are only read for limbs (sleeves, trouser legs); torso, hands and shoes
     // are not laid out as clean wrap-around strips.
     const STRIP_ZONES = new Set(['arms', 'legs']);
@@ -1796,7 +1802,11 @@ export class ReskinPlugin {
       // Body zones: which way each vertical strip faces (front / back / outer / inner).
       if (anatForStrips && STRIP_ZONES.has(part.zone))
         job.sides = drawFacingMap(slot, part, W, H, { grow, limbCenterX: anatForStrips.cx }).canvas;
-      if (locked.has(part.name)) {
+      // Vehicle lights (and areas that are all tyre tread) are never repainted.
+      if (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) {
+        job.keep = true;
+        job.protected = true;
+      } else if (locked.has(part.name)) {
         const old = prevByName.get(part.name);
         if (old) job.reuse = old.painted;
         else job.keep = true;
@@ -2791,6 +2801,57 @@ export class ReskinPlugin {
    * in clearly separate groups (for example a torso and two sleeves). At most 12 in total;
    * the smallest parts are left whole if there are more.
    */
+  /**
+   * Triangles of `slot` that must keep their original pixels (see keepAreas.js), or null.
+   * Vehicles: head and tail lights and tyre treads. opts.keepVehicleParts: false turns it off.
+   */
+  keepTriangles(slot, opts = {}) {
+    if (opts.keepVehicleParts === false) return null;
+    const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    if (cls !== 'vehicle') return null;
+    const zones = this.samZonesActive ? (this.samZones.get(slot.id) ?? []) : [];
+    this.keepCache ??= new Map();
+    const key = `${slot.id}|${zones.length}`;
+    if (!this.keepCache.has(key)) this.keepCache.set(key, vehicleKeepTriangles(slot, { zones }));
+    return this.keepCache.get(key);
+  }
+
+  /** Puts the original pixels back inside the kept triangles. Changes `baseColor` in place. */
+  restoreKept(slot, baseColor, original, opts) {
+    const keep = this.keepTriangles(slot, opts);
+    if (!keep) return;
+    const W = baseColor.width,
+      H = baseColor.height;
+    const layer = drawUvGuide(slot, W, H, {
+      meshes: [...keep.tris.keys()],
+      tris: keep.tris,
+      wireframe: true,
+      lineColor: '#ffffff',
+      lineWidth: 2,
+      fillColor: '#ffffff',
+      background: null,
+    });
+    const ld = ctx2d(layer).getImageData(0, 0, W, H).data;
+    const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
+    const g = ctx2d(baseColor);
+    const bd = g.getImageData(0, 0, W, H);
+    let n = 0;
+    for (let i = 0; i < ld.length; i += 4) {
+      if (ld[i + 3] < 128) continue;
+      bd.data[i] = od[i];
+      bd.data[i + 1] = od[i + 1];
+      bd.data[i + 2] = od[i + 2];
+      n++;
+    }
+    g.putImageData(bd, 0, 0);
+    this.keepNoted ??= new Set();
+    if (n && !this.keepNoted.has(slot.id)) {
+      this.keepNoted.add(slot.id);
+      const what = [keep.headlights ? 'lights' : '', keep.treads ? 'tyre treads' : ''].filter(Boolean).join(' and ');
+      this.emit('warning', { message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).` });
+    }
+  }
+
   /**
    * One simple roofing surface for `theme` (asphalt, shingles, thatch…, picked by Muse to
    * fit it), as a seamless canvas. Cached per slot and theme, so variations share it.

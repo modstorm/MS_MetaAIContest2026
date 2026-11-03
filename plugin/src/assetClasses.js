@@ -131,8 +131,9 @@ export const ASSET_CLASSES = [
     keywords:
       /\b(vehicle|car|truck|bus|tank|ship|boat|plane|aircraft|jet|spaceship|bike|motorcycle|train|kart|wheels?|tires?|hull|wing)\b/i,
     rules: [
+      'MOST IMPORTANT RULE: DO NOT CHANGE THE LIGHTS OR THE TYRE TREADS. Every headlight and tail light (also brake, fog and indicator lights) and the tread of every tyre (the rubber running surface that touches the road) must stay EXACTLY as they are in the input image: same colors, same details, same position. Do not paint over them, recolor them or add anything to them. Only the tyre sidewalls and the wheel rims may be repainted in the theme.',
       'This is a vehicle. Paint body panels with continuous paint; keep panel lines where they are.',
-      'Decals and stripes stay inside one panel. Windows stay glass (dark or reflective), lights stay lights, tires stay dark rubber.',
+      'Decals and stripes stay inside one panel. Windows stay glass (dark or reflective).',
       'No readable text, numbers or brand logos.',
       NO_SEAM_CROSSING,
     ],

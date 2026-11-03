@@ -1961,6 +1961,55 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'vehicle: lights and tyre treads keep their original pixels, sidewalls are painted (both modes)',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const out = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const mod = await import('/src/sampleModel.js');
+        const glb = await mod.buildVehicleTestGlb();
+        const mean = (c, x, y, w, h) => {
+          const k = c.width / 512;
+          const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+          const m = [0, 0, 0];
+          for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+          return m.map((v) => Math.round(v / (d.length / 4)));
+        };
+        const res = {};
+        for (const mode of ['auto', 'atlas']) {
+          await p.postModel(glb.slice(0), { name: 'vehicle-test' });
+          const notes = [];
+          const off = p.on('warning', (w) => notes.push(w.message));
+          const r = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: mode });
+          off();
+          const c = r.slots[0].canvas;
+          res[mode] = {
+            head: mean(c, 30, 280, 60, 60),
+            tail: mean(c, 160, 280, 60, 60),
+            tread: mean(c, 40, 410, 180, 80),
+            side: mean(c, 290, 410, 60, 80),
+            body: mean(c, 100, 60, 300, 120),
+            note: notes.some((n) => /kept the original lights and tyre treads/.test(n)),
+          };
+        }
+        return res;
+      });
+      const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+      for (const mode of ['auto', 'atlas']) {
+        const o = out[mode];
+        assert.ok(near(o.head, [255, 224, 64]), `${mode}: headlight changed ${o.head}`);
+        assert.ok(near(o.tail, [224, 32, 32]), `${mode}: taillight changed ${o.tail}`);
+        // Original tread: stripes of #303030 and #b0b0b0 (1/3 light).
+        assert.ok(near(o.tread, [91, 91, 91], 12), `${mode}: tread changed ${o.tread}`);
+        assert.ok(!near(o.side, [128, 128, 128], 10), `${mode}: sidewall not painted ${o.side}`);
+        assert.ok(!near(o.body, [32, 80, 192], 10), `${mode}: body not painted ${o.body}`);
+        assert.ok(o.note, `${mode}: no "kept" note`);
+      }
+      await page.context().close();
+    },
+  );
+
   console.log('Single textures (postTexture) and texture ids');
   await step('events carry the glTF texture and image index of the texture they replace', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
