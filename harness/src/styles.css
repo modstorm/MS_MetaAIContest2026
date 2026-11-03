@@ -854,3 +854,8 @@ button.on {
   border-top: 1px solid var(--line);
   z-index: 1;
 }
+
+/* Muse's suggestion popup: wider than the prompt popup, for the six-view sheet. */
+.suggest-dialog {
+  width: min(720px, 94vw);
+}

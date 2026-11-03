@@ -484,10 +484,31 @@ $('prompt-form').addEventListener('submit', (e) => {
 let pending = null;
 
 /** Muse's suggestion: the editable prompt at the top of the Run tab, the views and notes below. */
+const suggestDialog = $('suggest-dialog');
+let suggestionTaken = false; // Paint / Use my prompt closed the popup (not Close or Esc)
 function showSuggestionPanels(on) {
   $('suggestion').hidden = !on;
   $('suggestion-more').hidden = !on;
+  if (!on && suggestDialog.open) closeSuggestion(true);
 }
+function openSuggestion() {
+  suggestionTaken = false;
+  $('sugg-theme').textContent = $('run-theme').textContent;
+  if (!suggestDialog.open) suggestDialog.showModal();
+  $('sugg-prompt').focus();
+}
+function closeSuggestion(taken) {
+  suggestionTaken = taken;
+  suggestDialog.close();
+}
+// Close or Esc: drop the suggestion and the run, as the run panel's Close does.
+suggestDialog.addEventListener('close', () => {
+  if (suggestionTaken || plugin.isBusy) return;
+  pending = null;
+  showSuggestionPanels(false);
+  runDialog.close();
+});
+$('sugg-close').onclick = () => closeSuggestion(false);
 
 /** The run panel lives in the side panel's Run tab; its progress bar sits on the viewport. */
 function showRun() {
@@ -557,7 +578,7 @@ function showSuggestion(s) {
   showSuggestionPanels(true);
   $('run-title').textContent = 'Muse suggests';
   setRunButtons({ go: true });
-  $('sugg-prompt').focus();
+  openSuggestion();
 }
 
 let retryAction = null;
@@ -594,7 +615,7 @@ $('err-edit').onclick = () => {
   hideError();
   if (pending) {
     setRunButtons({ go: true });
-    $('sugg-prompt').focus();
+    openSuggestion();
   } else openPrompt();
 };
 $('err-skip').onclick = () => {
@@ -740,8 +761,15 @@ async function runSuggest(prompt) {
   }
 }
 
-$('run-go').onclick = () => runReskin($('sugg-prompt').value.trim() || promptText.value.trim(), pending);
-$('prompt-original').onclick = () => runReskin(promptText.value.trim(), pending);
+$('run-go').onclick = () => {
+  const text = $('sugg-prompt').value.trim() || promptText.value.trim();
+  closeSuggestion(true);
+  runReskin(text, pending);
+};
+$('prompt-original').onclick = () => {
+  closeSuggestion(true);
+  runReskin(promptText.value.trim(), pending);
+};
 
 // ------------------------------------------------------------------ filter probe
 function addProbeResult(r) {

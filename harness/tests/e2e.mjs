@@ -416,6 +416,7 @@ try {
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
+    assert.ok(await page.isVisible('#suggest-dialog[open]'), 'suggestion opens as a centered popup');
     // Nothing painted yet: only the art-director call was made, with the 6-view sheet + 1 atlas.
     assert.deepEqual(
       calls.map((c) => c.url.split('/v1/')[1]),
@@ -435,6 +436,7 @@ try {
 
     await page.fill('#sugg-prompt', suggestion.prompt + ' Add tiny snowflakes.');
     await page.click('#run-go');
+    assert.ok(!(await page.isVisible('#suggest-dialog')), 'popup closes as soon as painting starts');
     await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
     const urls = calls.map((c) => c.url.split('/v1/')[1]);
     assert.deepEqual(urls, ['chat/completions', 'images/edits']); // region plan reused, no extra layout reading

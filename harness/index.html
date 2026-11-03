@@ -96,22 +96,16 @@
             <dialog id="run-dialog" class="dialog run-panel">
               <h2 id="run-title">Painting</h2>
               <p class="muted" id="run-theme"></p>
-              <!-- Newest things first (variations, then the prompt and buttons), so nothing new sits below the scroll. -->
+              <!-- Newest things first, so nothing new sits below the scroll. Muse's suggestion opens in its own popup. -->
               <section id="variations" hidden>
                 <p>
                   <strong>Pick your favorite</strong> <span class="muted">(you can switch any time in History)</span>
                 </p>
                 <div id="variation-list" class="variation-list"></div>
               </section>
-              <section id="suggestion" class="suggestion" hidden>
-                <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
-                <textarea id="sugg-prompt" rows="5"></textarea>
-              </section>
               <div class="row run-buttons">
                 <span class="spacer"></span>
                 <button type="button" id="run-cancel">Stop</button>
-                <button type="button" id="prompt-original" hidden>Use my prompt</button>
-                <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
               </div>
               <div class="error-box" id="prompt-error" hidden>
                 <strong id="err-title">Something went wrong</strong>
@@ -123,16 +117,6 @@
                   <button type="button" id="err-probe">Run filter probe</button>
                 </div>
               </div>
-              <section id="suggestion-more" class="suggestion" hidden>
-                <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
-                <div id="sugg-parts" class="chips static"></div>
-                <p class="muted" id="sugg-tips"></p>
-                <div id="sugg-sheet" class="sheet"></div>
-                <details>
-                  <summary>Paint plan per texture region</summary>
-                  <ul id="sugg-regions" class="regions"></ul>
-                </details>
-              </section>
             </dialog>
             <div id="result-actions" class="row" hidden>
               <button type="button" id="btn-export-run" class="primary">Export GLB</button>
@@ -334,6 +318,32 @@
           <button type="submit" id="prompt-go" class="primary">Reskin</button>
         </div>
       </form>
+    </dialog>
+
+    <!-- Muse's suggestion: centered popup with the editable prompt; the buttons stay at the bottom. -->
+    <dialog id="suggest-dialog" class="dialog suggest-dialog">
+      <h2>Muse suggests</h2>
+      <p class="muted" id="sugg-theme"></p>
+      <section id="suggestion" class="suggestion" hidden>
+        <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
+        <textarea id="sugg-prompt" rows="5"></textarea>
+      </section>
+      <section id="suggestion-more" class="suggestion" hidden>
+        <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
+        <div id="sugg-parts" class="chips static"></div>
+        <p class="muted" id="sugg-tips"></p>
+        <div id="sugg-sheet" class="sheet"></div>
+        <details>
+          <summary>Paint plan per texture region</summary>
+          <ul id="sugg-regions" class="regions"></ul>
+        </details>
+      </section>
+      <div class="row dialog-foot">
+        <span class="spacer"></span>
+        <button type="button" id="sugg-close">Cancel</button>
+        <button type="button" id="prompt-original" hidden>Use my prompt</button>
+        <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
+      </div>
     </dialog>
 
     <dialog id="settings-dialog" class="dialog">
