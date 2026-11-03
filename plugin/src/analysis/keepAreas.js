@@ -501,7 +501,9 @@ export function vehicleKeepTriangles(
   }
   for (const z of zones) {
     const uz = userKeep.find((k) => z.zone === `keep: ${k.noun}`) ?? userMatch(z.zone);
-    if (uz) {
+    // "Don't paint the windows": a windows zone goes through the glass rule below, which keeps
+    // the glass but paints old body paint SAM put in it (the side mirrors).
+    if (uz && !GLASS_NAME.test(z.zone)) {
       let a = 0;
       for (const [mesh, use] of z.tris ?? []) {
         const src = srcs.get(mesh);

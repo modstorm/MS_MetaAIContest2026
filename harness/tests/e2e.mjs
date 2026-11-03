@@ -1684,40 +1684,51 @@ try {
 
   await step('a side mirror SAM takes for a window gets the new body paint; real glass stays', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    const out = await page.evaluate(async () => {
-      const p = window.reskin.plugin;
-      const mod = await import('/src/sampleModel.js');
-      await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L', windowPart: true }), {
-        name: 'mirror',
-      });
-      const slot = p.layout.slots.find((s) => s.texture);
-      const byName = (n) => slot.meshes.find((m) => m.name === n);
-      const all = (m) =>
-        new Uint8Array((m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3).fill(1);
-      // SAM's windows zone covers the mirror and the window (as on the real Porsche).
-      const tris = new Map([
-        [byName('Mirror_L'), all(byName('Mirror_L'))],
-        [byName('Window_Glass'), all(byName('Window_Glass'))],
-      ]);
-      p.keepZones.set(slot.id, [{ zone: 'windows', tris, share: 0.05, area: 1 }]);
-      const r = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas', keepSam: false });
-      const c = r.slots[0].canvas;
-      const mean = (x, y, w, h) => {
-        const k = c.width / 512;
-        const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
-        const m = [0, 0, 0];
-        for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
-        return m.map((v) => Math.round(v / (d.length / 4)));
-      };
-      return {
-        mirror: mean(290, 290, 60, 60),
-        window: mean(400, 270, 100, 100),
-        meshes: slot.meshes.map((m) => m.name),
-      };
-    });
-    const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
-    assert.ok(!near(out.mirror, [32, 80, 192], 30), `mirror kept its old body paint ${out.mirror} (${out.meshes})`);
-    assert.ok(near(out.window, [51, 68, 85], 12), `window changed ${out.window}`);
+    // Also with the user's "Do not paint the windows" (the zone then matches a user rule).
+    for (const rules of [null, 'Do not paint the windows']) {
+      const out = await page.evaluate(async (userRules) => {
+        const p = window.reskin.plugin;
+        const mod = await import('/src/sampleModel.js');
+        await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L', windowPart: true }), {
+          name: 'mirror',
+        });
+        const slot = p.layout.slots.find((s) => s.texture);
+        const byName = (n) => slot.meshes.find((m) => m.name === n);
+        const all = (m) =>
+          new Uint8Array((m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3).fill(1);
+        // SAM's windows zone covers the mirror and the window (as on the real Porsche).
+        const tris = new Map([
+          [byName('Mirror_L'), all(byName('Mirror_L'))],
+          [byName('Window_Glass'), all(byName('Window_Glass'))],
+        ]);
+        p.keepZones.set(slot.id, [{ zone: 'windows', tris, share: 0.05, area: 1 }]);
+        const r = await p.postPrompt('neon pink candy', {
+          assetClass: 'vehicle',
+          paintMode: 'atlas',
+          keepSam: false,
+          userRules,
+        });
+        const c = r.slots[0].canvas;
+        const mean = (x, y, w, h) => {
+          const k = c.width / 512;
+          const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+          const m = [0, 0, 0];
+          for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+          return m.map((v) => Math.round(v / (d.length / 4)));
+        };
+        return {
+          mirror: mean(290, 290, 60, 60),
+          window: mean(400, 270, 100, 100),
+          meshes: slot.meshes.map((m) => m.name),
+        };
+      }, rules);
+      const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+      assert.ok(
+        !near(out.mirror, [32, 80, 192], 30),
+        `${rules}: mirror kept its old body paint ${out.mirror} (${out.meshes})`,
+      );
+      assert.ok(near(out.window, [51, 68, 85], 12), `${rules}: window changed ${out.window}`);
+    }
     await page.context().close();
   });
 
