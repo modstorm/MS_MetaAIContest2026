@@ -22,9 +22,19 @@ const words = (s) =>
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[_\-.\d]+/g, ' ');
 
-function namesOf(mesh) {
+/** A mesh name that says nothing about the part (then its parent's name is used). */
+const GENERIC_NAME = /^\s*(mesh|object|primitive|node|geometry|group)?[\s_\-.\d]*$/i;
+
+/**
+ * Names that say what a mesh is: its own name and material names. The parent's name only
+ * counts when the mesh has no name of its own (a glTF mesh split into primitives), never
+ * for a named mesh: an editor may group a whole car under "car + wheel", and that must not
+ * make the body a wheel.
+ */
+export function namesOf(mesh) {
   const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  return [mesh.name, mesh.parent?.name, ...mats.map((m) => m?.name)].map(words).join(' | ');
+  const own = GENERIC_NAME.test(mesh.name ?? '') ? mesh.parent?.name : mesh.name;
+  return [own, ...mats.map((m) => m?.name)].map(words).join(' | ');
 }
 
 function vertexIndex(src, t, k) {
@@ -119,16 +129,22 @@ export function treadTriangles(mesh, src, use = null) {
  * "lights" zone) and tyre treads (wheel parts by name, or SAM's "wheels" zone).
  * @param {object} slot
  * @param {{ zones?: { zone: string, tris: Map<object, Uint8Array> }[] }} [o] SAM zones of this slot, if found.
- * @returns {{ tris: Map<object, Uint8Array>, headlights: number, treads: number } | null}
+ * @returns {{ tris: Map<object, Uint8Array>, lights: Map<object, Uint8Array>, headlights: number, treads: number } | null}
+ *   `tris` = everything kept, `lights` = the light part of it.
  */
 export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
   const tris = new Map();
+  const lights = new Map();
   let headlights = 0,
     treads = 0;
-  const add = (mesh, arr) => {
-    const cur = tris.get(mesh);
-    if (!cur) tris.set(mesh, arr);
+  const merge = (map, mesh, arr) => {
+    const cur = map.get(mesh);
+    if (!cur) map.set(mesh, Uint8Array.from(arr));
     else for (let t = 0; t < arr.length; t++) if (arr[t]) cur[t] = 1;
+  };
+  const add = (mesh, arr, isLight = false) => {
+    merge(tris, mesh, arr);
+    if (isLight) merge(lights, mesh, arr);
   };
   for (const mesh of slot.meshes) {
     const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
@@ -136,7 +152,7 @@ export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
     const n = triangleCount(src);
     const name = namesOf(mesh);
     if (HEADLIGHT_NAME.test(name)) {
-      add(mesh, new Uint8Array(n).fill(1));
+      add(mesh, new Uint8Array(n).fill(1), true);
       headlights += n;
       continue;
     }
@@ -155,7 +171,7 @@ export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
       const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
       if (!src) continue;
       if (z.zone === 'lights') {
-        add(mesh, Uint8Array.from(use));
+        add(mesh, use, true);
         headlights += use.reduce((s, v) => s + v, 0);
       } else {
         const tr = treadTriangles(mesh, src, use);
@@ -164,7 +180,7 @@ export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
       }
     }
   }
-  return headlights || treads ? { tris, headlights, treads } : null;
+  return headlights || treads ? { tris, lights, headlights, treads } : null;
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */

@@ -1607,9 +1607,22 @@ try {
     const res = await page.evaluate(async (bytes) => {
       const p = window.reskin.plugin;
       await p.postModel(new Uint8Array(bytes).buffer, { name: 'review-test' });
-      await p.postPrompt('steampunk', { useVisionPlanning: false, normalMaps: false, roughnessMaps: false });
+      const seen = [];
+      p.on('thinking', (t) => seen.push(t.step));
+      const painted = await p.postPrompt('steampunk', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+      });
       const r = await p.postReview({ passes: 1 });
-      return { repainted: r.passes[0].repainted, sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height] };
+      const brief = (list) => list.map((t) => ({ step: t.step, prompt: t.prompt, areas: t.areas, issues: t.issues }));
+      return {
+        repainted: r.passes[0].repainted,
+        sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height],
+        thinking: brief(painted.thinking),
+        reviewThinking: brief(r.thinking),
+        seen,
+      };
     }, glb);
     assert.equal(chats.length, 1);
     assert.equal(areaSplits.length, 1, 'theme split per area once');
@@ -1623,6 +1636,20 @@ try {
     assert.match(chats[0].messages[0].content[0].text, /- Body = \w+/);
     assert.deepEqual(res.repainted, ['Body']);
     assert.equal(res.sheet[0], 1024); // 4 columns x 256
+    // "What Muse is thinking": the class, the paint plan and the exact prompts, then the review.
+    const steps = res.thinking.map((t) => t.step);
+    for (const s of ['assetClass', 'plan', 'ask', 'paint']) assert.ok(steps.includes(s), `thinking has ${s}: ${steps}`);
+    assert.ok(
+      res.thinking.find((t) => t.step === 'plan').areas.some((a) => a.name === 'Body' && a.action === 'paint'),
+      'plan lists the areas',
+    );
+    assert.ok(
+      res.thinking.some((t) => t.step === 'paint' && t.prompt === edits[0].prompt),
+      'paint entry carries the exact prompt sent',
+    );
+    const rv = res.reviewThinking.find((t) => t.step === 'review');
+    assert.equal(rv?.issues?.[0]?.area, 'Body');
+    assert.ok(res.seen.includes('review'), 'thinking events are emitted');
     assert.equal(edits.length, 3); // Head + Body, then Body again
     assert.match(edits[2].prompt, /"Body" area/);
     assert.match(edits[2].prompt, /Correction from a review of the last attempt: cover the whole body area/);
@@ -1992,9 +2019,17 @@ try {
             note: notes.some((n) => /kept the original lights and tyre treads/.test(n)),
           };
         }
+        // The car grouped under "Body + Wheel_FL" (as ModStorm does): the body is not a wheel.
+        await p.postModel(await mod.buildVehicleTestGlb({ groupName: 'Body + Wheel_FL' }), { name: 'grouped' });
+        const g = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+        res.grouped = {
+          body: mean(g.slots[0].canvas, 100, 60, 300, 120),
+          kept: g.thinking.filter((t) => t.step === 'kept').map((t) => t.treadTriangles),
+        };
         return res;
       });
       const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+      assert.ok(!near(out.grouped.body, [32, 80, 192], 10), `grouped car: body kept as tyre ${out.grouped.body}`);
       for (const mode of ['auto', 'atlas']) {
         const o = out[mode];
         assert.ok(near(o.head, [255, 224, 64]), `${mode}: headlight changed ${o.head}`);

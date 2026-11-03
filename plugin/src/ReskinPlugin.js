@@ -65,7 +65,15 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
-import { bestSquare, dominantColor, keptShare, nearColor, vehicleKeepTriangles } from './analysis/keepAreas.js';
+import {
+  WHEEL_NAME,
+  bestSquare,
+  dominantColor,
+  keptShare,
+  namesOf,
+  nearColor,
+  vehicleKeepTriangles,
+} from './analysis/keepAreas.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -204,8 +212,54 @@ export class ReskinPlugin {
   }
 
   emit(type, data) {
+    if (type === 'warning' && data?.message) this.think('note', data.message);
     for (const cb of this.listeners.get(type) ?? []) safeCall(cb, data);
     for (const cb of this.anyListeners) safeCall(cb, { type, data });
+  }
+
+  /** One Muse request as a thinking entry: the exact image prompt, or the question asked. */
+  thinkExchange(info) {
+    const req = info?.request ?? {};
+    const ok = !info.error && (info.status == null || info.status < 400);
+    const meta = { url: info.url, model: req.model, status: info.status, ms: Math.round(info.ms ?? 0), ok };
+    if (info.error) meta.error = String(info.error?.message ?? info.error).slice(0, 300);
+    if (/images\//.test(info.url ?? '') && typeof req.prompt === 'string') {
+      this.think('paint', `Asked Muse Image to paint${ok ? '' : ' (failed)'}`, { ...meta, prompt: req.prompt });
+      return;
+    }
+    const msgs = req.messages ?? req.input;
+    if (Array.isArray(msgs)) {
+      const textOf = (m) =>
+        typeof m?.content === 'string'
+          ? m.content
+          : (m?.content ?? [])
+              .map((c) => c?.text ?? '')
+              .filter(Boolean)
+              .join('\n');
+      const last = [...msgs].reverse().find((m) => m?.role === 'user');
+      const system = msgs.find((m) => m?.role === 'system');
+      this.think('ask', `Asked ${req.model ?? 'Muse'}${ok ? '' : ' (failed)'}`, {
+        ...meta,
+        question: textOf(last).slice(0, 8000),
+        instructions: system ? textOf(system).slice(0, 8000) : undefined,
+      });
+    }
+  }
+
+  /**
+   * What the plugin and Muse decided, step by step, for an editor to show ("what Muse is
+   * thinking"). Each entry is emitted as a 'thinking' event and collected in the result's
+   * `thinking` array (postSuggest, postPrompt, postReview). See types.js ThinkingEntry.
+   * @param {string} step 'identify' | 'assetClass' | 'zones' | 'plan' | 'ask' | 'paint' | 'kept' | 'review' | 'note'
+   * @param {string} text one readable line
+   * @param {object} [data] details for that step
+   */
+  think(step, text, data = {}) {
+    const entry = { step, text, at: Date.now(), ...data };
+    (this.thinkingLog ??= []).push(entry);
+    if (this.thinkingLog.length > 500) this.thinkingLog.shift();
+    for (const cb of this.listeners.get('thinking') ?? []) safeCall(cb, entry);
+    for (const cb of this.anyListeners) safeCall(cb, { type: 'thinking', data: entry });
   }
 
   status(state, message) {
@@ -218,7 +272,10 @@ export class ReskinPlugin {
     this.provider = provider;
     // Surface every raw model request (images shortened) as a `request` event, for debugging.
     if (provider?.client && 'onExchange' in provider.client) {
-      provider.client.onExchange = (info) => this.emit('request', info);
+      provider.client.onExchange = (info) => {
+        this.emit('request', info);
+        this.thinkExchange(info);
+      };
     }
     if (provider?.client && 'onUsage' in provider.client) {
       provider.client.onUsage = (u) => this.recordUsage(u);
@@ -520,6 +577,7 @@ export class ReskinPlugin {
     if (!theme) throw new Error('Prompt is empty');
     this.startReskinUsage(); // a suggestion starts a new reskin; the paint that follows adds to it
     this.usageAfterSuggest = true;
+    const thinkStart = (this.thinkingLog ??= []).length;
     const cached = this.suggestionCache.get(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`);
     if (cached) {
       this.emit('suggestion', cached);
@@ -651,6 +709,14 @@ export class ReskinPlugin {
       const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, idSheet, views };
       this.suggestionCache.set(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`, suggestion);
       this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
+      this.think('identify', `Muse sees: ${suggestion.subject || 'unknown object'}`, {
+        subject: suggestion.subject,
+        assetClass: suggestion.assetClass,
+        prompt: suggestion.prompt,
+        parts: suggestion.parts,
+        plans: suggestion.plans,
+      });
+      suggestion.thinking = this.thinkingLog.slice(thinkStart);
       this.emit('suggestion', suggestion);
       this.status('idle', `Muse sees: ${suggestion.subject || 'unknown object'}`);
       return suggestion;
@@ -673,6 +739,7 @@ export class ReskinPlugin {
     this.guard();
     if (!this.model || !this.layout) throw new Error('Post a model before posting a prompt');
     const theme = prompt.trim();
+    const thinkStart = (this.thinkingLog ??= []).length;
     if (!theme) throw new Error('Prompt is empty');
     // A new reskin starts its own cost tally, unless it follows its suggestion or is a review fix.
     if (!opts.fixes && !(this.usageAfterSuggest && opts.suggestion)) this.startReskinUsage();
@@ -693,7 +760,7 @@ export class ReskinPlugin {
       if (opts.imageReasoning !== undefined) this.provider.setImageReasoning?.(opts.imageReasoning);
       this.samOff = false;
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
-      opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
+      opts = { ...opts, assetClassGiven: opts.assetClass, assetClass: this.resolveAssetClass(opts) };
       // Start from the original look every time, so prompts don't compound. A retry of
       // some slots (opts.slotIds) only resets those; the others keep their paint.
       this.restoreSnapshots(
@@ -703,6 +770,27 @@ export class ReskinPlugin {
 
       this.areaClass = opts.assetClass;
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
+      {
+        const given = opts.assetClassGiven;
+        const source =
+          given && given !== 'auto'
+            ? 'set by the editor'
+            : normalizeAssetClass(opts.suggestion?.assetClass)
+              ? 'Muse identified it'
+              : 'guessed from names';
+        this.think(
+          'assetClass',
+          `Painting it as ${getAssetClass(opts.assetClass)?.label ?? opts.assetClass} (${source})`,
+          {
+            assetClass: opts.assetClass,
+            source,
+            rules: assetClassRules(opts.assetClass),
+            paintMode: opts.paintMode ?? 'auto',
+            detailPreserve: opts.detailPreserve ?? 0.35,
+            samZones: this.samZonesActive,
+          },
+        );
+      }
 
       // SAM zones: found once per model (the model shows its original look here).
       if (opts.samZones !== undefined) this.setSamZones(opts.samZones);
@@ -809,6 +897,7 @@ export class ReskinPlugin {
         durationMs: performance.now() - started,
         variations: entries.map(({ id, variant, thumb }) => ({ id, variant, thumb })),
         usage: this.getUsage(),
+        thinking: this.thinkingLog.slice(thinkStart),
       };
       this.lastResult = result;
       this.lastPrompt = theme;
@@ -937,6 +1026,12 @@ export class ReskinPlugin {
               this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
             }
             this.emit('plan', { slotId: slot.id, plan });
+            this.think('plan', `"${slot.name}": one picture for the whole texture`, {
+              slotId: slot.id,
+              slotName: slot.name,
+              mode: 'atlas',
+              areas: (plan?.regions ?? []).map((r) => ({ name: r.name, action: 'paint', paint: r.description })),
+            });
           }
           report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
           raw = await this.toCanvas(
@@ -1724,6 +1819,10 @@ export class ReskinPlugin {
           : `SAM 3.1 found no usable zones (${images} SAM images ≈ ${formatDollars(cost)}); using the usual areas.`,
       });
       const summary = this.samZonesSummary();
+      this.think('zones', names.size ? `SAM found: ${[...names].join(', ')}` : 'SAM found no usable zones', {
+        zones: summary,
+        notSeen: missed,
+      });
       this.emit('zones', { slots: summary, sheet: res.sheet, found: res.found, images, cost });
       return summary;
     } catch (err) {
@@ -1826,6 +1925,29 @@ export class ReskinPlugin {
       this.emit('warning', {
         message: `"${slot.name}": ${turned.join(', ')} ${turned.length > 1 ? 'are' : 'is'} stored rotated or mirrored; painting upright and turning back.`,
       });
+    }
+    {
+      const zoneOf = (j) => j.part.zone ?? null;
+      const areas = jobs.map((j) => ({
+        name: j.part.name,
+        zone: zoneOf(j),
+        action: j.keep ? 'keep' : j.reuse ? 'reuse' : 'paint',
+        why: j.protected
+          ? 'vehicle rule: lights / tyre treads are never repainted'
+          : j.locked
+            ? 'locked by the user'
+            : j.reuse
+              ? 'not flagged by the review, so the last paint is reused'
+              : j.note
+                ? j.note
+                : undefined,
+        mergedFrom: j.part.mergedFrom,
+      }));
+      this.think(
+        'plan',
+        `"${slot.name}": ${areas.length} area(s): ${areas.map((a) => `${a.name}${a.action === 'paint' ? '' : ` (${a.action})`}`).join(', ')}`,
+        { slotId: slot.id, slotName: slot.name, mode: 'parts', areas },
+      );
     }
     this.emit('regions', {
       slotId: slot.id,
@@ -2680,6 +2802,7 @@ export class ReskinPlugin {
     if (!this.canReview) throw new Error(`${this.provider.name} cannot review results`);
     const passes = Math.max(1, Math.min(opts.passes ?? 1, 3));
     const out = [];
+    const thinkStart = (this.thinkingLog ??= []).length;
     for (let i = 0; i < passes; i++) {
       const review = await this.reviewOnce(opts);
       const fixable = review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
@@ -2692,7 +2815,7 @@ export class ReskinPlugin {
       this.status('reskinning', `Repainting ${pass.repainted.join(', ')}`);
       await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, variants: 1, fixes, signal: opts.signal });
     }
-    return { passes: out };
+    return { passes: out, thinking: this.thinkingLog.slice(thinkStart) };
   }
 
   /** Region options matching the last run's asset class (so names and colors agree). */
@@ -2739,6 +2862,7 @@ export class ReskinPlugin {
   }
 
   async reviewOnce(opts = {}) {
+    const thinkStart = (this.thinkingLog ??= []).length;
     this.busy = true;
     this.abort = new AbortController();
     const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
@@ -2785,7 +2909,17 @@ export class ReskinPlugin {
         const added = this.addLessons(this.lastRun.opts.assetClass ?? 'generic', notes.lessons);
         if (added.length) notes.learned = added;
       }
-      const review = { ...notes, sheet };
+      const review = { ...notes, sheet, thinking: null };
+      this.think(
+        'review',
+        notes.issues.length ? `Muse found ${notes.issues.length} issue(s)` : 'Muse says it looks good',
+        {
+          issues: notes.issues,
+          lessons: notes.lessons,
+          learned: notes.learned,
+        },
+      );
+      review.thinking = this.thinkingLog.slice(thinkStart);
       this.emit('review', review);
       this.status('idle', notes.issues.length ? `Review: ${notes.issues.length} issue(s)` : 'Review: looks good');
       return review;
@@ -2840,6 +2974,21 @@ export class ReskinPlugin {
       background: null,
     });
     const ld = ctx2d(layer).getImageData(0, 0, W, H).data;
+    // Only light areas can hold old body paint (a lens ring, a mirror taken for a light);
+    // tyre treads are always kept whole (their rubber is the main color of a wheel texture).
+    const lightLayer = keep.lights?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.lights.keys()],
+            tris: keep.lights,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
     const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
     const g = ctx2d(baseColor);
     const bd = g.getImageData(0, 0, W, H);
@@ -2848,9 +2997,11 @@ export class ReskinPlugin {
       drawUvGuide(slot, W, H, { wireframe: false, fillColor: '#ffffff', background: null }),
     ).getImageData(0, 0, W, H).data;
     const body =
-      opts.keepBodyColor === false ? null : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
+      opts.keepBodyColor === false || !lightLayer
+        ? null
+        : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
     const tol = opts.keepBodyTolerance ?? 64;
-    const isBody = (i) => body && nearColor(od[i], od[i + 1], od[i + 2], body, tol);
+    const isBody = (i) => body && lightLayer?.[i + 3] >= 128 && nearColor(od[i], od[i + 1], od[i + 2], body, tol);
     let bodyFill = null;
     let n = 0,
       repainted = 0;
@@ -2859,7 +3010,8 @@ export class ReskinPlugin {
       // A swatch of the new body paint: the square where the old body color was most common
       // (outside the kept areas), tiled and shaded by the original's light and dark.
       const on = new Uint8Array(W * H);
-      for (let p = 0; p < W * H; p++) on[p] = cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128 && isBody(p * 4) ? 1 : 0;
+      const isOld = (i) => nearColor(od[i], od[i + 1], od[i + 2], body, tol);
+      for (let p = 0; p < W * H; p++) on[p] = cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128 && isOld(p * 4) ? 1 : 0;
       const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
       if (sq.share > 0.5) {
         const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });
@@ -2882,6 +3034,26 @@ export class ReskinPlugin {
       bd.data[i + 2] = src[i + 2];
     }
     g.putImageData(bd, 0, 0);
+    let covered = 0;
+    for (let i = 3; i < cover.length; i += 4) if (cover[i] >= 128) covered++;
+    const keptShareOfTexture = covered ? n / covered : 0;
+    const isWheel = slot.meshes.some((m) => WHEEL_NAME.test(namesOf(m)));
+    if (keptShareOfTexture > 0.4 && !isWheel && !this.keepNoted?.has(`${slot.id}|big`)) {
+      (this.keepNoted ??= new Set()).add(`${slot.id}|big`);
+      this.emit('warning', {
+        message: `"${slot.name}": ${Math.round(keptShareOfTexture * 100)}% of this texture is kept as lights or tyre treads. If this is not a wheel, check the part names (or pass keepVehicleParts: false).`,
+      });
+    }
+    this.think('kept', `"${slot.name}": kept ${n} original pixel(s) of lights and tyre treads`, {
+      slotId: slot.id,
+      slotName: slot.name,
+      lightTriangles: keep.headlights,
+      treadTriangles: keep.treads,
+      keptPixels: n,
+      bodyColorRepaintedPixels: repainted,
+      oldBodyColor: body ? body.map(Math.round) : null,
+      share: keptShareOfTexture,
+    });
     this.keepNoted ??= new Set();
     if (n && !this.keepNoted.has(slot.id)) {
       this.keepNoted.add(slot.id);

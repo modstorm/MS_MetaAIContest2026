@@ -459,7 +459,7 @@ export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
  * 128-256 × 256-384 red; tread 0-256 × 384-512 striped grey; sidewalls 256-384 / 384-512
  * × 384-512 mid grey.
  */
-export async function buildVehicleTestGlb() {
+export async function buildVehicleTestGlb({ groupName } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d');
@@ -520,5 +520,7 @@ export async function buildVehicleTestGlb() {
   fit(wheel, [0.77, 0.77, 0.98, 0.98], (i) => isCap(i, -1));
   const w = add(wheel, 'Wheel_FL', [0.7, 0.3, 0.55]);
   w.rotation.x = Math.PI / 2;
+  // An editor may group the whole car under a name like "Body + Wheel_FL".
+  if (groupName) root.name = groupName;
   return exportGLB(root);
 }

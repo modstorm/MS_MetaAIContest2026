@@ -127,6 +127,7 @@
  * @property {string} [tips]
  * @property {HTMLCanvasElement} sheet The six-view contact sheet that was sent.
  * @property {{ name: string, axis: string, canvas: HTMLCanvasElement }[]} views
+ * @property {ThinkingEntry[]} [thinking] What was decided and asked while making this suggestion.
  */
 
 /**
@@ -205,6 +206,27 @@
  * @property {number} durationMs
  * @property {{ reskin: object, session: object, reskinCost: number, sessionCost: number, text: string }} [usage]
  *   Muse usage so far for this reskin (suggestion + paint) and the session, with cost estimates in dollars.
+ * @property {ThinkingEntry[]} thinking What was decided and asked during this call, in order
+ *   (also on Suggestion.thinking, postReview()'s `thinking`, and live as 'thinking' events).
+ */
+
+/**
+ * One step of "what Muse is thinking", for an editor to show. Every entry has
+ * `step`, `text` (one readable line) and `at` (ms timestamp); the other fields depend on the step:
+ * - 'identify': Muse looked at the six views. subject, assetClass, prompt, parts, plans.
+ * - 'assetClass': the class used. assetClass, source ('set by the editor' | 'Muse identified it' |
+ *   'guessed from names'), rules (string[] sent to Muse), paintMode, detailPreserve, samZones.
+ * - 'zones': SAM 3.1 zones found. zones (per slot summary), notSeen (concepts not found).
+ * - 'plan': the paint plan of one texture. slotId, slotName, mode ('parts' | 'atlas'),
+ *   areas: { name, zone?, action: 'paint' | 'keep' | 'reuse', why?, mergedFrom?, paint? }[].
+ * - 'ask': a question to Muse Spark. model, url, status, ms, ok, question, instructions, error?.
+ * - 'paint': one Muse Image request. model, url, status, ms, ok, prompt (the exact text sent), error?.
+ * - 'kept': vehicle lights / tyre treads given back their original pixels. slotId, slotName,
+ *   lightTriangles, treadTriangles, keptPixels, share (of the texture), bodyColorRepaintedPixels,
+ *   oldBodyColor ([r, g, b] or null).
+ * - 'review': the review of the result. issues ({ area, problem, fix }[]), lessons, learned.
+ * - 'note': every 'warning' message, so the log reads in one place.
+ * @typedef {{ step: string, text: string, at: number } & Record<string, any>} ThinkingEntry
  */
 
 /**
