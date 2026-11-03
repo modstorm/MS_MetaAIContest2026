@@ -47,6 +47,7 @@ import {
   averageColor,
   blobToCanvas,
   createCanvas,
+  flipVertical,
   ctx2d,
   drawAtlasWithUvs,
   drawPartLabels,
@@ -341,6 +342,8 @@ export class ReskinPlugin {
    * Load a model (File(s), Blob, ArrayBuffer or URL), analyze it and make it the current model.
    * @param {import('./io/modelIO.js').ModelInput} input
    * @param {import('./io/modelIO.js').LoadOptions} [opts]
+   *   Also opts.imageOrder: 'gltf' (default) | 'image', the row order of the canvases this
+   *   model's reskin results and textureUpdated events hand out (see PostPromptOptions).
    * @returns {Promise<{ model: LoadedModel, layout: TextureLayout }>}
    */
   async postModel(input, opts = {}) {
@@ -350,6 +353,8 @@ export class ReskinPlugin {
       this.status('loading', 'Loading model…');
       const model = await loadModel(input, opts);
       this.model = model;
+      // Order of the canvases this model's results hand out: 'gltf' (default) or 'image'.
+      this.imageOrder = opts.imageOrder === 'image' ? 'image' : 'gltf';
       this.snapshots.clear();
       this.planCache.clear();
       this.samCache.clear();
@@ -1019,8 +1024,19 @@ export class ReskinPlugin {
     const maps = []; // generated maps of this result, kept with it in the history
     // Each map carries the identity of the texture it replaces (name, uuid, glTF texture and
     // image index), so a host can match it to its own image ids.
+    // imageOrder 'image': canvases handed out (events, results) are flipped into ordinary image
+    // order (top row = v 1); the model's own textures stay in glTF order.
+    const imageOrder = opts.imageOrder ?? this.imageOrder ?? 'gltf';
+    const handOut = (c) => (imageOrder === 'image' ? flipVertical(c) : c);
     const emitMap = (kind, canvas, replaces) => {
-      const entry = { slotId: slot.id, slotName: slot.name, kind, canvas, ...this.textureIdentity(replaces) };
+      const entry = {
+        slotId: slot.id,
+        slotName: slot.name,
+        kind,
+        canvas: handOut(canvas),
+        imageOrder,
+        ...this.textureIdentity(replaces),
+      };
       maps.push(entry);
       this.emit('textureUpdated', entry);
     };
@@ -1132,7 +1148,8 @@ export class ReskinPlugin {
       slotId: slot.id,
       slotName: slot.name,
       ...this.textureIdentity(slot.texture),
-      canvas: baseColor,
+      canvas: handOut(baseColor),
+      imageOrder,
       raw,
       plan,
       prompt: usedPrompt,

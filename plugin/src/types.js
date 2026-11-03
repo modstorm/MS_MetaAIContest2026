@@ -81,6 +81,9 @@
  * @property {boolean} [useVisionPlanning] Ask the vision model to describe atlas regions first. Default true.
  * @property {number} [maxTextureSize] Longest side of generated textures. Default: source size, capped at 2048.
  * @property {string} [extraInstructions] Free text appended to the model prompt.
+ * @property {'gltf' | 'image'} [imageOrder] Row order of the canvases handed out (slot results, their maps, textureUpdated).
+ *   'gltf' (default): as stored on the model (glTF, top row = v 0). 'image': flipped into ordinary image order (top row = v 1),
+ *   ready to save as image files. Defaults to what postModel was given. The model's own textures never change.
  * @property {boolean | 'always'} [normalMaps] Regenerate normal maps the model already has (default true); 'always' also adds them where missing.
  * @property {boolean | 'always'} [roughnessMaps] Regenerate roughness maps the model already has (default true); 'always' also adds them where missing.
  * @property {number} [normalStrength] Strength of derived normal maps. Default 2.

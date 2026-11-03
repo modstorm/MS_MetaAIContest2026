@@ -1909,6 +1909,58 @@ try {
     await page.context().close();
   });
 
+  await step('imageOrder image: handed-out canvases are flipped, the model keeps glTF order', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      const glb = await mod.buildBuildingTestGlb();
+      const px = (c, x, y) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3));
+      const pts = [
+        [10, 10],
+        [100, 80],
+        [370, 380],
+        [250, 300],
+      ];
+      const sample = (c, flip) => pts.map(([x, y]) => px(c, x, flip ? c.height - 1 - y : y));
+      const run = async (loadOpts, promptOpts) => {
+        await p.postModel(glb.slice(0), { name: 'order', ...loadOpts });
+        const ev = [];
+        const off = p.on('textureUpdated', (e) => ev.push(e));
+        const r = await p.postPrompt('mossy stone', { assetClass: 'prop', paintMode: 'atlas', ...promptOpts });
+        off();
+        const mapImg = p.layout.slots[0].materials[0].map.image;
+        return {
+          canvas: r.slots[0].canvas,
+          order: r.slots[0].imageOrder,
+          ev: ev.find((e) => e.kind === 'baseColor'),
+          mapImg,
+        };
+      };
+      const a = await run({}, {});
+      const b = await run({ imageOrder: 'image' }, {});
+      const c = await run({}, { imageOrder: 'image' });
+      return {
+        a: sample(a.canvas, false),
+        aOrder: a.order,
+        bFlipped: sample(b.canvas, true),
+        bOrder: b.order,
+        bEvent: sample(b.ev.canvas, true),
+        bEventOrder: b.ev.imageOrder,
+        bModel: sample(b.mapImg, false),
+        cFlipped: sample(c.canvas, true),
+      };
+    });
+    assert.equal(out.aOrder, 'gltf');
+    assert.equal(out.bOrder, 'image');
+    assert.equal(out.bEventOrder, 'image');
+    assert.deepEqual(out.bFlipped, out.a, 'result canvas flipped');
+    assert.deepEqual(out.bEvent, out.a, 'textureUpdated canvas flipped');
+    assert.deepEqual(out.bModel, out.a, 'model texture stays in glTF order');
+    assert.deepEqual(out.cFlipped, out.a, 'postPrompt option works too');
+    await page.context().close();
+  });
+
   console.log('Single textures (postTexture) and texture ids');
   await step('events carry the glTF texture and image index of the texture they replace', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
