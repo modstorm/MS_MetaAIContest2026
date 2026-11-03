@@ -189,3 +189,67 @@ export function keptShare(slot, part, keep) {
   }
   return all ? kept / all : 0;
 }
+
+/**
+ * Most common color (4 bits per channel buckets, averaged) of `rgba` where `inside(p)` is
+ * true. On a vehicle atlas this is the original body paint. null when nothing is inside.
+ * @param {Uint8ClampedArray} rgba
+ * @param {(p: number) => boolean} inside pixel index → counted
+ */
+export function dominantColor(rgba, inside) {
+  const count = new Uint32Array(4096);
+  const sum = new Float64Array(4096 * 3);
+  const n = rgba.length / 4;
+  for (let p = 0; p < n; p++) {
+    if (!inside(p)) continue;
+    const i = p * 4;
+    const b = ((rgba[i] >> 4) << 8) | ((rgba[i + 1] >> 4) << 4) | (rgba[i + 2] >> 4);
+    count[b]++;
+    sum[b * 3] += rgba[i];
+    sum[b * 3 + 1] += rgba[i + 1];
+    sum[b * 3 + 2] += rgba[i + 2];
+  }
+  let best = -1;
+  for (let b = 0; b < 4096; b++) if (count[b] && (best < 0 || count[b] > count[best])) best = b;
+  if (best < 0) return null;
+  return [0, 1, 2].map((k) => sum[best * 3 + k] / count[best]);
+}
+
+/** True when (r, g, b) is within `tol` (RGB distance) of `color`. */
+export function nearColor(r, g, b, color, tol = 64) {
+  const dr = r - color[0],
+    dg = g - color[1],
+    db = b - color[2];
+  return dr * dr + dg * dg + db * db <= tol * tol;
+}
+
+/**
+ * The square (side `size`) of a W×H map with the most `on` pixels, searched on a coarse
+ * grid. Used to cut a swatch of the newly painted body. Returns { x, y, size, share }.
+ * @param {Uint8Array} on 1 per pixel that counts
+ */
+export function bestSquare(on, W, H, size) {
+  size = Math.max(4, Math.min(size, W, H));
+  // Summed-area table for O(1) window counts.
+  const S = new Uint32Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    for (let x = 0; x < W; x++) {
+      row += on[y * W + x];
+      S[(y + 1) * (W + 1) + x + 1] = S[y * (W + 1) + x + 1] + row;
+    }
+  }
+  const step = Math.max(1, Math.round(size / 4));
+  let best = { x: 0, y: 0, size, share: -1 };
+  for (let y = 0; y + size <= H; y += step)
+    for (let x = 0; x + size <= W; x += step) {
+      const c =
+        S[(y + size) * (W + 1) + x + size] -
+        S[y * (W + 1) + x + size] -
+        S[(y + size) * (W + 1) + x] +
+        S[y * (W + 1) + x];
+      const share = c / (size * size);
+      if (share > best.share) best = { x, y, size, share };
+    }
+  return best;
+}

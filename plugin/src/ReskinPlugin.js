@@ -65,7 +65,7 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
-import { keptShare, vehicleKeepTriangles } from './analysis/keepAreas.js';
+import { bestSquare, dominantColor, keptShare, nearColor, vehicleKeepTriangles } from './analysis/keepAreas.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -2818,7 +2818,13 @@ export class ReskinPlugin {
     return this.keepCache.get(key);
   }
 
-  /** Puts the original pixels back inside the kept triangles. Changes `baseColor` in place. */
+  /**
+   * Puts the original pixels back inside the kept triangles (light lenses, tyre treads).
+   * Kept pixels whose original color is the old body paint (the painted ring or housing
+   * around a lens, a mirror or grille that the light finder took for a light) are not kept:
+   * they get the newly painted body instead, so no old body color is left behind.
+   * Changes `baseColor` in place.
+   */
   restoreKept(slot, baseColor, original, opts) {
     const keep = this.keepTriangles(slot, opts);
     if (!keep) return;
@@ -2829,7 +2835,7 @@ export class ReskinPlugin {
       tris: keep.tris,
       wireframe: true,
       lineColor: '#ffffff',
-      lineWidth: 2,
+      lineWidth: 1,
       fillColor: '#ffffff',
       background: null,
     });
@@ -2837,20 +2843,53 @@ export class ReskinPlugin {
     const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
     const g = ctx2d(baseColor);
     const bd = g.getImageData(0, 0, W, H);
-    let n = 0;
+    // The old body paint: the most common original color outside the kept areas.
+    const cover = ctx2d(
+      drawUvGuide(slot, W, H, { wireframe: false, fillColor: '#ffffff', background: null }),
+    ).getImageData(0, 0, W, H).data;
+    const body =
+      opts.keepBodyColor === false ? null : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
+    const tol = opts.keepBodyTolerance ?? 64;
+    const isBody = (i) => body && nearColor(od[i], od[i + 1], od[i + 2], body, tol);
+    let bodyFill = null;
+    let n = 0,
+      repainted = 0;
+    for (let i = 0; i < ld.length; i += 4) if (ld[i + 3] >= 128 && isBody(i)) repainted++;
+    if (repainted) {
+      // A swatch of the new body paint: the square where the old body color was most common
+      // (outside the kept areas), tiled and shaded by the original's light and dark.
+      const on = new Uint8Array(W * H);
+      for (let p = 0; p < W * H; p++) on[p] = cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128 && isBody(p * 4) ? 1 : 0;
+      const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
+      if (sq.share > 0.5) {
+        const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });
+        const mask = createCanvas(W, H);
+        const mctx = ctx2d(mask);
+        const md = mctx.createImageData(W, H);
+        for (let i = 0; i < ld.length; i += 4)
+          if (ld[i + 3] >= 128 && isBody(i)) md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
+        mctx.putImageData(md, 0, 0);
+        const fill = materialFill(resizeCanvas(original, W, H), mask, swatch, { tile: sq.size });
+        bodyFill = ctx2d(fill).getImageData(0, 0, W, H).data;
+      } else repainted = 0;
+    }
     for (let i = 0; i < ld.length; i += 4) {
       if (ld[i + 3] < 128) continue;
-      bd.data[i] = od[i];
-      bd.data[i + 1] = od[i + 1];
-      bd.data[i + 2] = od[i + 2];
-      n++;
+      const src = bodyFill && isBody(i) ? bodyFill : od;
+      if (src === od) n++;
+      bd.data[i] = src[i];
+      bd.data[i + 1] = src[i + 1];
+      bd.data[i + 2] = src[i + 2];
     }
     g.putImageData(bd, 0, 0);
     this.keepNoted ??= new Set();
     if (n && !this.keepNoted.has(slot.id)) {
       this.keepNoted.add(slot.id);
       const what = [keep.headlights ? 'lights' : '', keep.treads ? 'tyre treads' : ''].filter(Boolean).join(' and ');
-      this.emit('warning', { message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).` });
+      const extra = repainted ? ' Old body color around them was painted like the body.' : '';
+      this.emit('warning', {
+        message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).${extra}`,
+      });
     }
   }
 

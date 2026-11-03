@@ -1959,7 +1959,7 @@ try {
   });
 
   await step(
-    'vehicle: lights and tyre treads keep their original pixels, sidewalls are painted (both modes)',
+    'vehicle: light lenses and tyre treads keep their original pixels; sidewalls, lens rings and mirrors are painted (both modes)',
     async () => {
       const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
       const out = await page.evaluate(async () => {
@@ -1982,7 +1982,9 @@ try {
           off();
           const c = r.slots[0].canvas;
           res[mode] = {
-            head: mean(c, 30, 280, 60, 60),
+            head: mean(c, 40, 296, 48, 48),
+            ring: mean(c, 12, 300, 12, 40),
+            mirror: mean(c, 290, 290, 60, 60),
             tail: mean(c, 160, 280, 60, 60),
             tread: mean(c, 40, 410, 180, 80),
             side: mean(c, 290, 410, 60, 80),
@@ -1997,6 +1999,9 @@ try {
         const o = out[mode];
         assert.ok(near(o.head, [255, 224, 64]), `${mode}: headlight changed ${o.head}`);
         assert.ok(near(o.tail, [224, 32, 32]), `${mode}: taillight changed ${o.tail}`);
+        // Old body paint around a lens, and a mirror taken for a light, are painted like the body.
+        assert.ok(!near(o.ring, [32, 80, 192], 30), `${mode}: body-colored ring around the lens kept ${o.ring}`);
+        assert.ok(!near(o.mirror, [32, 80, 192], 30), `${mode}: body-colored mirror kept ${o.mirror}`);
         // Original tread: stripes of #303030 and #b0b0b0 (1/3 light).
         assert.ok(near(o.tread, [91, 91, 91], 12), `${mode}: tread changed ${o.tread}`);
         assert.ok(!near(o.side, [128, 128, 128], 10), `${mode}: sidewall not painted ${o.side}`);

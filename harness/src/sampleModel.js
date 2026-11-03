@@ -465,8 +465,13 @@ export async function buildVehicleTestGlb() {
   const g = c.getContext('2d');
   g.fillStyle = '#2050c0';
   g.fillRect(0, 0, 512, 256);
-  g.fillStyle = '#ffe040';
+  // Headlight: a yellow lens inside a ring of body paint (the housing), and a body-colored
+  // side mirror whose name says "light" (a light finder mistake).
+  g.fillStyle = '#2050c0';
   g.fillRect(0, 256, 128, 128);
+  g.fillRect(256, 256, 128, 128);
+  g.fillStyle = '#ffe040';
+  g.fillRect(30, 286, 68, 68);
   g.fillStyle = '#e02020';
   g.fillRect(128, 256, 128, 128);
   g.fillStyle = '#303030';
@@ -500,6 +505,9 @@ export async function buildVehicleTestGlb() {
   const head = new THREE.BoxGeometry(0.1, 0.15, 0.3);
   fit(head, [0.02, 0.52, 0.23, 0.73]);
   add(head, 'Headlight_L', [1.02, 0.65, 0.3]);
+  const mirror = new THREE.BoxGeometry(0.15, 0.1, 0.1);
+  fit(mirror, [0.52, 0.52, 0.73, 0.73]);
+  add(mirror, 'MirrorLight_L', [0.6, 0.95, 0.55]);
   const tail = new THREE.BoxGeometry(0.1, 0.15, 0.3);
   fit(tail, [0.27, 0.52, 0.48, 0.73]);
   add(tail, 'TailLight_R', [-1.02, 0.65, 0.3]);
