@@ -116,3 +116,31 @@ describe('vehicle rule in prompts', () => {
     expect(part.filter((l) => /MOST IMPORTANT RULE/.test(l))).toHaveLength(1);
   });
 });
+
+describe('vehicle body panels', () => {
+  it('doors, fenders and hood are painted as one area; wheels, lights and glass stay apart', async () => {
+    const { mergeBodyPanels } = await import('../src/ReskinPlugin.js');
+    const part = (name, area, bbox = [0, 0, 100, 100]) => ({ name, area, bbox, meshes: [{ name }] });
+    const merged = mergeBodyPanels([
+      part('Body', 10, [0, 0, 500, 500]),
+      part('Door_L', 3, [600, 0, 700, 200]),
+      part('DoorRight', 3),
+      part('Hood', 2),
+      part('Wheel_FL', 2),
+      part('Headlight_L', 1),
+      part('Window Glass', 1),
+    ]);
+    expect(merged[0].name).toBe('Body panels');
+    expect(merged[0].mergedFrom).toEqual(['Body', 'Door_L', 'DoorRight', 'Hood']);
+    expect(merged[0].meshes).toHaveLength(4);
+    expect(merged[0].bbox).toEqual([0, 0, 700, 500]);
+    expect(merged.slice(1).map((p) => p.name)).toEqual(['Wheel_FL', 'Headlight_L', 'Window Glass']);
+    expect(mergeBodyPanels([part('Body', 1), part('Wheel', 1)])).toBeNull();
+  });
+  it('the vehicle prompt asks for stripes across every panel and no longer keeps them inside one', async () => {
+    const { assetClassRules } = await import('../src/assetClasses.js');
+    const rules = assetClassRules('vehicle').join('\n');
+    expect(rules).toMatch(/STRIPES AND LINES ARE CONTINUOUS/);
+    expect(rules).not.toMatch(/stay inside one panel|whole inside one area/);
+  });
+});

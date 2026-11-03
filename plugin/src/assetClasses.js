@@ -133,10 +133,10 @@ export const ASSET_CLASSES = [
     rules: [
       'MOST IMPORTANT RULE: DO NOT CHANGE THE LIGHTS OR THE TYRE TREADS. Every headlight and tail light (also brake, fog and indicator lights) and the tread of every tyre (the rubber running surface that touches the road) must stay EXACTLY as they are in the input image: same colors, same details, same position. Do not paint over them, recolor them or add anything to them. Only the tyre sidewalls and the wheel rims may be repainted in the theme.',
       'This is a vehicle. Paint body panels with continuous paint; keep panel lines where they are.',
-      'Decals and stripes stay inside one panel. Windows stay glass (dark or reflective).',
+      'STRIPES AND LINES ARE CONTINUOUS: if the design has racing stripes, pinstripes or lines, paint them on EVERY body panel they would cross, including the doors, fenders, bumpers, hood and trunk, at the same height and width, so they run unbroken along the whole car. Never leave a door or any panel plain while its neighbours have stripes.',
+      'Windows stay glass (dark or reflective).',
       'Never draw wheels, tyres, rims, hubcaps or spare wheels on the body, the doors, the tailgate or the windows: wheels exist only on the wheel parts. Windows show only glass.',
       'No readable text, numbers or brand logos.',
-      NO_SEAM_CROSSING,
     ],
     // Muse sometimes paints a (spare) wheel onto the tailgate or a window: SAM checks every
     // non-wheel area for a newly painted wheel, and a hit repaints that area once.

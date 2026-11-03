@@ -2996,6 +2996,15 @@ export class ReskinPlugin {
 
   paintRegions(slot, parts, opts = {}) {
     if (opts.splitRegions === false) return parts;
+    // Vehicles: every body panel (doors, fenders, hood, bumpers…) is painted as one area, so
+    // stripes and lines carry across the doors instead of each panel getting its own design.
+    if (opts.assetClass === 'vehicle' && opts.mergeBodyPanels !== false) {
+      const merged = mergeBodyPanels(parts);
+      if (merged) {
+        const [body, ...rest] = merged;
+        return [body, ...this.paintRegions(slot, rest, { ...opts, mergeBodyPanels: false })];
+      }
+    }
     const max = opts.maxPaintAreas ?? 12;
     const out = [];
     let left = max;
@@ -3007,7 +3016,11 @@ export class ReskinPlugin {
         const zones = opts.assetClass === 'avatar' ? splitAvatarZones(slot, p, this.anatomy()) : [p];
         // Avatars keep each mesh whole apart from those zones (legs stay one "pants" area).
         if (zones.length > 1 || opts.assetClass === 'avatar') split = zones;
-        else {
+        else if (opts.assetClass === 'vehicle' && isBodyPanel(p.name)) {
+          // A vehicle's body stays one area even when its doors are separate UV islands, so
+          // stripes are painted across all of it in one image.
+          split = [p];
+        } else {
           // Buildings: roofs and undersides are their own areas, so they are never painted
           // as walls (windows and doors on the roof, a facade on the underside).
           const tb = getAssetClass(opts.assetClass)?.topBottom
@@ -3262,6 +3275,40 @@ export function slug(s) {
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'reskin'
   );
+}
+
+/** Parts of a vehicle that are not body paint (they keep their own areas). */
+const NOT_BODY_PANEL =
+  /\b(wheels?|tires?|tyres?|rims?|hubcaps?|treads?|lights?|lamps?|headlights?|taillights?|glass|windows?|windshield|windscreen|interior|seats?|steering|dashboard|engine|exhaust|grille|mirror glass|chrome)\b/i;
+
+/**
+ * Vehicles: all body-panel parts merged into one "Body panels" part (first), the others
+ * after it. null when there are fewer than two body panels.
+ */
+const isBodyPanel = (name) =>
+  !NOT_BODY_PANEL.test(
+    String(name)
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/[_\-.\d]+/g, ' '),
+  );
+
+export function mergeBodyPanels(parts) {
+  const panels = parts.filter((p) => isBodyPanel(p.name));
+  if (panels.length < 2) return null;
+  const others = parts.filter((p) => !panels.includes(p));
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const p of panels)
+    for (let k = 0; k < 4; k++) box[k] = k < 2 ? Math.min(box[k], p.bbox[k]) : Math.max(box[k], p.bbox[k]);
+  const biggest = [...panels].sort((a, b) => b.area - a.area)[0];
+  const body = {
+    ...biggest,
+    name: 'Body panels',
+    meshes: panels.flatMap((p) => p.meshes),
+    bbox: box,
+    area: panels.reduce((sum, p) => sum + (p.area ?? 0), 0),
+    mergedFrom: panels.map((p) => p.name),
+  };
+  return [body, ...others];
 }
 
 /** Roof material tile size: about a fifth of the roof, so shingles and tiles stay small. */
