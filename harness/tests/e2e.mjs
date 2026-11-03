@@ -1685,52 +1685,95 @@ try {
   await step('a side mirror SAM takes for a window gets the new body paint; real glass stays', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
     // Also with the user's "Do not paint the windows" (the zone then matches a user rule).
-    for (const rules of [null, 'Do not paint the windows']) {
-      const out = await page.evaluate(async (userRules) => {
-        const p = window.reskin.plugin;
-        const mod = await import('/src/sampleModel.js');
-        await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L', windowPart: true }), {
-          name: 'mirror',
-        });
-        const slot = p.layout.slots.find((s) => s.texture);
-        const byName = (n) => slot.meshes.find((m) => m.name === n);
-        const all = (m) =>
-          new Uint8Array((m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3).fill(1);
-        // SAM's windows zone covers the mirror and the window (as on the real Porsche).
-        const tris = new Map([
-          [byName('Mirror_L'), all(byName('Mirror_L'))],
-          [byName('Window_Glass'), all(byName('Window_Glass'))],
-        ]);
-        p.keepZones.set(slot.id, [{ zone: 'windows', tris, share: 0.05, area: 1 }]);
-        const r = await p.postPrompt('neon pink candy', {
-          assetClass: 'vehicle',
-          paintMode: 'atlas',
-          keepSam: false,
-          userRules,
-        });
-        const c = r.slots[0].canvas;
-        const mean = (x, y, w, h) => {
-          const k = c.width / 512;
-          const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
-          const m = [0, 0, 0];
-          for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
-          return m.map((v) => Math.round(v / (d.length / 4)));
-        };
-        return {
-          mirror: mean(290, 290, 60, 60),
-          window: mean(400, 270, 100, 100),
-          meshes: slot.meshes.map((m) => m.name),
-        };
-      }, rules);
+    // 'auto' (part by part): the mirror's area is all inside the windows zone, so Muse never paints it.
+    for (const [rules, mode] of [
+      [null, 'atlas'],
+      ['Do not paint the windows', 'atlas'],
+      [null, 'auto'],
+      ['Do not paint the windows', 'auto'],
+    ]) {
+      const out = await page.evaluate(
+        async ([userRules, mode]) => {
+          const p = window.reskin.plugin;
+          const mod = await import('/src/sampleModel.js');
+          await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L', windowPart: true }), {
+            name: 'mirror',
+          });
+          const slot = p.layout.slots.find((s) => s.texture);
+          const byName = (n) => slot.meshes.find((m) => m.name === n);
+          const all = (m) =>
+            new Uint8Array((m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3).fill(1);
+          // SAM's windows zone covers the mirror and the window (as on the real Porsche).
+          const tris = new Map([
+            [byName('Mirror_L'), all(byName('Mirror_L'))],
+            [byName('Window_Glass'), all(byName('Window_Glass'))],
+            // A solid body panel SAM also took for a window (the orange van's rear side panels).
+            [byName('Door_L'), all(byName('Door_L'))],
+          ]);
+          p.keepZones.set(slot.id, [{ zone: 'windows', tris, share: 0.05, area: 1 }]);
+          const r = await p.postPrompt('neon pink candy', {
+            assetClass: 'vehicle',
+            paintMode: mode,
+            keepSam: false,
+            userRules,
+          });
+          const c = r.slots[0].canvas;
+          const mean = (x, y, w, h) => {
+            const k = c.width / 512;
+            const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+            const m = [0, 0, 0];
+            for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+            return m.map((v) => Math.round(v / (d.length / 4)));
+          };
+          return {
+            mirror: mean(290, 290, 60, 60),
+            door: mean(280, 20, 80, 80),
+            window: mean(400, 270, 100, 100),
+            meshes: slot.meshes.map((m) => m.name),
+          };
+        },
+        [rules, mode],
+      );
       const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
       assert.ok(
         !near(out.mirror, [32, 80, 192], 30),
-        `${rules}: mirror kept its old body paint ${out.mirror} (${out.meshes})`,
+        `${rules} ${mode}: mirror kept its old body paint ${out.mirror} (${out.meshes})`,
       );
-      assert.ok(near(out.window, [51, 68, 85], 12), `${rules}: window changed ${out.window}`);
+      assert.ok(
+        !near(out.door, [32, 80, 192], 30),
+        `${rules} ${mode}: body panel in the windows zone kept ${out.door}`,
+      );
+      assert.ok(near(out.window, [51, 68, 85], 12), `${rules} ${mode}: window changed ${out.window}`);
     }
     await page.context().close();
   });
+
+  await step(
+    'SAM keep pass: two renders joined once per model, reused when the same model is posted again',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const out = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const mod = await import('/src/sampleModel.js');
+        const prompts = [];
+        p.provider.segment = async ({ prompt }) => (prompts.push(prompt), { records: [] });
+        const think = [];
+        p.on('thinking', (t) => think.push(t.text));
+        const bytes = await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L' });
+        const counts = [];
+        for (let run = 0; run < 3; run++) {
+          await p.postModel(bytes.slice(0), { name: 'keep-memo' });
+          await p.postPrompt('neon', { assetClass: 'vehicle', paintMode: 'atlas', samCheck: false });
+          counts.push(prompts.length);
+        }
+        return { counts, prompts, reused: think.filter((t) => /Reused what SAM found/.test(t)).length };
+      });
+      assert.equal(out.counts[0], 8, `first run: 4 phrases x 2 renders ${JSON.stringify(out.prompts)}`);
+      assert.deepEqual(out.counts, [8, 8, 8], 'later runs reuse the first SAM result');
+      assert.equal(out.reused, 2);
+      await page.context().close();
+    },
+  );
 
   await step('never painted: a Glass mesh, an Optics texture and what the user rules say (any class)', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });

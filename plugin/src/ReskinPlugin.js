@@ -79,6 +79,7 @@ import {
   nearColor,
   sameShade,
   sameStrongShade,
+  looksLikeGlass,
   vehicleKeepTriangles,
 } from './analysis/keepAreas.js';
 import { toTranscribeWav } from './audio/wav.js';
@@ -152,6 +153,24 @@ import {
  *   await plugin.postPrompt('haunted pumpkin armor');
  *   const { glb } = await plugin.postExport();
  */
+/** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
+const KEEP_MEMO = new Map();
+
+/** A cheap fingerprint of a model's layout: same file posted again → same string. */
+function modelSignature(layout) {
+  return (layout?.slots ?? [])
+    .map((s) => {
+      const img = s.texture?.image;
+      const meshes = s.meshes.map((m) => {
+        const pos = m.geometry.getAttribute('position');
+        const head = pos ? Array.from(pos.array.slice(0, 12), (v) => v.toFixed(3)).join(',') : '';
+        return `${pos?.count ?? 0}:${head}`;
+      });
+      return `${img?.width ?? 0}x${img?.height ?? 0}[${meshes.join(';')}]`;
+    })
+    .join('|');
+}
+
 export class ReskinPlugin {
   provider;
   listeners = new Map();
@@ -428,6 +447,7 @@ export class ReskinPlugin {
       this.samCache.clear();
       this.samZones.clear();
       this.keepZones.clear();
+      this.keepZonesKey = null;
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.topBottomNoted = null;
@@ -1974,26 +1994,84 @@ export class ReskinPlugin {
         'analyzing',
         `SAM 3.1 is finding what is never painted: ${concepts.map((c) => c.concept).join(', ')}…`,
       );
-      const res = await this.timed('sam keep areas', null, async () => {
-        const { views } = renderAxisViews(this.model.scene, { size: opts.zoneViewSize ?? 384 });
-        return findSamZones({
-          root: this.model.scene,
-          slots,
-          views,
+      // The same model again (ModStorm posts it for every reskin): reuse what SAM found, so
+      // the kept areas are the same every run.
+      const memoKey = `${modelSignature(this.layout)}#${key}`;
+      const memo = KEEP_MEMO.get(memoKey);
+      if (memo) {
+        for (const slot of slots) {
+          const i = this.layout.slots.indexOf(slot);
+          this.keepZones.set(
+            slot.id,
+            (memo[i] ?? []).map((z) => ({
+              ...z,
+              tris: new Map(z.tris.filter(([k]) => slot.meshes[k]).map(([k, bits]) => [slot.meshes[k], bits])),
+            })),
+          );
+          (this.keepZonesKey ??= new Map()).set(slot.id, key);
+        }
+        this.keepCache = null;
+        this.think('zones', 'Reused what SAM found never to paint on this model last time (same every run)', {
+          keep: true,
           concepts,
-          rest: 'paint',
-          segment: (o) => this.provider.segment(o),
-          signal,
+          reused: true,
         });
-      });
-      this.keepZonesKey ??= new Map();
-      for (const slot of slots) {
-        this.keepZones.set(
-          slot.id,
-          (res.zones.get(slot.id) ?? []).filter((z) => z.zone !== 'paint'),
-        );
-        this.keepZonesKey.set(slot.id, key);
+        return;
       }
+      // SAM's masks change from one render to the next (a headlight seen in one run, missed in
+      // the next), so it looks at two renders at different sizes and the areas are joined.
+      const sizes = opts.keepSamRuns === 1 ? [opts.zoneViewSize ?? 384] : [opts.zoneViewSize ?? 384, 512];
+      const runs = await this.timed('sam keep areas', null, () =>
+        Promise.all(
+          sizes.map((size) => {
+            const { views } = renderAxisViews(this.model.scene, { size });
+            return findSamZones({
+              root: this.model.scene,
+              slots,
+              views,
+              concepts,
+              rest: 'paint',
+              segment: (o) => this.provider.segment(o),
+              signal,
+            });
+          }),
+        ),
+      );
+      const res = {
+        found: runs[0].found.map((f, k) => ({ ...f, masks: Math.max(...runs.map((r) => r.found[k]?.masks ?? 0)) })),
+      };
+      this.keepZonesKey ??= new Map();
+      const stored = [];
+      for (const slot of slots) {
+        const joined = new Map();
+        for (const r of runs)
+          for (const z of r.zones.get(slot.id) ?? []) {
+            if (z.zone === 'paint') continue;
+            const j = joined.get(z.zone);
+            if (!j) {
+              joined.set(z.zone, { ...z, tris: new Map([...z.tris].map(([m, b]) => [m, Uint8Array.from(b)])) });
+              continue;
+            }
+            for (const [m, b] of z.tris) {
+              const t = j.tris.get(m);
+              if (!t) j.tris.set(m, Uint8Array.from(b));
+              else for (let i = 0; i < t.length; i++) t[i] |= b[i];
+            }
+            j.share = Math.max(j.share, z.share);
+            j.area = Math.max(j.area, z.area);
+          }
+        const zones = [...joined.values()];
+        this.keepZones.set(slot.id, zones);
+        this.keepZonesKey.set(slot.id, key);
+        stored[this.layout.slots.indexOf(slot)] = zones.map((z) => ({
+          zone: z.zone,
+          share: z.share,
+          area: z.area,
+          tris: [...z.tris].map(([m, b]) => [slot.meshes.indexOf(m), b]),
+        }));
+      }
+      if (KEEP_MEMO.size > 20) KEEP_MEMO.delete(KEEP_MEMO.keys().next().value);
+      KEEP_MEMO.set(memoKey, stored);
       this.keepCache = null;
       const missed = res.found.filter((f) => !f.masks).map((f) => f.concept);
       this.think(
@@ -3470,15 +3548,26 @@ export class ReskinPlugin {
     // with such a body every pixel inside a light keeps its original. A colored body (the red
     // Porsche) can: its old paint inside a light area (lens ring, mirror) gets the new paint.
     const colorful = isColorful(body);
-    const isBody = (i) =>
-      body &&
-      colorful &&
-      (lightLayer?.[i + 3] >= 128 || glassLayer?.[i + 3] >= 128) &&
-      (softLayer?.[i + 3] >= 128
-        ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
-        : glassLayer?.[i + 3] >= 128
-          ? sameStrongShade(od[i], od[i + 1], od[i + 2], body, tol)
-          : nearColor(od[i], od[i + 1], od[i + 2], body, tol));
+    const lum = body ? 0.299 * body[0] + 0.587 * body[1] + 0.114 * body[2] : 0;
+    const isBody = (i) => {
+      if (!body) return false;
+      const r = od[i],
+        gg = od[i + 1],
+        b = od[i + 2];
+      if (lightLayer?.[i + 3] >= 128)
+        return (
+          colorful && (softLayer?.[i + 3] >= 128 ? sameShade(r, gg, b, body, tol) : nearColor(r, gg, b, body, tol))
+        );
+      if (glassLayer?.[i + 3] >= 128)
+        // SAM's windows zone keeps only what looks like glass (dark, grey, blue-grey). Strong
+        // color (an orange van panel, a red mirror) or the old body paint is body.
+        return (
+          !looksLikeGlass(r, gg, b) ||
+          (colorful && sameStrongShade(r, gg, b, body, tol)) ||
+          (!colorful && lum > 140 && nearColor(r, gg, b, body, 40))
+        );
+      return false;
+    };
     const before = new Uint8ClampedArray(bd.data);
     let n = 0;
     for (let i = 0; i < ld.length; i += 4) {
@@ -3507,10 +3596,11 @@ export class ReskinPlugin {
       // For a light that is its own UV island (nothing painted next to it in the texture),
       // its old body paint gets a swatch of the new body paint instead.
       let fallback = null;
-      if (colorful) {
+      if (colorful || glassLayer) {
         const on = new Uint8Array(N);
+        const old = colorful ? sameShade : nearColor;
         for (let p = 0; p < N; p++)
-          on[p] = inUv[p] && !kept[p] && sameShade(od[p * 4], od[p * 4 + 1], od[p * 4 + 2], body, tol) ? 1 : 0;
+          on[p] = inUv[p] && !kept[p] && old(od[p * 4], od[p * 4 + 1], od[p * 4 + 2], body, tol) ? 1 : 0;
         const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
         if (sq.share > 0.5) {
           const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });

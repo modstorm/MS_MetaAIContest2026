@@ -703,6 +703,15 @@ export function sameStrongShade(r, g, b, color, tol = 64) {
   return s >= 0.7 * s0;
 }
 
+/**
+ * Looks like glass: dark, grey or blue-grey (low saturation). A strongly colored pixel (orange
+ * panel, red mirror) inside a SAM windows zone is body paint, not glass.
+ */
+export function looksLikeGlass(r, g, b) {
+  const [, sat, v] = hsv(r, g, b);
+  return sat < 0.5 || v < 0.2;
+}
+
 /** True when (r, g, b) is within `tol` (RGB distance) of `color`. */
 export function nearColor(r, g, b, color, tol = 64) {
   const dr = r - color[0],
@@ -808,6 +817,8 @@ export function cleanAroundLights(o) {
     spots++;
   }
   if (!spots) return { inside: 0, around: 0, lights: 0 };
+  const changed = (i) =>
+    Math.abs(before[i] - orig[i]) + Math.abs(before[i + 1] - orig[i + 1]) + Math.abs(before[i + 2] - orig[i + 2]) > 30;
   const ringSpot = new Uint8Array(spots);
   for (let p = 0; p < N; p++) if (ringFrom[p] && comp[p] >= 0) ringSpot[comp[p]] = 1;
   // Grow outwards (inside the texture's islands, not over other kept pixels), up to 3 rings.
@@ -833,6 +844,9 @@ export function cleanAroundLights(o) {
     const s = samples[comp[p]];
     if (s[0].length >= 4000) continue;
     const i = p * 4;
+    // Only pixels that were actually painted: an area left as the original (all kept, so not
+    // sent to Muse) would hand its old body paint back.
+    if (!changed(i)) continue;
     s[0].push(before[i]);
     s[1].push(before[i + 1]);
     s[2].push(before[i + 2]);
@@ -852,15 +866,18 @@ export function cleanAroundLights(o) {
     const i = p * 4;
     const c = local[comp[p]];
     if (!c) {
-      if (d === 0 && fallback && bodyInside(i)) {
+      if (fallback && (d === 0 ? bodyInside(i) : bodyAround(i) && !changed(i))) {
         painted[i] = fallback[i];
         painted[i + 1] = fallback[i + 1];
         painted[i + 2] = fallback[i + 2];
-        inside++;
+        if (d === 0) inside++;
+        else around++;
       }
       continue;
     }
-    if (d === 0 ? !bodyInside(i) : !ringSpot[comp[p]] || !bodyAround(i)) continue;
+    // Around a light: Muse's splashes and old body paint. Around other kept areas (windows):
+    // only old body paint that nothing painted over.
+    if (d === 0 ? !bodyInside(i) : !bodyAround(i) || (!ringSpot[comp[p]] && changed(i))) continue;
     const shade = bodyLum < 24 ? 1 : Math.min(1.2, Math.max(0.6, lum(orig[i], orig[i + 1], orig[i + 2]) / bodyLum));
     painted[i] = Math.min(255, c[0] * shade);
     painted[i + 1] = Math.min(255, c[1] * shade);

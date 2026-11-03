@@ -175,6 +175,45 @@ describe('cleanAroundLights', () => {
     expect(at(32 + 8, 32)[2]).toBeLessThan(40);
     expect(at(32, 32)).toEqual([220, 220, 225]);
   });
+  it('a kept spot whose surroundings were never painted gets the fallback paint, not the old red back', () => {
+    const red = [200, 20, 20];
+    const { orig, light, cover } = setup(red);
+    // Nothing around the spot was painted (an area Muse never got): before = the original.
+    const painted = new Uint8ClampedArray(orig);
+    const before = new Uint8ClampedArray(orig);
+    const fallback = new Uint8ClampedArray(orig.length);
+    for (let i = 0; i < fallback.length; i += 4) fallback.set([10, 10, 10, 255], i);
+    const isRed = (i) => sameShade(orig[i], orig[i + 1], orig[i + 2], red, 64);
+    const r = cleanAroundLights({
+      W,
+      H,
+      painted,
+      before,
+      orig,
+      light,
+      kept: light,
+      cover,
+      body: red,
+      fallback,
+      bodyInside: (i) => light[i / 4] && isRed(i),
+      bodyAround: isRed,
+      ring: 4,
+      ringFrom: new Uint8Array(N), // a windows spot, not a light
+    });
+    const at = (x, y) => [...painted.subarray((y * W + x) * 4, (y * W + x) * 4 + 3)];
+    expect(r.inside).toBeGreaterThan(0);
+    expect(at(32 + 5, 32)).toEqual([10, 10, 10]); // the red mirror inside the spot: new paint
+    expect(at(32, 32)).toEqual([220, 220, 225]); // the glass: original
+    expect(at(32 + 8, 32)[1]).toBe(10); // unpainted old red right around it: cleaned too
+  });
+  it('looksLikeGlass: dark, grey and blue-grey yes; orange or red paint no', async () => {
+    const { looksLikeGlass } = await import('../src/analysis/keepAreas.js');
+    expect(looksLikeGlass(51, 68, 85)).toBe(true); // tinted blue-grey
+    expect(looksLikeGlass(40, 40, 42)).toBe(true); // dark
+    expect(looksLikeGlass(150, 160, 170)).toBe(true); // light grey
+    expect(looksLikeGlass(230, 110, 20)).toBe(false); // van orange
+    expect(looksLikeGlass(110, 4, 12)).toBe(false); // red mirror in shadow
+  });
   it('isColorful: red yes, white/grey/black no', () => {
     expect(isColorful([200, 20, 20])).toBe(true);
     expect(isColorful([245, 245, 245])).toBe(false);
