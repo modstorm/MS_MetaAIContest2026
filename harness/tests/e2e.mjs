@@ -2066,6 +2066,10 @@ try {
     'vehicle: light lenses and tyre treads keep their original pixels; sidewalls, lens rings and mirrors are painted (both modes)',
     async () => {
       const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      await page.evaluate(
+        (r) => (window.__pluginRoot = r),
+        fileURLToPath(new URL('../../plugin/src/', import.meta.url)),
+      );
       const out = await page.evaluate(async () => {
         const p = window.reskin.plugin;
         const mod = await import('/src/sampleModel.js');
@@ -2123,6 +2127,15 @@ try {
         c.width = c.height = 512;
         c.getContext('2d').drawImage(slot.texture.image, 0, 0, 512, 512);
         res.flagged = p.checkUnpainted(slot, c, c, null, null).map((f) => Math.round(f.share * 100));
+        // A SAM "wheels" zone must hold a round piece to be a wheel (else it is wheel arches).
+        const ka = await import('/@fs' + window.__pluginRoot + 'analysis/keepAreas.js').catch(() => null);
+        const zone = (name) => {
+          const m = slot.meshes.find((x) => x.name === name);
+          const idx = m.geometry.index;
+          const n = (idx ? idx.count : m.geometry.getAttribute('position').count) / 3;
+          return { tris: new Map([[m, new Uint8Array(n).fill(1)]]) };
+        };
+        res.zoneWheel = ka ? [ka.zoneHasWheel(slot, zone('Body')), ka.zoneHasWheel(slot, zone('Wheel_FL'))] : null;
         return res;
       });
       const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
@@ -2135,6 +2148,7 @@ try {
       assert.ok(out.roles.parts.some((d) => d.role === 'light' && d.source === 'Muse'));
       assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
       assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
+      assert.deepEqual(out.zoneWheel, [false, true], 'box body is not a wheel, the cylinder is');
       assert.ok(!near(out.grouped.body, [32, 80, 192], 10), `grouped car: body kept as tyre ${out.grouped.body}`);
       for (const mode of ['auto', 'atlas']) {
         const o = out[mode];

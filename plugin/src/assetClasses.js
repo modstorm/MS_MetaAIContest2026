@@ -136,7 +136,7 @@ export const ASSET_CLASSES = [
       'STRIPES AND LINES ARE CONTINUOUS: if the design has racing stripes, pinstripes or lines, paint them on EVERY body panel they would cross, including the doors, fenders, bumpers, hood and trunk, at the same height and width, so they run unbroken along the whole car. Never leave a door or any panel plain while its neighbours have stripes.',
       'Only the clear lens of each light is kept. The body-colored ring or housing around a light, the side mirrors, the grille, bumpers and trim are painted in the theme like the body: never leave any of the old body color anywhere.',
       'Windows stay glass (dark or reflective).',
-      'Never draw wheels, tyres, rims, hubcaps or spare wheels on the body, the doors, the tailgate or the windows: wheels exist only on the wheel parts. Windows show only glass.',
+      'Never draw wheels, tyres, rims, hubcaps or spare wheels on the body, the doors, the tailgate, the windows or inside the wheel arches: wheels exist only on the separate wheel parts. Wheel arches are part of the body and stay dark. Windows show only glass.',
       'No readable text, numbers or brand logos.',
     ],
     // Muse sometimes paints a (spare) wheel onto the tailgate or a window: SAM checks every

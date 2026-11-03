@@ -235,7 +235,7 @@ function meshArea(mesh, src, use = null) {
  * @returns {{ tris: Map<object, Uint8Array>, lights: Map<object, Uint8Array>, headlights: number, treads: number, rejected: { name: string, reason: string }[] } | null}
  *   `tris` = everything kept, `lights` = the light part of it.
  */
-export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, roles = null } = {}) {
+export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, roles = null, zoneRoles = null } = {}) {
   const decisions = [];
   const tris = new Map();
   const lights = new Map();
@@ -299,30 +299,41 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
           name: label(mesh),
           reason: `${source} says wheel but it is not shaped like one, so it is painted`,
         });
-    } else if (museRole && (HEADLIGHT_NAME.test(name) || WHEEL_NAME.test(name))) {
-      // The name says light / wheel, Muse says otherwise: Muse wins.
-      decisions.push({ name: label(mesh), role: museRole, source: 'Muse (over its name)' });
+    } else if (museRole) {
+      // Muse says it is not a light or wheel (body, glass, trim…): painted. When the name said
+      // otherwise, Muse wins.
+      const over = HEADLIGHT_NAME.test(name) || WHEEL_NAME.test(name);
+      decisions.push({ name: label(mesh), role: museRole, source: over ? 'Muse (over its name)' : 'Muse' });
     }
   }
   for (const z of zones) {
     if (z.zone !== 'lights' && z.zone !== 'wheels') continue;
+    // Muse's role for this zone (it sees the zones as the parts of the model) wins over the
+    // zone's name.
+    const museZ = zoneRoles?.[z.zone];
+    if (museZ && !['light', 'wheel', 'tyre'].includes(museZ)) {
+      decisions.push({ name: `SAM ${z.zone} zone`, role: museZ, source: 'Muse (over the zone name)' });
+      continue;
+    }
+    const kind = museZ ? (museZ === 'light' ? 'lights' : 'wheels') : z.zone;
+    const source = museZ ? 'Muse + SAM' : 'SAM';
     for (const [mesh, use] of z.tris ?? []) {
       const src = srcs.get(mesh);
       if (!src) continue;
-      if (z.zone === 'lights') {
+      if (kind === 'lights') {
         if (tooBig(mesh, src, use)) {
           rejected.push({ name: 'SAM lights zone', reason: 'too big to be lights, so it is painted' });
           continue;
         }
         add(mesh, use, true);
         headlights += use.reduce((s, v) => s + v, 0);
-        decisions.push({ name: 'SAM lights zone', role: 'light', source: 'SAM' });
+        decisions.push({ name: `SAM ${z.zone} zone`, role: 'light', source });
       } else {
         const w = wheelTreads(mesh, src, use);
         if (w.count) {
           add(mesh, w.tris);
           treads += w.count;
-          decisions.push({ name: 'SAM wheels zone', role: 'wheel', source: 'SAM', wheels: w.wheels });
+          decisions.push({ name: `SAM ${z.zone} zone`, role: 'wheel', source, wheels: w.wheels });
         }
         if (!w.wheels && w.skipped)
           rejected.push({
@@ -424,4 +435,14 @@ export function bestSquare(on, W, H, size) {
       if (share > best.share) best = { x, y, size, share };
     }
   return best;
+}
+
+/** True when a zone ({ tris: Map mesh → Uint8Array }) holds at least one wheel-shaped piece. */
+export function zoneHasWheel(slot, zone) {
+  for (const [mesh, use] of zone.tris ?? []) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+    if (!src || !mesh.geometry.getAttribute('position')) continue;
+    if (wheelTreads(mesh, src, use).wheels) return true;
+  }
+  return false;
 }

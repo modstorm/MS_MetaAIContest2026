@@ -67,6 +67,7 @@ import { paintHairStrands } from './texture/strands.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
+  zoneHasWheel,
   bestSquare,
   dominantColor,
   keptShare,
@@ -750,6 +751,7 @@ export class ReskinPlugin {
         assetClass: suggestion.assetClass,
         prompt: suggestion.prompt,
         parts: suggestion.parts,
+        partRoles: suggestion.partRoles ?? null,
         plans: suggestion.plans,
       });
       suggestion.thinking = this.thinkingLog.slice(thinkStart);
@@ -1836,6 +1838,30 @@ export class ReskinPlugin {
               message: `"${slot.name}": SAM found ${found.length} zones (${found.map((z) => z.zone).join(', ')}), fewer than the usual ${usual} areas; keeping the usual areas.`,
             });
           continue;
+        }
+        // Vehicles: a "wheels" zone with no wheel-shaped piece in it is the body's wheel arches
+        // (SAM marks the arch around a wheel). Painting it as a wheel draws rims on the body,
+        // so it joins the body zone.
+        const arches =
+          assetClass === 'vehicle' ? found.filter((z) => z.zone === 'wheels' && !zoneHasWheel(slot, z)) : [];
+        if (arches.length) {
+          const into = found.find((z) => z.zone === rest);
+          for (const z of arches) {
+            if (into) {
+              for (const [mesh, use] of z.tris) {
+                const cur = into.tris.get(mesh);
+                if (!cur) into.tris.set(mesh, Uint8Array.from(use));
+                else for (let t = 0; t < use.length; t++) if (use[t]) cur[t] = 1;
+              }
+              into.area = (into.area ?? 0) + (z.area ?? 0);
+              into.share = (into.share ?? 0) + (z.share ?? 0);
+              found.splice(found.indexOf(z), 1);
+            } else z.zone = rest;
+          }
+          this.think(
+            'note',
+            `"${slot.name}": SAM's "wheels" zone has no round wheel in it (wheel arches), so it is painted as ${rest}.`,
+          );
         }
         const parts = slotParts(slot);
         const base =
@@ -3010,7 +3036,12 @@ export class ReskinPlugin {
     this.keepCache ??= new Map();
     const key = `${slot.id}|${zones.length}|${roles.size}`;
     if (!this.keepCache.has(key)) {
-      const keep = vehicleKeepTriangles(slot, { zones, roles });
+      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles: roleByName });
+      if (!roleByName)
+        this.think(
+          'note',
+          `"${slot.name}": Muse gave no part roles (no suggestion yet), so SAM zones and names decide.`,
+        );
       this.keepCache.set(key, keep?.none ? null : keep);
       const why = keep?.decisions ?? [];
       if (why.length || keep?.rejected?.length)
