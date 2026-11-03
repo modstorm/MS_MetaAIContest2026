@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
-import { REVIEW_VIEWS, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
+import { REVIEW_VIEWS, THUMB_VIEW, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
 import {
   PART_COLORS,
   chooseOrientation,
@@ -366,9 +366,11 @@ export class ReskinPlugin {
       this.history = [];
       this.historyIndex = -1;
       this.lastResult = null;
+      this.originalThumb = null; // rendered after loading (see historySummary)
       this.status('analyzing', 'Analyzing texture layout…');
       const layout = this.analyze();
       for (const w of layout.warnings) this.emit('warning', { message: w });
+      this.originalThumb = this.renderThumb(); // the unpainted model, first in History
       this.emit('loaded', { model, layout });
       this.status(
         'idle',
@@ -2415,8 +2417,7 @@ export class ReskinPlugin {
     const keptJobs = shown ? [...shown.partJobs].filter(([id]) => keepSlot(id)) : [];
     const count = Math.max(1, ...results.map((r) => r.variants?.length ?? 1));
     const entries = [];
-    // Drop any redo branch: a new paint goes after the current entry.
-    this.history = this.history.slice(0, this.historyIndex + 1);
+    // Every paint is kept: new entries always go at the end, even after an undo.
     for (let vi = 0; vi < count; vi++) {
       const state = new Map(base);
       const partJobs = new Map(keptJobs);
@@ -2448,10 +2449,10 @@ export class ReskinPlugin {
     return entries;
   }
 
-  /** A small three-quarter render of the model as it looks now. */
+  /** A small three-quarter render of the model as it looks now, from above (two sides and the top). */
   renderThumb(size = 160) {
     try {
-      return renderAxisViews(this.model.scene, { size, views: [REVIEW_VIEWS[1]], cols: 1 }).views[0].canvas;
+      return renderAxisViews(this.model.scene, { size, views: [THUMB_VIEW], cols: 1 }).views[0].canvas;
     } catch {
       return null;
     }
@@ -2460,6 +2461,7 @@ export class ReskinPlugin {
   historySummary() {
     return {
       index: this.historyIndex,
+      originalThumb: this.originalThumb ?? null,
       entries: this.history.map(({ id, prompt, variant, of, thumb, fixes }) => ({
         id,
         prompt,

@@ -25,6 +25,15 @@ export const REVIEW_VIEWS = [
   { name: 'bottom', axis: '-Y', dir: [0, -1, 0], up: [0, 0, 1] },
 ];
 
+/** Three-quarter view from above the front-left: two sides and the top show (History thumbnails). */
+const tq = Math.hypot(1, 0.8, 1);
+export const THUMB_VIEW = {
+  name: '3/4',
+  axis: 'front-left, from above',
+  dir: [1 / tq, 0.8 / tq, 1 / tq],
+  up: [0, 1, 0],
+};
+
 /**
  * Renders the model from the six axis directions with orthographic cameras and
  * neutral studio lighting. Returns one canvas per view plus a labelled 3×2
@@ -73,9 +82,12 @@ export function renderAxisViews(object, opts = {}) {
       // Frame tightly: half of the larger box extent across this view, plus a margin.
       // Diagonal views see the box's diagonal, so they use the full radius.
       const axial = v.dir.filter((n) => n !== 0).length === 1;
+      // A view from above (or below) at an angle sees the whole box diagonal.
       const across = axial
         ? [Math.abs(v.dir[0]) ? 0 : size3.x, Math.abs(v.dir[1]) ? 0 : size3.y, Math.abs(v.dir[2]) ? 0 : size3.z]
-        : [Math.hypot(size3.x, size3.z), size3.y];
+        : v.dir[1]
+          ? [size3.length()]
+          : [Math.hypot(size3.x, size3.z), size3.y];
       const half = Math.max(1e-6, Math.max(...across) / 2) * 1.08;
       cam.left = -half;
       cam.right = half;

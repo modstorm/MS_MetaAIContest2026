@@ -548,8 +548,6 @@ function openRun(prompt) {
   $('run-title').textContent = 'Painting';
   $('run-theme').textContent = `"${prompt}"`;
   showSuggestionPanels(false);
-  $('variations').hidden = true;
-  $('variation-list').innerHTML = '';
   $('prompt-bar').style.width = '0%';
   $('prompt-stage').textContent = '';
   setRunButtons({ go: false });
@@ -569,10 +567,6 @@ $('run-cancel').onclick = () => {
   if (plugin.isBusy) plugin.cancel();
   else {
     runDialog.close();
-    if (pickedReview) {
-      pickedReview = false;
-      if ($('opt-review').checked && plugin.canReview) runReview();
-    }
   }
 };
 
@@ -670,9 +664,6 @@ function paintOptions() {
   };
 }
 
-// Set when the user still has to pick a variation; the review runs after they close the panel.
-let pickedReview = false;
-
 async function runReskin(text, suggestion) {
   hideError();
   if (!runDialog.open) openRun(text);
@@ -687,17 +678,10 @@ async function runReskin(text, suggestion) {
       `Reskinned "${res.prompt}": ${res.slots.length} texture(s), ${res.recoloredMaterials} recolored, ${(res.durationMs / 1000).toFixed(1)}s`,
     );
     showFailed(res.failed, text);
-    if ((res.variations?.length ?? 1) > 1) {
-      showVariations(res.variations);
-      pickedReview = true;
-      setRunButtons({ done: true });
-      $('run-title').textContent = 'Done';
-      $('prompt-stage').textContent = `${res.variations.length} variations ready.`;
-    } else {
-      runDialog.close();
-      if ($('opt-review').checked && plugin.canReview) runReview();
-      else setCompare(true); // show before/after straight away
-    }
+    // Every variation lands in History (newest first); the first one is shown.
+    runDialog.close();
+    if ($('opt-review').checked && plugin.canReview) runReview();
+    else setCompare(true); // show before/after straight away
   } catch (err) {
     setRunButtons({});
     if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
@@ -744,28 +728,6 @@ function afterPaint() {
   $('btn-compare').disabled = false;
   $('btn-review').disabled = !plugin.canReview;
   $('btn-reskin').textContent = '✨ Reskin again…';
-}
-
-function showVariations(list) {
-  const host = $('variation-list');
-  host.innerHTML = '';
-  list.forEach((v, i) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.dataset.id = v.id;
-    if (v.thumb) b.append(named(thumb(v.thumb, 200), `variation ${i + 1}`, v.thumb));
-    const cap = document.createElement('span');
-    cap.textContent = `Variation ${i + 1}`;
-    b.append(cap);
-    b.onclick = () => {
-      plugin.applyHistory(v.id);
-      host.querySelectorAll('button').forEach((x) => x.classList.toggle('picked', x === b));
-      if (compareOn) setCompare(true);
-    };
-    if (i === 0) b.classList.add('picked');
-    host.append(b);
-  });
-  $('variations').hidden = false;
 }
 
 async function runSuggest(prompt) {
@@ -1119,17 +1081,12 @@ function renderHistory(h) {
     };
     host.prepend(b); // newest first, the original last
   };
-  add(-1, 'Original', null);
+  add(-1, 'Original', h.originalThumb);
   h.entries.forEach((e, i) =>
     add(i, `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`, e.thumb),
   );
   $('btn-undo').disabled = h.index < 0;
   $('btn-redo').disabled = h.index >= h.entries.length - 1;
-  // Keep the variation picker in sync.
-  const cur = h.entries[h.index];
-  $('variation-list')
-    .querySelectorAll('button')
-    .forEach((b) => b.classList.toggle('picked', b.dataset.id === cur?.id));
 }
 const undo = () => {
   plugin.undo();
