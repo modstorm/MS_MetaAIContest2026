@@ -73,6 +73,7 @@ import {
   keptShare,
   namesOf,
   nearColor,
+  sameShade,
   vehicleKeepTriangles,
 } from './analysis/keepAreas.js';
 import { toTranscribeWav } from './audio/wav.js';
@@ -3108,6 +3109,21 @@ export class ReskinPlugin {
           }),
         ).getImageData(0, 0, W, H).data
       : null;
+    // SAM-found kept areas: any shade of the old body paint there is body (a mirror SAM took
+    // for a headlight), not only the exact color.
+    const softLayer = keep.soft?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.soft.keys()],
+            tris: keep.soft,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
     const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
     const g = ctx2d(baseColor);
     const bd = g.getImageData(0, 0, W, H);
@@ -3120,7 +3136,12 @@ export class ReskinPlugin {
         ? null
         : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
     const tol = opts.keepBodyTolerance ?? 64;
-    const isBody = (i) => body && lightLayer?.[i + 3] >= 128 && nearColor(od[i], od[i + 1], od[i + 2], body, tol);
+    const isBody = (i) =>
+      body &&
+      lightLayer?.[i + 3] >= 128 &&
+      (softLayer?.[i + 3] >= 128
+        ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
+        : nearColor(od[i], od[i + 1], od[i + 2], body, tol));
     let bodyFill = null;
     let n = 0,
       repainted = 0;
@@ -3129,7 +3150,7 @@ export class ReskinPlugin {
       // A swatch of the new body paint: the square where the old body color was most common
       // (outside the kept areas), tiled and shaded by the original's light and dark.
       const on = new Uint8Array(W * H);
-      const isOld = (i) => nearColor(od[i], od[i + 1], od[i + 2], body, tol);
+      const isOld = (i) => sameShade(od[i], od[i + 1], od[i + 2], body, tol);
       for (let p = 0; p < W * H; p++) on[p] = cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128 && isOld(p * 4) ? 1 : 0;
       const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
       if (sq.share > 0.5) {

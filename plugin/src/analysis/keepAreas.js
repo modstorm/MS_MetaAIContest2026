@@ -254,6 +254,9 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
   let arches = false;
   const tris = new Map();
   const lights = new Map();
+  // Kept areas found by SAM (its "headlight" zone, wheel arches): any shade of the old body
+  // paint in them is body, not a lens (a mirror SAM took for a headlight).
+  const soft = new Map();
   const rejected = [];
   let headlights = 0,
     treads = 0;
@@ -262,9 +265,10 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
     if (!cur) map.set(mesh, Uint8Array.from(arr));
     else for (let t = 0; t < arr.length; t++) if (arr[t]) cur[t] = 1;
   };
-  const add = (mesh, arr, isLight = false) => {
+  const add = (mesh, arr, isLight = false, fromSam = false) => {
     merge(tris, mesh, arr);
     if (isLight) merge(lights, mesh, arr);
+    if (fromSam) merge(soft, mesh, arr);
   };
   let total = 0;
   const srcs = new Map();
@@ -326,8 +330,7 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
       // Kept like lights: original pixels back, old body paint replaced by the new body paint.
       for (const [mesh, use] of z.tris ?? []) {
         if (!srcs.get(mesh)) continue;
-        add(mesh, use, true);
-        headlights += 0;
+        add(mesh, use, true, true);
       }
       decisions.push({ name: 'SAM wheel arches zone', role: 'wheel arch (kept)', source: 'SAM + shape check' });
       arches = true;
@@ -351,7 +354,7 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
           rejected.push({ name: 'SAM lights zone', reason: 'too big to be lights, so it is painted' });
           continue;
         }
-        add(mesh, use, true);
+        add(mesh, use, true, true);
         headlights += use.reduce((s, v) => s + v, 0);
         decisions.push({ name: `SAM ${z.zone} zone`, role: 'light', source });
       } else {
@@ -371,9 +374,9 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
   }
   if (!headlights && !treads && !arches)
     return rejected.length || decisions.length
-      ? { tris, lights, headlights, treads, rejected, decisions, none: true }
+      ? { tris, lights, soft, headlights, treads, rejected, decisions, none: true }
       : null;
-  return { tris, lights, headlights, treads, rejected, decisions };
+  return { tris, lights, soft, headlights, treads, rejected, decisions };
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */
@@ -406,22 +409,57 @@ export function keptShare(slot, part, keep) {
  * @param {(p: number) => boolean} inside pixel index → counted
  */
 export function dominantColor(rgba, inside) {
-  const count = new Uint32Array(4096);
-  const sum = new Float64Array(4096 * 3);
+  // Buckets by hue for colorful pixels (so a shaded body paint, light to dark, is one color)
+  // and by brightness for greys.
+  const count = new Uint32Array(40);
+  const sum = new Float64Array(40 * 3);
   const n = rgba.length / 4;
   for (let p = 0; p < n; p++) {
     if (!inside(p)) continue;
     const i = p * 4;
-    const b = ((rgba[i] >> 4) << 8) | ((rgba[i + 1] >> 4) << 4) | (rgba[i + 2] >> 4);
+    const b = colorBucket(rgba[i], rgba[i + 1], rgba[i + 2]);
     count[b]++;
     sum[b * 3] += rgba[i];
     sum[b * 3 + 1] += rgba[i + 1];
     sum[b * 3 + 2] += rgba[i + 2];
   }
   let best = -1;
-  for (let b = 0; b < 4096; b++) if (count[b] && (best < 0 || count[b] > count[best])) best = b;
+  for (let b = 0; b < 40; b++) if (count[b] && (best < 0 || count[b] > count[best])) best = b;
   if (best < 0) return null;
   return [0, 1, 2].map((k) => sum[best * 3 + k] / count[best]);
+}
+
+function hsv(r, g, b) {
+  const mx = Math.max(r, g, b),
+    mn = Math.min(r, g, b),
+    d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / d + 6) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+  }
+  return [h * 60, mx ? d / mx : 0, mx / 255];
+}
+
+/** 0..31 = hue bins of colorful pixels, 32..39 = grey levels. */
+function colorBucket(r, g, b) {
+  const [h, s, v] = hsv(r, g, b);
+  if (s >= 0.35 && v >= 0.15) return Math.floor(h / 11.25) % 32;
+  return 32 + Math.min(7, Math.floor(v * 8));
+}
+
+/**
+ * Same paint as `color` in another shade: for a colorful paint, the same hue (within 20°) and
+ * clearly colorful; otherwise within `tol` in RGB.
+ */
+export function sameShade(r, g, b, color, tol = 64) {
+  if (nearColor(r, g, b, color, tol)) return true;
+  const [h0, s0] = hsv(color[0], color[1], color[2]);
+  if (s0 < 0.35) return false;
+  const [h, s, v] = hsv(r, g, b);
+  const dh = Math.min(Math.abs(h - h0), 360 - Math.abs(h - h0));
+  return s >= 0.35 && v >= 0.12 && dh <= 20;
 }
 
 /** True when (r, g, b) is within `tol` (RGB distance) of `color`. */

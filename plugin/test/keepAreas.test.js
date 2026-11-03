@@ -76,3 +76,23 @@ describe("Muse's part roles come before names", () => {
     expect(mergeBodyPanels(parts)[0].mergedFrom.sort()).toEqual(['Door', 'Hood']);
   });
 });
+
+import { sameShade } from '../src/analysis/keepAreas.js';
+
+describe('old body paint in SAM-found kept areas', () => {
+  it('a shaded red mirror matches red body paint, a white lens does not', () => {
+    const body = [200, 10, 25];
+    expect(sameShade(110, 4, 12, body)).toBe(true); // dark red mirror side
+    expect(sameShade(235, 235, 240, body)).toBe(false); // headlight lens
+    expect(sameShade(20, 20, 20, body)).toBe(false); // black trim
+    expect(sameShade(230, 160, 20, body)).toBe(false); // amber indicator
+  });
+  it('the most common paint counts all its shades together', () => {
+    const px = [];
+    for (let i = 0; i < 30; i++) px.push(90 + i * 4, 5, 10, 255); // 30 reds, all different
+    for (let i = 0; i < 20; i++) px.push(240, 240, 240, 255); // 20 identical whites
+    const c = dominantColor(new Uint8ClampedArray(px), () => true);
+    expect(c[0]).toBeGreaterThan(100);
+    expect(c[1]).toBeLessThan(20);
+  });
+});
