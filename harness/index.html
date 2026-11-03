@@ -325,8 +325,11 @@
       <h2>Muse suggests</h2>
       <p class="muted" id="sugg-theme"></p>
       <section id="suggestion" class="suggestion" hidden>
-        <label for="sugg-prompt">Muse's detailed prompt (edit freely)</label>
+        <label for="sugg-prompt" id="sugg-label">Muse's detailed prompt (edit freely)</label>
         <textarea id="sugg-prompt" rows="5"></textarea>
+        <label class="inline"
+          ><input id="sugg-mine" type="checkbox" /> Use my prompt instead (shows and paints your own prompt)</label
+        >
       </section>
       <section id="suggestion-more" class="suggestion" hidden>
         <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
@@ -342,8 +345,7 @@
         <button type="button" id="sugg-new" title="Type a new theme (Muse looks at the model again)">New theme…</button>
         <span class="spacer"></span>
         <button type="button" id="sugg-close">Cancel</button>
-        <button type="button" id="prompt-original" hidden>Use my prompt</button>
-        <button type="button" id="run-go" class="primary" hidden>Paint with this prompt</button>
+        <button type="button" id="run-go" class="primary" hidden>Paint</button>
       </div>
     </dialog>
 

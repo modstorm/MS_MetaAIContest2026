@@ -444,7 +444,7 @@ function reskinClick() {
   if (dialog.open) dialog.close();
   promptText.value = lastSuggestion.theme;
   openRun(lastSuggestion.theme);
-  showSuggestion(lastSuggestion.suggestion, lastSuggestion.prompt);
+  showSuggestion(lastSuggestion.suggestion, lastSuggestion.prompt, lastSuggestion);
   $('prompt-stage').textContent = 'Same suggestion as last time: edit the prompt if you like, then paint.';
 }
 $('btn-reskin').onclick = reskinClick;
@@ -559,9 +559,9 @@ function openRun(prompt) {
 
 function setRunButtons({ go = false, busy = false, done = false } = {}) {
   $('run-go').hidden = !go;
-  $('prompt-original').hidden = !go;
-  $('run-go').textContent = 'Paint with this prompt';
+  $('run-go').textContent = 'Paint';
   $('sugg-prompt').disabled = !go;
+  $('sugg-mine').disabled = !go;
   $('run-cancel').textContent = busy ? 'Stop' : done ? 'Done' : 'Close';
 }
 
@@ -576,7 +576,7 @@ $('run-cancel').onclick = () => {
   }
 };
 
-function showSuggestion(s, prompt = s.prompt) {
+function showSuggestion(s, prompt = s.prompt, { mine = promptText.value.trim(), useMine = false } = {}) {
   pending = s;
   const sheet = $('sugg-sheet');
   sheet.innerHTML = '';
@@ -586,7 +586,10 @@ function showSuggestion(s, prompt = s.prompt) {
   $('sugg-parts').innerHTML = (s.parts ?? [])
     .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
     .join('');
-  $('sugg-prompt').value = prompt;
+  suggTexts.muse = prompt;
+  suggTexts.mine = mine;
+  $('sugg-mine').checked = useMine;
+  renderSuggText();
   $('sugg-tips').textContent = s.tips ?? '';
   const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
     const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
@@ -781,17 +784,33 @@ async function runSuggest(prompt) {
   }
 }
 
+// The popup's prompt box shows Muse's detailed prompt, or your own with "Use my prompt instead";
+// each keeps its edits when you switch.
+const suggTexts = { muse: '', mine: '' };
+const suggKey = () => ($('sugg-mine').checked ? 'mine' : 'muse');
+function renderSuggText() {
+  const mine = $('sugg-mine').checked;
+  $('sugg-label').textContent = mine ? 'Your prompt (edit freely)' : "Muse's detailed prompt (edit freely)";
+  $('sugg-prompt').value = suggTexts[suggKey()];
+}
+$('sugg-mine').addEventListener('change', () => {
+  suggTexts[$('sugg-mine').checked ? 'muse' : 'mine'] = $('sugg-prompt').value; // keep the edits of the one left
+  renderSuggText();
+});
+
 $('run-go').onclick = () => {
+  suggTexts[suggKey()] = $('sugg-prompt').value;
   const text = $('sugg-prompt').value.trim() || promptText.value.trim();
-  if (pending) lastSuggestion = { theme: promptText.value.trim(), suggestion: pending, prompt: text };
+  if (pending)
+    lastSuggestion = {
+      theme: promptText.value.trim(),
+      suggestion: pending,
+      prompt: suggTexts.muse,
+      mine: suggTexts.mine,
+      useMine: $('sugg-mine').checked,
+    };
   closeSuggestion(true);
   runReskin(text, pending);
-};
-$('prompt-original').onclick = () => {
-  if (pending)
-    lastSuggestion = { theme: promptText.value.trim(), suggestion: pending, prompt: $('sugg-prompt').value.trim() };
-  closeSuggestion(true);
-  runReskin(promptText.value.trim(), pending);
 };
 
 // ------------------------------------------------------------------ filter probe

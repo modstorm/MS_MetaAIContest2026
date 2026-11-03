@@ -429,7 +429,7 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
-    assert.equal(await page.textContent('#run-go'), 'Paint with this prompt');
+    assert.equal(await page.textContent('#run-go'), 'Paint');
     const sheet = await page.$eval('#sugg-sheet canvas', (c) => [c.width, c.height]);
     assert.ok(sheet[0] > sheet[1], 'contact sheet is 3x2');
     await page.screenshot({ path: `${outDir}05-muse-suggestion.png` });
@@ -451,6 +451,15 @@ try {
     assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(calls.length, n1, 'no Muse call to reopen the suggestion');
+    // "Use my prompt instead" switches the box to the typed theme and back, keeping edits.
+    await page.check('#sugg-mine');
+    assert.equal(await page.inputValue('#sugg-prompt'), 'ice');
+    assert.match(await page.textContent('#sugg-label'), /Your prompt/);
+    await page.fill('#sugg-prompt', 'ice and snow');
+    await page.uncheck('#sugg-mine');
+    assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
+    await page.check('#sugg-mine');
+    assert.equal(await page.inputValue('#sugg-prompt'), 'ice and snow');
     // New theme… goes back to the prompt popup.
     await page.click('#sugg-new');
     await page.waitForSelector('#prompt-dialog[open]');
