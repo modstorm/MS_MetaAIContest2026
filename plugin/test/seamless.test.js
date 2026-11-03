@@ -77,3 +77,17 @@ describe('area themes for buildings', () => {
     expect(areaThemesPrompt('lava', ['Body', 'Head'])).not.toMatch(/roof/);
   });
 });
+
+import { detectAssetClass } from '../src/assetClasses.js';
+
+describe('building detection', () => {
+  it('car parts named window / door do not make a building', () => {
+    expect(detectAssetClass({ partNames: ['Body', 'Window_L', 'Door_FL', 'Door_FR', 'Wheel_FL'] })).not.toBe(
+      'building',
+    );
+    expect(detectAssetClass({ partNames: ['Floor', 'Wall', 'Door'] })).not.toBe('building');
+  });
+  it('a house is still a building', () => {
+    expect(detectAssetClass({ subject: 'a small brick house', partNames: ['Walls', 'Roof'] })).toBe('building');
+  });
+});

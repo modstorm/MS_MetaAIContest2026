@@ -180,7 +180,9 @@ export const ASSET_CLASSES = [
   {
     id: 'building',
     label: 'Building / structure',
-    keywords: /\b(building|house|tower|castle|wall|roof|door|window|bridge|structure|facade|temple|shop|hut|floor)\b/i,
+    // Not door / window / wall / floor: cars, rooms and props have parts named that too.
+    keywords:
+      /\b(building|buildings|house|houses|tower|castle|roof|rooftop|bridge|structure|facade|temple|shop|hut|cottage|barn|church|cabin|warehouse|skyscraper|apartment)\b/i,
     rules: [
       'This is a building. Windows, doors and trim stay exactly where they are; walls get brick, stone, wood or plaster in even courses; top (magenta) areas are roofs.',
       'Keep the scale of bricks and planks consistent across all walls. No readable signs or text.',

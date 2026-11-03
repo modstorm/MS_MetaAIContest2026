@@ -356,6 +356,7 @@ export class ReskinPlugin {
       this.samZones.clear();
       this.suggestionCache.clear();
       this.modelAnalysis = null;
+      this.topBottomNoted = null;
       this.lastPartJobs.clear();
       this.regionCache.clear();
       this.locked.clear();
@@ -2874,6 +2875,13 @@ export class ReskinPlugin {
   topBottomPieces(slot, part, names) {
     const tb = splitTopBottom(slot, part, { names });
     if (!tb) return null;
+    this.topBottomNoted ??= new Set();
+    if (!this.topBottomNoted.has(slot.id)) {
+      this.topBottomNoted.add(slot.id);
+      this.emit('warning', {
+        message: `"${slot.name}": treated as a building, so its top is painted as a simple roof and its underside flat black. If it is not a building, pick another asset type in the options.`,
+      });
+    }
     const S = 256;
     const restLayer = partLayer(slot, tb.rest, S, S);
     const rd = ctx2d(restLayer).getImageData(0, 0, S, S).data;
