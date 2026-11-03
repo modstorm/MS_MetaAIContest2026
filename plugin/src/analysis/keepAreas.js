@@ -75,6 +75,33 @@ function triangleGeometry(mesh, src) {
  * (the flat sidewalls and rim face sideways along the axle).
  */
 function axleAxis(g, use) {
+  // A wheel's size: two sides equal (its diameter) and the axle side different. That odd
+  // side is the axle. Normals decide only when the box does not say (a wide tyre has more
+  // tread than sidewall, so its tread faces outvote the sidewalls).
+  const lo = [Infinity, Infinity, Infinity],
+    hi = [-Infinity, -Infinity, -Infinity];
+  for (let t = 0; t < g.n; t++) {
+    if (use && !use[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const c = g.centroid[t * 3 + k];
+      if (c < lo[k]) lo[k] = c;
+      if (c > hi[k]) hi[k] = c;
+    }
+  }
+  const d = [0, 1, 2].map((k) => Math.max(0, hi[k] - lo[k]));
+  let best = -1,
+    bestScore = Infinity;
+  for (let k = 0; k < 3; k++) {
+    const [i, j] = [0, 1, 2].filter((x) => x !== k);
+    const big = Math.max(d[i], d[j]);
+    if (!big) continue;
+    const score = Math.abs(d[i] - d[j]) / big;
+    if (score < bestScore && d[k] < big * 0.85) {
+      bestScore = score;
+      best = k;
+    }
+  }
+  if (best >= 0 && bestScore < 0.25) return best;
   const share = [0, 0, 0];
   for (let t = 0; t < g.n; t++) {
     if (use && !use[t]) continue;

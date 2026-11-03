@@ -2120,6 +2120,10 @@ try {
           parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions ?? []),
           checks: m.thinking.filter((t) => t.step === 'check').length,
         };
+        // A wide tyre (more tread than sidewall): its tread is still found and kept.
+        await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true }), { name: 'wide' });
+        const wide = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+        res.wideTread = mean(wide.slots[0].canvas, 40, 410, 180, 80);
         // A texture left as the original is flagged by the check.
         await p.postModel(glb.slice(0), { name: 'unpainted' });
         const slot = p.layout.slots[0];
@@ -2164,6 +2168,7 @@ try {
       assert.ok(out.roles.parts.some((d) => d.role === 'light' && d.source === 'Muse'));
       assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
       assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
+      assert.ok(near(out.wideTread, [91, 91, 91], 12), `wide tyre: tread painted ${out.wideTread}`);
       assert.deepEqual(
         out.zoneWheel,
         [false, true, false],

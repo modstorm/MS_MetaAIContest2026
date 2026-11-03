@@ -459,7 +459,7 @@ export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
  * 128-256 × 256-384 red; tread 0-256 × 384-512 striped grey; sidewalls 256-384 / 384-512
  * × 384-512 mid grey.
  */
-export async function buildVehicleTestGlb({ groupName } = {}) {
+export async function buildVehicleTestGlb({ groupName, tyreWidth = 0.2, openTyre = false } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d');
@@ -512,7 +512,8 @@ export async function buildVehicleTestGlb({ groupName } = {}) {
   fit(tail, [0.27, 0.52, 0.48, 0.73]);
   add(tail, 'TailLight_R', [-1.02, 0.65, 0.3]);
   // Wheel: axle along Z (the car's side axis here is Z: the wheel faces ±Z).
-  const wheel = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 24);
+  // openTyre: a tube with no side caps (a wide tyre: more tread than sidewall).
+  const wheel = new THREE.CylinderGeometry(0.3, 0.3, tyreWidth, 24, 1, openTyre);
   const n = wheel.getAttribute('normal');
   const isCap = (i, s) => Math.abs(n.getY(i)) > 0.9 && Math.sign(n.getY(i)) === s;
   fit(wheel, [0.02, 0.77, 0.48, 0.98], (i) => Math.abs(n.getY(i)) <= 0.9);
