@@ -78,6 +78,7 @@ import {
   namesOf,
   nearColor,
   sameShade,
+  sameStrongShade,
   vehicleKeepTriangles,
 } from './analysis/keepAreas.js';
 import { toTranscribeWav } from './audio/wav.js';
@@ -3426,6 +3427,20 @@ export class ReskinPlugin {
       : null;
     // SAM-found kept areas: any shade of the old body paint there is body (a mirror SAM took
     // for a headlight), not only the exact color.
+    // SAM's windows zone: old body paint in it (a side mirror SAM took for a window) is body.
+    const glassLayer = keep.samGlass?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.samGlass.keys()],
+            tris: keep.samGlass,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
     const softLayer = keep.soft?.size
       ? ctx2d(
           drawUvGuide(slot, W, H, {
@@ -3447,7 +3462,7 @@ export class ReskinPlugin {
       drawUvGuide(slot, W, H, { wireframe: false, fillColor: '#ffffff', background: null }),
     ).getImageData(0, 0, W, H).data;
     const body =
-      opts.keepBodyColor === false || !lightLayer
+      opts.keepBodyColor === false || (!lightLayer && !glassLayer)
         ? null
         : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
     const tol = opts.keepBodyTolerance ?? 64;
@@ -3458,10 +3473,12 @@ export class ReskinPlugin {
     const isBody = (i) =>
       body &&
       colorful &&
-      lightLayer?.[i + 3] >= 128 &&
+      (lightLayer?.[i + 3] >= 128 || glassLayer?.[i + 3] >= 128) &&
       (softLayer?.[i + 3] >= 128
         ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
-        : nearColor(od[i], od[i + 1], od[i + 2], body, tol));
+        : glassLayer?.[i + 3] >= 128
+          ? sameStrongShade(od[i], od[i + 1], od[i + 2], body, tol)
+          : nearColor(od[i], od[i + 1], od[i + 2], body, tol));
     const before = new Uint8ClampedArray(bd.data);
     let n = 0;
     for (let i = 0; i < ld.length; i += 4) {
@@ -3475,13 +3492,15 @@ export class ReskinPlugin {
     // paint found right next to that light.
     let repainted = 0,
       cleaned = 0;
-    if (body && lightLayer && opts.cleanAroundLights !== false) {
+    if (body && (lightLayer || glassLayer) && opts.cleanAroundLights !== false) {
       const N = W * H;
+      const ringFrom = new Uint8Array(N);
       const light = new Uint8Array(N),
         kept = new Uint8Array(N),
         inUv = new Uint8Array(N);
       for (let p = 0; p < N; p++) {
-        light[p] = lightLayer[p * 4 + 3] >= 128 ? 1 : 0;
+        ringFrom[p] = lightLayer?.[p * 4 + 3] >= 128 ? 1 : 0;
+        light[p] = ringFrom[p] || glassLayer?.[p * 4 + 3] >= 128 ? 1 : 0;
         kept[p] = ld[p * 4 + 3] >= 128 ? 1 : 0;
         inUv[p] = cover[p * 4 + 3] >= 128 ? 1 : 0;
       }
@@ -3517,6 +3536,7 @@ export class ReskinPlugin {
         before,
         orig: od,
         light,
+        ringFrom,
         kept,
         cover: inUv,
         body,

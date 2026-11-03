@@ -465,6 +465,7 @@ export async function buildVehicleTestGlb({
   openTyre = false,
   wheelRotation = null,
   windowPart = false,
+  mirrorName = 'MirrorLight_L',
 } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
@@ -517,7 +518,7 @@ export async function buildVehicleTestGlb({
   add(head, 'Headlight_L', [1.02, 0.65, 0.3]);
   const mirror = new THREE.BoxGeometry(0.15, 0.1, 0.1);
   fit(mirror, [0.52, 0.52, 0.73, 0.73]);
-  add(mirror, 'MirrorLight_L', [0.6, 0.95, 0.55]);
+  add(mirror, mirrorName, [0.6, 0.95, 0.55]);
   if (windowPart) {
     // A side window and a door, for paint-order tests (the window is glass, the door body).
     const win = new THREE.BoxGeometry(0.5, 0.25, 0.02);

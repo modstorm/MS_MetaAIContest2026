@@ -396,6 +396,9 @@ export function vehicleKeepTriangles(
   // Kept areas found by SAM (its "headlight" zone, wheel arches): any shade of the old body
   // paint in them is body, not a lens (a mirror SAM took for a headlight).
   const soft = new Map();
+  // SAM's windows zone: kept, but SAM often takes the side mirrors (body paint) for windows, so
+  // old body paint in it gets the new paint like in a lights zone.
+  const samGlass = new Map();
   const rejected = [];
   let headlights = 0,
     treads = 0;
@@ -533,6 +536,7 @@ export function vehicleKeepTriangles(
       for (const [mesh, use] of z.tris ?? []) {
         if (!srcs.get(mesh)) continue;
         add(mesh, use);
+        merge(samGlass, mesh, use);
         glass += use.reduce((s, v) => s + v, 0);
       }
       decisions.push({
@@ -597,9 +601,9 @@ export function vehicleKeepTriangles(
   }
   if (!headlights && !treads && !arches && !glass && !user)
     return rejected.length || decisions.length
-      ? { tris, lights, soft, headlights, treads, glass, user, rejected, decisions, none: true }
+      ? { tris, lights, soft, samGlass, headlights, treads, glass, user, rejected, decisions, none: true }
       : null;
-  return { tris, lights, soft, headlights, treads, glass, user, rejected, decisions };
+  return { tris, lights, soft, samGlass, headlights, treads, glass, user, rejected, decisions };
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */
@@ -685,6 +689,18 @@ export function sameShade(r, g, b, color, tol = 64) {
   return s >= 0.35 && v >= 0.12 && dh <= 20;
 }
 
+/**
+ * sameShade, but also about as saturated as the body paint: a tinted window (dark blue-grey) is
+ * not a shade of a blue body, a side mirror in shadow is.
+ */
+export function sameStrongShade(r, g, b, color, tol = 64) {
+  if (nearColor(r, g, b, color, tol)) return true;
+  if (!sameShade(r, g, b, color, tol)) return false;
+  const [, s0] = hsv(color[0], color[1], color[2]);
+  const [, s] = hsv(r, g, b);
+  return s >= 0.7 * s0;
+}
+
 /** True when (r, g, b) is within `tol` (RGB distance) of `color`. */
 export function nearColor(r, g, b, color, tol = 64) {
   const dr = r - color[0],
@@ -754,13 +770,14 @@ export function isColorful(color) {
  * @param {{ W: number, H: number, painted: Uint8ClampedArray, before: Uint8ClampedArray,
  *   orig: Uint8ClampedArray, light: Uint8Array, kept: Uint8Array, cover: Uint8Array,
  *   body: number[], bodyInside: (i: number) => boolean, bodyAround: (i: number) => boolean,
- *   ring?: number, fallback?: Uint8ClampedArray }} o  light/kept/cover: 1 per pixel; i = rgba
+ *   ring?: number, fallback?: Uint8ClampedArray, ringFrom?: Uint8Array }} o  light/kept/cover: 1 per pixel; i = rgba
  *   index; fallback: new body paint (rgba) for old body paint inside a light with no painted
  *   surface next to it (a light that is its own UV island)
  * @returns {{ inside: number, around: number, lights: number }} pixels changed, light spots
  */
 export function cleanAroundLights(o) {
   const { W, H, painted, before, orig, light, kept, cover, body, bodyInside, bodyAround, fallback } = o;
+  const ringFrom = o.ringFrom ?? light; // spots whose surroundings are cleaned (not windows)
   const R = Math.max(2, o.ring ?? Math.round(W / 128));
   const N = W * H;
   const dist = new Int16Array(N).fill(-1);
@@ -789,6 +806,8 @@ export function cleanAroundLights(o) {
     spots++;
   }
   if (!spots) return { inside: 0, around: 0, lights: 0 };
+  const ringSpot = new Uint8Array(spots);
+  for (let p = 0; p < N; p++) if (ringFrom[p] && comp[p] >= 0) ringSpot[comp[p]] = 1;
   // Grow outwards (inside the texture's islands, not over other kept pixels), up to 3 rings.
   let h = 0,
     t = 0;
@@ -839,7 +858,7 @@ export function cleanAroundLights(o) {
       }
       continue;
     }
-    if (d === 0 ? !bodyInside(i) : !bodyAround(i)) continue;
+    if (d === 0 ? !bodyInside(i) : !ringSpot[comp[p]] || !bodyAround(i)) continue;
     const shade = bodyLum < 24 ? 1 : Math.min(1.2, Math.max(0.6, lum(orig[i], orig[i + 1], orig[i + 2]) / bodyLum));
     painted[i] = Math.min(255, c[0] * shade);
     painted[i + 1] = Math.min(255, c[1] * shade);
