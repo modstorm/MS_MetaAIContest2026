@@ -2117,7 +2117,7 @@ try {
         res.roles = {
           tread: mean(m.slots[0].canvas, 40, 410, 180, 80),
           head: mean(m.slots[0].canvas, 40, 296, 48, 48),
-          parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions),
+          parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions ?? []),
           checks: m.thinking.filter((t) => t.step === 'check').length,
         };
         // A texture left as the original is flagged by the check.
@@ -2135,7 +2135,23 @@ try {
           const n = (idx ? idx.count : m.geometry.getAttribute('position').count) / 3;
           return { tris: new Map([[m, new Uint8Array(n).fill(1)]]) };
         };
-        res.zoneWheel = ka ? [ka.zoneHasWheel(slot, zone('Body')), ka.zoneHasWheel(slot, zone('Wheel_FL'))] : null;
+        // Half a wheel (like a wheel arch around it) is not a wheel.
+        const half = zone('Wheel_FL');
+        for (const [m, use] of half.tris) {
+          const pos = m.geometry.getAttribute('position');
+          const idx = m.geometry.index;
+          m.updateWorldMatrix(true, false);
+          const v = new m.position.constructor();
+          for (let t = 0; t < use.length; t++) {
+            let y = 0;
+            for (let k = 0; k < 3; k++)
+              y += v.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k).applyMatrix4(m.matrixWorld).y;
+            if (y / 3 < m.getWorldPosition(v.clone()).y) use[t] = 0;
+          }
+        }
+        res.zoneWheel = ka
+          ? [ka.zoneHasWheel(slot, zone('Body')), ka.zoneHasWheel(slot, zone('Wheel_FL')), ka.zoneHasWheel(slot, half)]
+          : null;
         return res;
       });
       const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
@@ -2148,7 +2164,11 @@ try {
       assert.ok(out.roles.parts.some((d) => d.role === 'light' && d.source === 'Muse'));
       assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
       assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
-      assert.deepEqual(out.zoneWheel, [false, true], 'box body is not a wheel, the cylinder is');
+      assert.deepEqual(
+        out.zoneWheel,
+        [false, true, false],
+        'box body and half a wheel are not wheels, the cylinder is',
+      );
       assert.ok(!near(out.grouped.body, [32, 80, 192], 10), `grouped car: body kept as tyre ${out.grouped.body}`);
       for (const mode of ['auto', 'atlas']) {
         const o = out[mode];

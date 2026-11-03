@@ -1839,30 +1839,18 @@ export class ReskinPlugin {
             });
           continue;
         }
-        // Vehicles: a "wheels" zone with no wheel-shaped piece in it is the body's wheel arches
-        // (SAM marks the arch around a wheel). Painting it as a wheel draws rims on the body,
-        // so it joins the body zone.
-        const arches =
-          assetClass === 'vehicle' ? found.filter((z) => z.zone === 'wheels' && !zoneHasWheel(slot, z)) : [];
-        if (arches.length) {
-          const into = found.find((z) => z.zone === rest);
-          for (const z of arches) {
-            if (into) {
-              for (const [mesh, use] of z.tris) {
-                const cur = into.tris.get(mesh);
-                if (!cur) into.tris.set(mesh, Uint8Array.from(use));
-                else for (let t = 0; t < use.length; t++) if (use[t]) cur[t] = 1;
-              }
-              into.area = (into.area ?? 0) + (z.area ?? 0);
-              into.share = (into.share ?? 0) + (z.share ?? 0);
-              found.splice(found.indexOf(z), 1);
-            } else z.zone = rest;
-          }
-          this.think(
-            'note',
-            `"${slot.name}": SAM's "wheels" zone has no round wheel in it (wheel arches), so it is painted as ${rest}.`,
-          );
-        }
+        // Vehicles: a "wheels" zone with no round wheel in it is the body's wheel arches (SAM
+        // marks the arch around a wheel). Painted as a wheel, Muse drew rims there; painted as
+        // body it came out flat grey. The arches keep their original (dark) pixels instead.
+        if (assetClass === 'vehicle')
+          for (const z of found)
+            if (z.zone === 'wheels' && !zoneHasWheel(slot, z)) {
+              z.zone = 'wheel arches';
+              this.think(
+                'note',
+                `"${slot.name}": SAM's "wheels" zone has no round wheel in it, so it is the wheel arches: kept as the original.`,
+              );
+            }
         const parts = slotParts(slot);
         const base =
           parts.length === 1 ? parts[0] : { name: slot.name, meshes: slot.meshes, up: null, mirrored: false };
@@ -3036,7 +3024,23 @@ export class ReskinPlugin {
     this.keepCache ??= new Map();
     const key = `${slot.id}|${zones.length}|${roles.size}`;
     if (!this.keepCache.has(key)) {
-      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles: roleByName });
+      // Muse sees SAM zones as parts named "<part> (<zone>)": its roles are matched per zone.
+      let zoneRoles = null;
+      if (roleByName)
+        for (const z of zones) {
+          const role = roleByName[roleKey(z.name)] ?? roleByName[roleKey(z.zone)];
+          if (role) (zoneRoles ??= {})[z.zone] = role;
+        }
+      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles });
+      this.think(
+        'parts',
+        roleByName
+          ? `"${slot.name}": Muse says ${Object.entries(this.partRolesFor(opts) ?? {})
+              .map(([k, v]) => `${k} = ${v}`)
+              .join(', ')}`
+          : `"${slot.name}": no Muse part roles yet`,
+        { slotId: slot.id, slotName: slot.name, museRoles: roleByName, zoneRoles },
+      );
       if (!roleByName)
         this.think(
           'note',

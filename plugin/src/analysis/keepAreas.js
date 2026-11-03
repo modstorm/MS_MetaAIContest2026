@@ -182,7 +182,21 @@ export function isWheelShaped(mesh, src, use = null) {
   const others = [0, 1, 2].filter((k) => k !== axis);
   const d0 = size.getComponent(others[0]),
     d1 = size.getComponent(others[1]);
-  return d0 > 0 && d1 > 0 && Math.max(d0, d1) / Math.min(d0, d1) < 1.4 && size.getComponent(axis) <= Math.min(d0, d1);
+  if (!(d0 > 0 && d1 > 0 && Math.max(d0, d1) / Math.min(d0, d1) < 1.4 && size.getComponent(axis) <= Math.min(d0, d1)))
+    return false;
+  // Round all the way: the outer ring must go around the axle (a wheel arch or a patch only
+  // covers part of the circle). At least 9 of 12 sectors around the centre must be filled.
+  const center = box.getCenter(new THREE.Vector3());
+  const R = Math.max(d0, d1) / 2;
+  const sectors = new Set();
+  for (let t = 0; t < g.n; t++) {
+    if (use && !use[t]) continue;
+    const x = g.centroid[t * 3 + others[0]] - center.getComponent(others[0]);
+    const y = g.centroid[t * 3 + others[1]] - center.getComponent(others[1]);
+    if (Math.hypot(x, y) < R * 0.5) continue;
+    sectors.add(Math.floor(((Math.atan2(y, x) + Math.PI) / (2 * Math.PI)) * 12) % 12);
+  }
+  return sectors.size >= 9;
 }
 
 /**
@@ -237,6 +251,7 @@ function meshArea(mesh, src, use = null) {
  */
 export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, roles = null, zoneRoles = null } = {}) {
   const decisions = [];
+  let arches = false;
   const tris = new Map();
   const lights = new Map();
   const rejected = [];
@@ -307,6 +322,17 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
     }
   }
   for (const z of zones) {
+    if (z.zone === 'wheel arches') {
+      // Kept like lights: original pixels back, old body paint replaced by the new body paint.
+      for (const [mesh, use] of z.tris ?? []) {
+        if (!srcs.get(mesh)) continue;
+        add(mesh, use, true);
+        headlights += 0;
+      }
+      decisions.push({ name: 'SAM wheel arches zone', role: 'wheel arch (kept)', source: 'SAM + shape check' });
+      arches = true;
+      continue;
+    }
     if (z.zone !== 'lights' && z.zone !== 'wheels') continue;
     // Muse's role for this zone (it sees the zones as the parts of the model) wins over the
     // zone's name.
@@ -343,7 +369,7 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
       }
     }
   }
-  if (!headlights && !treads)
+  if (!headlights && !treads && !arches)
     return rejected.length || decisions.length
       ? { tris, lights, headlights, treads, rejected, decisions, none: true }
       : null;
