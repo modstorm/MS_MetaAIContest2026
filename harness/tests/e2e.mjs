@@ -152,8 +152,7 @@ async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
   await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
-  if (variations > 1) await page.waitForSelector('#variations:not([hidden])', { timeout: 120_000 });
-  else await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+  await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
 }
 
 function parseGlb(buf) {
@@ -266,7 +265,7 @@ try {
       await page.screenshot({ path: `${outDir}08-variations-fail.png` });
       throw e;
     });
-    assert.equal(await page.locator('#variation-list button').count(), 3);
+    // No picker: every variation goes to History, newest first, with a thumbnail of the original last.
     const h = await page.evaluate(() => window.reskin.plugin.historySummary());
     assert.equal(h.entries.length, 3);
     assert.equal(h.index, 0);
@@ -274,13 +273,12 @@ try {
     // so compare the stored states instead).
     const mapOf = () => page.$eval('#generated [data-kind="baseColor"] canvas', (c) => c.toDataURL().length);
     const first = await mapOf();
-    await page.click('#variation-list button:nth-child(2)');
+    await page.click('#history button.entry[data-index="1"]');
     assert.notEqual(await mapOf(), first, 'generated maps follow the picked variation');
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 1);
     await page.screenshot({ path: `${outDir}08-variations.png` });
-    await page.click('#run-cancel');
-    await page.waitForSelector('#run-dialog:not([open])', { state: 'attached' });
     assert.equal(await page.locator('#history button.entry').count(), 4); // original + 3
+    assert.equal(await page.locator('#history button.entry[data-index="-1"] canvas').count(), 1, 'original thumbnail');
     assert.equal(await page.getAttribute('#history button.entry:first-child', 'data-index'), '2', 'newest first');
     await page.click('#btn-undo');
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 0);
@@ -288,6 +286,8 @@ try {
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
     assert.match(await page.textContent('#generated'), /Original textures/);
     await page.click('#history button.entry[data-index="1"]');
+    // The slider came on by itself after painting; switch it off and on again.
+    if (await page.isVisible('#compare-handle')) await page.click('#btn-compare');
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.waitForTimeout(300);
@@ -296,6 +296,11 @@ try {
     assert.ok(!(await page.isVisible('#compare-handle')));
     // Turntable spins after load and stops when the user drags.
     assert.ok(await page.evaluate(() => window.reskin.viewer.controls.autoRotate));
+    // History keeps everything: a new paint after going back still keeps all three variations.
+    await page.click('#btn-reskin');
+    await reskinViaPopup(page, 'frozen ice crystal');
+    assert.equal(await page.locator('#history button.entry').count(), 5); // original + 3 + 1
+    assert.equal(await page.getAttribute('#history button.entry.current', 'data-index'), '3');
     await page.context().close();
   });
 
