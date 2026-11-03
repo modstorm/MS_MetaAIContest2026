@@ -54,3 +54,25 @@ describe('vehicle keep areas: body color', () => {
     expect(sq.x).toBeGreaterThanOrEqual(8);
   });
 });
+
+import { parsePartRoles } from '../src/muse/prompts.js';
+import { mergeBodyPanels, roleKey } from '../src/ReskinPlugin.js';
+
+describe("Muse's part roles come before names", () => {
+  it('parses roles and maps synonyms', () => {
+    expect(parsePartRoles({ 'Wheel FL': 'tires', Body: 'body', X: 'banana', Lamp: 'headlight' })).toEqual({
+      'Wheel FL': 'tyre',
+      Body: 'body',
+      Lamp: 'light',
+    });
+    expect(parsePartRoles(null)).toBeUndefined();
+    expect(roleKey('Wheel_FL')).toBe(roleKey('wheel fl'));
+  });
+  it('a part Muse calls body is merged into the body even if its name says grille', () => {
+    const p = (name) => ({ name, meshes: [], bbox: [0, 0, 1, 1], area: 1 });
+    const parts = [p('Door'), p('Hood'), p('Grille'), p('Light Bar')];
+    const merged = mergeBodyPanels(parts, { grille: 'trim', 'light bar': 'body', hood: 'glass' });
+    expect(merged[0].mergedFrom.sort()).toEqual(['Door', 'Grille', 'Light Bar']);
+    expect(mergeBodyPanels(parts)[0].mergedFrom.sort()).toEqual(['Door', 'Hood']);
+  });
+});

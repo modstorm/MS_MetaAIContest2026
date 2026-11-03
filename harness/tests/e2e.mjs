@@ -2026,9 +2026,38 @@ try {
           body: mean(g.slots[0].canvas, 100, 60, 300, 120),
           kept: g.thinking.filter((t) => t.step === 'kept').map((t) => t.treadTriangles),
         };
+        // Muse's reading wins over names: Muse says the "Wheel FL" part is body paint.
+        await p.postModel(glb.slice(0), { name: 'roles' });
+        const m = await p.postPrompt('neon pink candy', {
+          assetClass: 'vehicle',
+          paintMode: 'atlas',
+          suggestion: { subject: 'toy car', partRoles: { 'Wheel FL': 'body', 'Headlight L': 'light' } },
+        });
+        res.roles = {
+          tread: mean(m.slots[0].canvas, 40, 410, 180, 80),
+          head: mean(m.slots[0].canvas, 40, 296, 48, 48),
+          parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions),
+          checks: m.thinking.filter((t) => t.step === 'check').length,
+        };
+        // A texture left as the original is flagged by the check.
+        await p.postModel(glb.slice(0), { name: 'unpainted' });
+        const slot = p.layout.slots[0];
+        const c = document.createElement('canvas');
+        c.width = c.height = 512;
+        c.getContext('2d').drawImage(slot.texture.image, 0, 0, 512, 512);
+        res.flagged = p.checkUnpainted(slot, c, c, null, null).map((f) => Math.round(f.share * 100));
         return res;
       });
       const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+      assert.ok(!near(out.roles.tread, [91, 91, 91], 12), `Muse says body: tread still kept ${out.roles.tread}`);
+      assert.ok(near(out.roles.head, [255, 224, 64]), `Muse says light: lens changed ${out.roles.head}`);
+      assert.ok(
+        out.roles.parts.some((d) => d.source === 'Muse (over its name)' && d.role === 'body'),
+        `parts decision logged: ${JSON.stringify(out.roles.parts)}`,
+      );
+      assert.ok(out.roles.parts.some((d) => d.role === 'light' && d.source === 'Muse'));
+      assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
+      assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
       assert.ok(!near(out.grouped.body, [32, 80, 192], 10), `grouped car: body kept as tyre ${out.grouped.body}`);
       for (const mode of ['auto', 'atlas']) {
         const o = out[mode];

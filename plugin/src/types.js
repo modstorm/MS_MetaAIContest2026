@@ -127,6 +127,9 @@
  * @property {string} [tips]
  * @property {HTMLCanvasElement} sheet The six-view contact sheet that was sent.
  * @property {{ name: string, axis: string, canvas: HTMLCanvasElement }[]} views
+ * @property {Record<string, string>} [partRoles] What Muse says each listed part is, judged from
+ *   the renders: 'body' | 'wheel' | 'tyre' | 'light' | 'glass' | 'trim' | 'interior' | 'other'.
+ *   Used before part names for the vehicle rules and body panels.
  * @property {ThinkingEntry[]} [thinking] What was decided and asked while making this suggestion.
  */
 
@@ -224,6 +227,11 @@
  * - 'kept': vehicle lights / tyre treads given back their original pixels. slotId, slotName,
  *   lightTriangles, treadTriangles, keptPixels, share (of the texture), bodyColorRepaintedPixels,
  *   oldBodyColor ([r, g, b] or null).
+ * - 'parts': what each part is for the vehicle rules. decisions: { name, role, source: 'Muse' |
+ *   'Muse (over its name)' | 'SAM' | 'name', wheels? }[], rejected: { name, reason }[]
+ *   (a "wheel" that isn't round, or a "light" too big to be one, is painted).
+ * - 'check': the final texture compared with the plan. unpainted: { area, share }[] (areas
+ *   over `limit` that still show the original; the next review asks to repaint them).
  * - 'review': the review of the result. issues ({ area, problem, fix }[]), lessons, learned.
  * - 'note': every 'warning' message, so the log reads in one place.
  * @typedef {{ step: string, text: string, at: number } & Record<string, any>} ThinkingEntry

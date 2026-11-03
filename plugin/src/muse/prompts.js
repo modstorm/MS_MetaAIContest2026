@@ -298,10 +298,12 @@ export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = fals
     '{"subject": "what the object is, one line",',
     ` "assetClass": "one of: ${assetClassIds().join(', ')}",`,
     ' "parts": [{"name": "visible part", "description": "what it looks like now"}],',
+    ` "partRoles": {"exact part name": "one of: ${PART_ROLES.join(', ')}"},`,
     ' "prompt": "2-4 sentences: the improved theme prompt, naming concrete colors, materials and motifs for each part, flat unlit albedo, no text",',
     ' "atlases": [{"index": 1, "regions": [{"name": "part name", "bbox": [x0, y0, x1, y1], "paint": "what to paint there in the new theme"}]}],',
     ' "tips": "optional one-line note for the user"}',
     'Keep the recommended prompt family friendly: no blood, gore, injuries, weapons, real people or brands, because the image model has a strict safety filter. Express dark or scary themes through color, pattern and costume (for example "spooky", "eerie", "Halloween"), not violence.',
+    'partRoles: for EVERY part listed for the atlases (exact names), say what that part really is, judged from the renders and the part map, not from its name (names can be wrong or shared by a whole group).',
     'Region names must use the exact part names listed for each atlas where they apply, and a face or other detail must go only inside the part it belongs to (for example the face goes in the head part, never in the hair).',
     'Atlas "index" counts the atlas images from 1. bbox is on a 0-1000 grid of that atlas image, origin top-left. At most 12 regions per atlas.',
   ]
@@ -337,6 +339,39 @@ export function suggestFromAnalysisPrompt(theme, analysis, lessons = []) {
     .join('\n');
 }
 
+/** What a part of a model is, as Muse names it in a suggestion (partRoles). */
+export const PART_ROLES = ['body', 'wheel', 'tyre', 'light', 'glass', 'trim', 'interior', 'other'];
+
+/** { "part name": role } with known roles only (synonyms mapped), or undefined. */
+export function parsePartRoles(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined;
+  const alias = {
+    tire: 'tyre',
+    tires: 'tyre',
+    tyres: 'tyre',
+    wheels: 'wheel',
+    rim: 'wheel',
+    lights: 'light',
+    lamp: 'light',
+    headlight: 'light',
+    taillight: 'light',
+    window: 'glass',
+    windows: 'glass',
+    windshield: 'glass',
+    paint: 'body',
+    panel: 'body',
+  };
+  const out = {};
+  for (const [name, v] of Object.entries(o)) {
+    const r = String(v ?? '')
+      .toLowerCase()
+      .trim();
+    const role = PART_ROLES.includes(r) ? r : alias[r];
+    if (role) out[name] = role;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Parses the art-director reply. Returns null if it is not usable JSON. */
 export function parseSuggestion(text) {
   const o = looseJson(text);
@@ -351,6 +386,7 @@ export function parseSuggestion(text) {
       assetClass: o.assetClass ? String(o.assetClass) : undefined,
       prompt: String(o.prompt ?? '').trim(),
       tips: o.tips ? String(o.tips) : undefined,
+      partRoles: parsePartRoles(o.partRoles),
       parts: (Array.isArray(o.parts) ? o.parts : [])
         .filter((p) => p && p.name)
         .map((p) => ({ name: String(p.name), description: p.description ? String(p.description) : undefined })),

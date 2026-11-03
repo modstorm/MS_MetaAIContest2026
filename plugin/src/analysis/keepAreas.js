@@ -125,16 +125,121 @@ export function treadTriangles(mesh, src, use = null) {
 }
 
 /**
+ * Connected pieces of a mesh (triangles sharing a vertex position), limited to `use`.
+ * @returns {{ use: Uint8Array, count: number }[]} biggest first
+ */
+export function meshPieces(mesh, src, use = null) {
+  const pos = mesh.geometry.getAttribute('position');
+  const n = triangleCount(src);
+  mesh.geometry.computeBoundingBox?.();
+  const bb = mesh.geometry.boundingBox;
+  const q = Math.max(1e-6, (bb ? bb.max.distanceTo(bb.min) : 1) * 1e-4);
+  const parent = new Int32Array(n).map((_, i) => i);
+  const find = (i) => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  const seen = new Map();
+  for (let t = 0; t < n; t++) {
+    if (use && !use[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const v = vertexIndex(src, t, k);
+      const key = `${Math.round(pos.getX(v) / q)},${Math.round(pos.getY(v) / q)},${Math.round(pos.getZ(v) / q)}`;
+      const o = seen.get(key);
+      if (o === undefined) seen.set(key, t);
+      else {
+        const a = find(o),
+          b = find(t);
+        if (a !== b) parent[a] = b;
+      }
+    }
+  }
+  const groups = new Map();
+  for (let t = 0; t < n; t++) {
+    if (use && !use[t]) continue;
+    const r = find(t);
+    let gp = groups.get(r);
+    if (!gp) groups.set(r, (gp = { use: new Uint8Array(n), count: 0 }));
+    gp.use[t] = 1;
+    gp.count++;
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Is this piece shaped like a wheel: round across its axle (the two other sides within 1.4×
+ * of each other) and thinner along the axle than across?
+ */
+export function isWheelShaped(mesh, src, use = null) {
+  const g = triangleGeometry(mesh, src);
+  const axis = axleAxis(g, use);
+  const box = new THREE.Box3();
+  for (let t = 0; t < g.n; t++) {
+    if (use && !use[t]) continue;
+    box.expandByPoint(_a.set(g.centroid[t * 3], g.centroid[t * 3 + 1], g.centroid[t * 3 + 2]));
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const others = [0, 1, 2].filter((k) => k !== axis);
+  const d0 = size.getComponent(others[0]),
+    d1 = size.getComponent(others[1]);
+  return d0 > 0 && d1 > 0 && Math.max(d0, d1) / Math.min(d0, d1) < 1.4 && size.getComponent(axis) <= Math.min(d0, d1);
+}
+
+/**
+ * Tread triangles of the wheel-shaped pieces of `mesh` (each piece is one wheel or tyre),
+ * limited to `use`. Pieces that are not round (a car body, a wheel arch) are skipped.
+ * @returns {{ tris: Uint8Array, count: number, wheels: number, skipped: number }}
+ */
+export function wheelTreads(mesh, src, use = null) {
+  const n = triangleCount(src);
+  const tris = new Uint8Array(n);
+  let wheels = 0,
+    skipped = 0,
+    count = 0;
+  const pieces = meshPieces(mesh, src, use);
+  const minCount = Math.max(8, (pieces[0]?.count ?? 0) * 0.05);
+  for (const piece of pieces) {
+    if (piece.count < minCount) continue; // bolts, valve caps
+    if (!isWheelShaped(mesh, src, piece.use)) {
+      skipped++;
+      continue;
+    }
+    wheels++;
+    const tr = treadTriangles(mesh, src, piece.use);
+    for (let t = 0; t < n; t++)
+      if (tr[t]) {
+        tris[t] = 1;
+        count++;
+      }
+  }
+  return { tris, count, wheels, skipped };
+}
+
+/** Total world-space area of a mesh's triangles (only `use` ones when given). */
+function meshArea(mesh, src, use = null) {
+  const g = triangleGeometry(mesh, src);
+  let a = 0;
+  for (let t = 0; t < g.n; t++) if (!use || use[t]) a += g.area[t];
+  return a;
+}
+
+/**
  * Triangles of `slot` a vehicle reskin must keep: head and tail lights (by part name, or SAM's
  * "lights" zone) and tyre treads (wheel parts by name, or SAM's "wheels" zone).
+ * Cross-checks: a name or zone alone is not enough. A "wheel" must be shaped like a wheel
+ * (round, thin along its axle), piece by piece, and a "light" must be small (under
+ * `maxLightShare` of the texture's surface). Anything rejected is painted, and listed in
+ * `rejected` with the reason.
  * @param {object} slot
- * @param {{ zones?: { zone: string, tris: Map<object, Uint8Array> }[] }} [o] SAM zones of this slot, if found.
- * @returns {{ tris: Map<object, Uint8Array>, lights: Map<object, Uint8Array>, headlights: number, treads: number } | null}
+ * @param {{ zones?: { zone: string, tris: Map<object, Uint8Array> }[], maxLightShare?: number }} [o]
+ * @returns {{ tris: Map<object, Uint8Array>, lights: Map<object, Uint8Array>, headlights: number, treads: number, rejected: { name: string, reason: string }[] } | null}
  *   `tris` = everything kept, `lights` = the light part of it.
  */
-export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
+export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, roles = null } = {}) {
+  const decisions = [];
   const tris = new Map();
   const lights = new Map();
+  const rejected = [];
   let headlights = 0,
     treads = 0;
   const merge = (map, mesh, arr) => {
@@ -146,41 +251,92 @@ export function vehicleKeepTriangles(slot, { zones = [] } = {}) {
     merge(tris, mesh, arr);
     if (isLight) merge(lights, mesh, arr);
   };
+  let total = 0;
+  const srcs = new Map();
   for (const mesh of slot.meshes) {
     const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
     if (!src || !mesh.geometry.getAttribute('position')) continue;
+    srcs.set(mesh, src);
+    total += meshArea(mesh, src);
+  }
+  const tooBig = (mesh, src, use) => total > 0 && meshArea(mesh, src, use) / total > maxLightShare;
+  const label = (mesh) => mesh.name || mesh.parent?.name || 'mesh';
+  for (const [mesh, src] of srcs) {
     const n = triangleCount(src);
+    // Muse's reading of the renders (roles) first; the mesh / material name only as a fallback.
+    const museRole = roles?.get(mesh);
     const name = namesOf(mesh);
-    if (HEADLIGHT_NAME.test(name)) {
+    const role = museRole
+      ? museRole === 'tyre'
+        ? 'wheel'
+        : museRole
+      : HEADLIGHT_NAME.test(name)
+        ? 'light'
+        : WHEEL_NAME.test(name)
+          ? 'wheel'
+          : null;
+    const source = museRole ? 'Muse' : 'name';
+    if (role === 'light') {
+      if (slot.meshes.length > 1 && tooBig(mesh, src)) {
+        rejected.push({
+          name: label(mesh),
+          reason: `${source} says light but it is too big to be one, so it is painted`,
+        });
+        continue;
+      }
       add(mesh, new Uint8Array(n).fill(1), true);
       headlights += n;
-      continue;
-    }
-    if (WHEEL_NAME.test(name)) {
-      const tr = treadTriangles(mesh, src);
-      const c = tr.reduce((s, v) => s + v, 0);
-      if (c) {
-        add(mesh, tr);
-        treads += c;
+      decisions.push({ name: label(mesh), role: 'light', source });
+    } else if (role === 'wheel') {
+      const w = wheelTreads(mesh, src);
+      if (w.count) {
+        add(mesh, w.tris);
+        treads += w.count;
+        decisions.push({ name: label(mesh), role: 'wheel', source, wheels: w.wheels });
       }
+      if (!w.wheels)
+        rejected.push({
+          name: label(mesh),
+          reason: `${source} says wheel but it is not shaped like one, so it is painted`,
+        });
+    } else if (museRole && (HEADLIGHT_NAME.test(name) || WHEEL_NAME.test(name))) {
+      // The name says light / wheel, Muse says otherwise: Muse wins.
+      decisions.push({ name: label(mesh), role: museRole, source: 'Muse (over its name)' });
     }
   }
   for (const z of zones) {
     if (z.zone !== 'lights' && z.zone !== 'wheels') continue;
     for (const [mesh, use] of z.tris ?? []) {
-      const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+      const src = srcs.get(mesh);
       if (!src) continue;
       if (z.zone === 'lights') {
+        if (tooBig(mesh, src, use)) {
+          rejected.push({ name: 'SAM lights zone', reason: 'too big to be lights, so it is painted' });
+          continue;
+        }
         add(mesh, use, true);
         headlights += use.reduce((s, v) => s + v, 0);
+        decisions.push({ name: 'SAM lights zone', role: 'light', source: 'SAM' });
       } else {
-        const tr = treadTriangles(mesh, src, use);
-        add(mesh, tr);
-        treads += tr.reduce((s, v) => s + v, 0);
+        const w = wheelTreads(mesh, src, use);
+        if (w.count) {
+          add(mesh, w.tris);
+          treads += w.count;
+          decisions.push({ name: 'SAM wheels zone', role: 'wheel', source: 'SAM', wheels: w.wheels });
+        }
+        if (!w.wheels && w.skipped)
+          rejected.push({
+            name: 'SAM wheels zone',
+            reason: 'no wheel-shaped piece in it (wheel arches?), so it is painted',
+          });
       }
     }
   }
-  return headlights || treads ? { tris, lights, headlights, treads } : null;
+  if (!headlights && !treads)
+    return rejected.length || decisions.length
+      ? { tris, lights, headlights, treads, rejected, decisions, none: true }
+      : null;
+  return { tris, lights, headlights, treads, rejected, decisions };
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */
