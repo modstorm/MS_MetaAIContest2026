@@ -123,6 +123,19 @@
                   ><button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷</button></span
                 >
               </h3>
+              <form
+                id="change-form"
+                class="row change-row"
+                title="Change the shown result: only the areas it touches are repainted"
+              >
+                <input
+                  id="change-text"
+                  type="text"
+                  placeholder="Change it… e.g. make the stripes blue"
+                  autocomplete="off"
+                />
+                <button type="submit" id="btn-change">Change</button>
+              </form>
               <div id="history" class="history"></div>
             </section>
           </div>

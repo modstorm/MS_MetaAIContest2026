@@ -1,6 +1,8 @@
 import { MuseApiError, MuseClient, isContentPolicyError } from '../muse/MuseClient.js';
 import {
   areaThemesPrompt,
+  changePlanPrompt,
+  parseChangePlan,
   normalMapPrompt,
   parseAreaThemes,
   parseLayoutPlan,
@@ -161,6 +163,29 @@ export class MuseProvider {
       }
       throw err;
     }
+  }
+
+  /** Which areas a change request touches, and what to change in each (see changePlanPrompt). */
+  async changePlan(req) {
+    const text = await this.client.chat({
+      reasoningEffort: this.fast ? 'minimal' : 'low',
+      signal: req.signal,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: changePlanPrompt(req.request, req.theme, req.areas, req.subject),
+            },
+          ],
+        },
+      ],
+    });
+    return parseChangePlan(
+      text,
+      req.areas.map((a) => a.name),
+    );
   }
 
   /** One short surface description per area for the theme (see areaThemesPrompt). */

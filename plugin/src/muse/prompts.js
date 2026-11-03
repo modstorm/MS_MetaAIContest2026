@@ -579,3 +579,29 @@ export function parseReview(text) {
     return { ok: true, summary: '', issues: [], lessons: [], raw: text };
   }
 }
+
+/**
+ * Change request on a finished reskin: Muse Spark decides which painted areas the user's
+ * request touches and what to change in each, so only those are repainted.
+ */
+export function changePlanPrompt(request, theme, areas, subject) {
+  return [
+    'A 3D game asset was retextured. The user looked at the result and asks for a change.',
+    subject ? `The model is: ${subject}.` : '',
+    `The current theme is: "${theme}".`,
+    'Its texture areas (exact names), with what each looks like now when known:',
+    ...areas.map((a) => `- ${a.name}${a.zone ? ` (${a.zone})` : ''}${a.now ? `: ${a.now}` : ''}`),
+    `The user's change request: "${request}".`,
+    'Decide which areas this request changes, and for each one write a short, concrete instruction for the image model that edits that area (what to change, and that everything else stays exactly the same). Leave out every area the request does not touch. If the request changes the look of the whole model, list every area.',
+    'Reply with JSON only: {"areas": {"exact area name": "instruction"}, "summary": "one line for the user"}',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Parses the change plan: { areas: Map name → instruction, summary }. */
+export function parseChangePlan(text, names) {
+  const o = looseJson(text) ?? {};
+  const areas = parseAreaThemes(JSON.stringify(o.areas ?? {}), names);
+  return { areas, summary: typeof o.summary === 'string' ? o.summary.slice(0, 300) : '' };
+}

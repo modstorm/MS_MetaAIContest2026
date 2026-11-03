@@ -1091,3 +1091,13 @@ button.mic-btn.recording:hover:not(:disabled) {
 .theme-box:not([open]) > summary {
   margin-bottom: 4px;
 }
+
+.change-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.change-row input {
+  flex: 1;
+  min-width: 0;
+}

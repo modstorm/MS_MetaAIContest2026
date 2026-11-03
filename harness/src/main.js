@@ -1172,7 +1172,13 @@ function renderHistory(h) {
   };
   add(-1, 'Original', h.originalThumb);
   h.entries.forEach((e, i) =>
-    add(i, `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`, e.thumb),
+    add(
+      i,
+      e.change
+        ? `Change: ${e.change}`
+        : `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`,
+      e.thumb,
+    ),
   );
   $('btn-undo').disabled = h.index < 0;
   $('btn-redo').disabled = h.index >= h.entries.length - 1;
@@ -1184,6 +1190,24 @@ const undo = () => {
 const redo = () => {
   plugin.redo();
   if (compareOn) setCompare(true);
+};
+// Change request on the shown result: Muse picks the areas, only those are repainted.
+$('change-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $('change-text').value.trim();
+  if (!text || plugin.isBusy) return;
+  $('btn-change').disabled = true;
+  try {
+    const r = await plugin.postChange(text);
+    log(
+      `Change "${text}": repainted ${Object.keys(r.change.areas).join(', ')}${r.change.summary ? ` (${r.change.summary})` : ''}`,
+    );
+    $('change-text').value = '';
+  } catch (err) {
+    log(`Change failed: ${err.message}`, 'error');
+  } finally {
+    $('btn-change').disabled = false;
+  }
 };
 $('btn-undo').onclick = undo;
 $('btn-redo').onclick = redo;

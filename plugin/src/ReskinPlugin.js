@@ -25,7 +25,7 @@ import {
 } from './analysis/facing.js';
 import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.js';
 import { findSamZones, regionData, zoneConceptsFor } from './analysis/samZones.js';
-import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
+import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass, splitWords } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { makeZip } from './io/zip.js';
 import { MuseProvider } from './providers/MuseProvider.js';
@@ -948,7 +948,7 @@ export class ReskinPlugin {
       };
       this.lastResult = result;
       this.lastPrompt = theme;
-      const { signal: _s, fixes: _f, ...runOpts } = opts;
+      const { signal: _s, fixes: _f, changeRequest: _c, ...runOpts } = opts;
       this.lastRun = { theme, opts: runOpts };
       this.emit('progress', { stage: 'done', message: 'Done', progress: 1 });
       this.emit('reskinned', result);
@@ -1942,6 +1942,8 @@ export class ReskinPlugin {
         this.provider.areaThemes({ theme, areas: names, subject: plan?.subject, signal }),
       ).then(
         (m) => {
+          this.areaThemeResolved ??= new Map();
+          for (const [n, d] of m) this.areaThemeResolved.set(`${theme}|${n}`, d);
           if (m.size)
             this.emit('warning', { message: `Area themes: ${[...m].map(([n, d]) => `${n}: ${d}`).join(' | ')}` });
           return m;
@@ -2002,7 +2004,11 @@ export class ReskinPlugin {
       } else if (opts.fixes) {
         const fix = opts.fixes[part.name];
         const old = prevByName.get(part.name);
-        if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
+        if (fix && opts.changeRequest) {
+          // A change request edits the area as it is now (fast, and everything else stays).
+          job.note = `Change requested by the user: ${fix} Apply only this change to the image and keep everything else in it exactly the same.`;
+          if (old?.painted) job.editFrom = old.painted;
+        } else if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
         else if (old) job.reuse = old.painted;
       }
       jobs.push(job);
@@ -2103,7 +2109,11 @@ export class ReskinPlugin {
         done++;
         return job.reuse;
       }
-      let crop = transformCanvas(greyedCrop(original, mask, rect), orient);
+      const fresh = transformCanvas(greyedCrop(original, mask, rect), orient);
+      let crop =
+        job.editFrom && job.editFrom.width === fresh.width && job.editFrom.height === fresh.height
+          ? job.editFrom
+          : fresh;
       let guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
       // Artists' template (editor-supplied, same layout as the texture): cut like the area.
       let tpl = template ? transformCanvas(cropCanvas(template, rect), orient) : null;
@@ -2718,6 +2728,7 @@ export class ReskinPlugin {
         partJobs,
         thumb,
         fixes: !!opts.fixes,
+        change: opts.changeRequest ?? null,
       };
       this.history.push(entry);
       entries.push(entry);
@@ -2740,13 +2751,14 @@ export class ReskinPlugin {
     return {
       index: this.historyIndex,
       originalThumb: this.originalThumb ?? null,
-      entries: this.history.map(({ id, prompt, variant, of, thumb, fixes }) => ({
+      entries: this.history.map(({ id, prompt, variant, of, thumb, fixes, change }) => ({
         id,
         prompt,
         variant,
         of,
         thumb,
         fixes,
+        change: change ?? null,
       })),
     };
   }
@@ -2943,6 +2955,89 @@ export class ReskinPlugin {
       await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, variants: 1, fixes, signal: opts.signal });
     }
     return { passes: out, thinking: this.thinkingLog.slice(thinkStart) };
+  }
+
+  /**
+   * Change request on a finished reskin ("make the stripes blue", "less neon on the hood").
+   * Reuses everything from that run: identification, SAM zones, part roles, the paint plan,
+   * area themes and every painted area. Muse Spark picks the areas the request touches
+   * (one short text call), and only those are repainted, each starting from its current paint.
+   * The result is a new History entry.
+   * @param {string} text the user's change request
+   * @param {{ historyIndex?: number, areas?: string[] | Record<string, string>, signal?: AbortSignal }} [opts]
+   *   historyIndex: the History entry to change (default: the one shown). areas: skip Muse's
+   *   choice: area names (each gets the request) or { area: instruction }.
+   * @returns {Promise<import('./types.js').ReskinResult & { change: { request: string, areas: Record<string, string>, summary: string } }>}
+   */
+  async postChange(text, opts = {}) {
+    this.guard();
+    const request = String(text ?? '').trim();
+    if (!request) throw new Error('The change request is empty');
+    const thinkStart = (this.thinkingLog ??= []).length;
+    if (!this.lastRun) throw new Error('Paint the model before asking for a change');
+    if (opts.historyIndex != null && opts.historyIndex !== this.historyIndex) {
+      if (opts.historyIndex < 0) throw new Error('Pick a painted result, not the original');
+      this.goToHistory(opts.historyIndex, { silent: true });
+    }
+    const names = this.areaNames();
+    if (!names.length) throw new Error('Change requests need a part-by-part result (this one was painted in one pass)');
+    // What each area looks like now (area themes / plan), so Muse can match "the stripes" etc.
+    const jobsBy = new Map();
+    for (const rec of this.lastPartJobs.values()) for (const j of rec.jobs) jobsBy.set(j.part.name, j);
+    const areas = names
+      .filter((n) => !jobsBy.get(n)?.keep)
+      .map((n) => ({ name: n, zone: jobsBy.get(n)?.part.zone, now: this.areaDescription(n) }));
+    let chosen = new Map();
+    let summary = '';
+    if (opts.areas) {
+      const given = Array.isArray(opts.areas) ? opts.areas.map((n) => [n, request]) : Object.entries(opts.areas);
+      chosen = new Map(given.filter(([n]) => names.includes(n)));
+    } else if (this.provider.changePlan) {
+      const plan = await this.timed('plan change', null, () =>
+        this.provider.changePlan({
+          request,
+          theme: this.lastRun.theme,
+          areas,
+          subject: this.lastRun.opts?.suggestion?.subject,
+          signal: opts.signal,
+        }),
+      );
+      chosen = plan.areas;
+      summary = plan.summary;
+    }
+    if (!chosen.size) {
+      // No plan: areas named in the request, else every painted area.
+      const words = new Set(splitWords(request).toLowerCase().split(/\s+/));
+      const hit = areas.filter((a) =>
+        splitWords(a.name)
+          .toLowerCase()
+          .split(/\s+/)
+          .some((w) => w.length > 2 && words.has(w)),
+      );
+      chosen = new Map((hit.length ? hit : areas).map((a) => [a.name, request]));
+    }
+    const fixes = Object.fromEntries(chosen);
+    this.think('change', `Change "${request}": repainting ${[...chosen.keys()].join(', ')}`, {
+      request,
+      areas: fixes,
+      summary,
+      reused: names.filter((n) => !chosen.has(n)),
+    });
+    const res = await this.postPrompt(this.lastRun.theme, {
+      ...this.lastRun.opts,
+      variants: 1,
+      fixes,
+      changeRequest: request,
+      signal: opts.signal,
+    });
+    res.change = { request, areas: fixes, summary };
+    res.thinking = this.thinkingLog.slice(thinkStart);
+    return res;
+  }
+
+  /** What an area was painted as (its area theme or plan description), if known. */
+  areaDescription(name) {
+    return this.areaThemeResolved?.get(`${this.lastRun?.theme}|${name}`);
   }
 
   /** Region options matching the last run's asset class (so names and colors agree). */

@@ -1680,6 +1680,67 @@ try {
     },
   );
 
+  await step('change request: Muse picks the areas, only those are repainted from their current paint', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    const plans = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) {
+        const text = body.messages[0].content[0].text;
+        if (/asks for a change/.test(text)) {
+          plans.push(text);
+          return ok({
+            choices: [
+              { message: { content: '{"areas": {"Body": "make the body blue"}, "summary": "Body turns blue"}' } },
+            ],
+          });
+        }
+        return ok({ choices: [{ message: { content: '{"areas": {}}' } }] });
+      }
+      edits.push(body);
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'change-test' });
+      await p.postPrompt('steampunk', { useVisionPlanning: false, normalMaps: false, roughnessMaps: false });
+      const before = p.historySummary().entries.length;
+      const r = await p.postChange('make the body blue');
+      const h = p.historySummary();
+      return {
+        change: r.change,
+        entries: h.entries.length - before,
+        label: h.entries.at(-1).change,
+        thinking: r.thinking.filter((t) => t.step === 'change').map((t) => t.reused),
+      };
+    }, glb);
+    assert.equal(plans.length, 1, 'one short Muse call picks the areas');
+    assert.match(plans[0], /- Body/);
+    assert.match(plans[0], /make the body blue/);
+    assert.equal(edits.length, 3, 'first paint: 2 areas; the change: only Body');
+    assert.match(edits[2].prompt, /Change requested by the user: make the body blue/);
+    assert.deepEqual(res.change.areas, { Body: 'make the body blue' });
+    assert.equal(res.entries, 1);
+    assert.equal(res.label, 'make the body blue');
+    assert.deepEqual(res.thinking, [['Head']], 'Head reused');
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
