@@ -73,17 +73,21 @@ describe('SAM rules', () => {
     expect(concepts('avatar', 'legs', 'pirate')).toEqual(['shoe', 'face', 'person', 'text', 'logo']);
     expect(concepts('avatar', 'torso', 'shirt with a skull face print')).toEqual(['person', 'text', 'logo']);
     // Every model and area gets the stray text / logo check.
-    expect(concepts('vehicle', 'legs', '')).toEqual(['text', 'logo']);
+    expect(concepts('vehicle', 'legs', '')).toEqual(['wheel', 'text', 'logo']);
+    // Vehicles: no newly painted wheel on any area except the wheels themselves.
+    expect(concepts('vehicle', undefined, '', 'Body (center)')).toEqual(['wheel', 'text', 'logo']);
+    expect(concepts('vehicle', undefined, '', 'Wheel_FL')).toEqual(['text', 'logo']);
+    expect(concepts('vehicle', 'wheels', '')).toEqual(['text', 'logo']);
     expect(concepts('avatar', undefined, '')).toEqual(['text', 'logo']);
     expect(concepts('prop', undefined, 'rusty steampunk copper')).toEqual(['text', 'logo']);
   });
 
   it('skips the text / logo check when the theme asks for writing or decals', () => {
     const concepts = (theme) => samRulesFor('vehicle', undefined, theme).map((r) => r.concept);
-    expect(concepts('race car with sponsor decals')).toEqual([]);
-    expect(concepts('police car with POLICE lettering')).toEqual([]);
-    expect(concepts('graffiti covered subway train')).toEqual([]);
-    expect(concepts('a design with stripes')).toEqual(['text', 'logo']); // "design" is not "sign"
+    expect(concepts('race car with sponsor decals')).toEqual(['wheel']);
+    expect(concepts('police car with POLICE lettering')).toEqual(['wheel']);
+    expect(concepts('graffiti covered subway train')).toEqual(['wheel']);
+    expect(concepts('a design with stripes')).toEqual(['wheel', 'text', 'logo']); // "design" is not "sign"
     expect(samRulesFor('avatar', 'legs', 'jersey with a team logo').map((r) => r.concept)).toEqual([
       'shoe',
       'face',

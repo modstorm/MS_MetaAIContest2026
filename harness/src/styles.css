@@ -865,3 +865,173 @@ button.on {
   max-height: none;
   overflow: visible;
 }
+
+/* ---- "Painting…" symbol: a colour-shifting paint blob with three drops orbiting it */
+.paint-spinner {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  vertical-align: middle;
+}
+.paint-spinner b {
+  position: absolute;
+  inset: 22%;
+  background: conic-gradient(#ff5f6d, #ffc371, #f9f871, #47e891, #3fa7ff, #b06cff, #ff5f6d);
+  border-radius: 42% 58% 63% 37% / 45% 40% 60% 55%;
+  box-shadow: 0 0 10px rgba(176, 108, 255, 0.45);
+  animation:
+    paint-blob 2.2s ease-in-out infinite,
+    paint-hue 4s linear infinite;
+}
+.paint-spinner i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22%;
+  height: 22%;
+  margin: -11% 0 0 -11%;
+  border-radius: 50% 50% 50% 0;
+  animation: paint-orbit 1.4s cubic-bezier(0.5, 0.1, 0.5, 0.9) infinite;
+}
+.paint-spinner i:nth-of-type(1) {
+  background: #ff5f6d;
+}
+.paint-spinner i:nth-of-type(2) {
+  background: #47e891;
+  animation-delay: -0.47s;
+}
+.paint-spinner i:nth-of-type(3) {
+  background: #3fa7ff;
+  animation-delay: -0.93s;
+}
+@keyframes paint-blob {
+  0%,
+  100% {
+    border-radius: 42% 58% 63% 37% / 45% 40% 60% 55%;
+    transform: rotate(0deg) scale(1);
+  }
+  33% {
+    border-radius: 60% 40% 35% 65% / 55% 62% 38% 45%;
+    transform: rotate(120deg) scale(1.12);
+  }
+  66% {
+    border-radius: 38% 62% 55% 45% / 62% 38% 62% 38%;
+    transform: rotate(240deg) scale(0.92);
+  }
+}
+@keyframes paint-hue {
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+@keyframes paint-orbit {
+  0% {
+    transform: rotate(0deg) translateY(-190%) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) translateY(-230%) scale(0.7);
+  }
+  100% {
+    transform: rotate(360deg) translateY(-190%) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .paint-spinner b,
+  .paint-spinner i {
+    animation-duration: 6s;
+  }
+}
+.sugg-wait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sugg-wait[hidden] {
+  display: none;
+}
+
+/* ---- The paint crew over the dimmed 3D view while painting (characters in waitCrew.js) */
+.wait-crew {
+  position: absolute;
+  inset: 0;
+  z-index: 4; /* under the progress box */
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  animation: wc-dim 0.25s ease-out;
+}
+.wait-crew[hidden] {
+  display: none;
+}
+.wc-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 64px;
+  padding: 48px 72px 28px;
+  background: radial-gradient(closest-side, rgba(20, 24, 27, 0.85), rgba(20, 24, 27, 0));
+}
+.wc-slot {
+  transform: scale(2);
+}
+.wc-pop .wc-slot {
+  animation: wc-pop 0.35s ease-out;
+}
+.wc-cap {
+  margin: 0;
+  color: #e8ebee;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 3px #000;
+}
+.wc-pop .wc-cap {
+  animation: wc-cap 0.3s ease-out 0.1s backwards;
+}
+@keyframes wc-dim {
+  from {
+    background: rgba(0, 0, 0, 0);
+  }
+}
+@keyframes wc-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(2.25);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+  }
+}
+@keyframes wc-cap {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Reskin popup: the theme part folds away once Muse has written the detailed prompt. */
+.theme-box > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-box > summary .muted {
+  font-weight: 400;
+  margin-left: 6px;
+}
+.theme-box[open] #theme-summary {
+  display: none;
+}
+.theme-box:not([open]) > summary {
+  margin-bottom: 4px;
+}

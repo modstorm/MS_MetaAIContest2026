@@ -50,6 +50,16 @@ export function textureToCanvas(tex, maxSize = 4096) {
   return c;
 }
 
+/** A copy of `src` turned upside down (glTF texture order ↔ ordinary image order). */
+export function flipVertical(src) {
+  const out = createCanvas(src.width, src.height);
+  const g = ctx2d(out);
+  g.translate(0, src.height);
+  g.scale(1, -1);
+  g.drawImage(src, 0, 0);
+  return out;
+}
+
 export function resizeCanvas(src, width, height) {
   const c = createCanvas(width, height);
   const ctx = ctx2d(c);

@@ -148,11 +148,14 @@ async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review
   await setReview(page, review);
   await page.selectOption('#opt-variations', String(variations));
   if (paintMode) await setPaintMode(page, paintMode);
+  await page.$eval('#theme-box', (d) => (d.open = true));
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
   await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
   await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+  // The paint crew popped up over the view while painting and is gone again.
+  assert.ok(await page.$eval('#wait-crew', (e) => e.hidden), 'paint crew hidden after the run');
 }
 
 function parseGlb(buf) {
@@ -457,16 +460,10 @@ try {
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.textContent('#prompt-go'), 'Paint');
     assert.equal(calls.length, n1, 'no Muse call to reopen the suggestion');
-    // "Use my prompt instead" switches the box to the typed theme and back, keeping edits.
-    await page.check('#sugg-mine');
-    assert.equal(await page.inputValue('#sugg-prompt'), 'ice');
-    assert.match(await page.textContent('#sugg-label'), /Your prompt/);
-    await page.fill('#sugg-prompt', 'ice and snow');
-    await page.uncheck('#sugg-mine');
-    assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
-    await page.check('#sugg-mine');
-    assert.equal(await page.inputValue('#sugg-prompt'), 'ice and snow');
-    await page.uncheck('#sugg-mine');
+    // The theme part is folded away while Muse's prompt is current; opening it lets you change the theme.
+    assert.ok(!(await page.isVisible('#prompt-text')), 'theme folded after the suggestion');
+    assert.match(await page.textContent('#theme-summary'), /"ice"/);
+    await page.click('#theme-box > summary');
     // A new theme in the same popup: Muse only rewrites the prompt (one text call, no renders).
     await page.fill('#prompt-text', 'lava');
     assert.equal(await page.textContent('#prompt-go'), "Update Muse's prompt");
@@ -1908,6 +1905,107 @@ try {
     );
     await page.context().close();
   });
+
+  await step('imageOrder image: handed-out canvases are flipped, the model keeps glTF order', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      const glb = await mod.buildBuildingTestGlb();
+      const px = (c, x, y) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3));
+      const pts = [
+        [10, 10],
+        [100, 80],
+        [370, 380],
+        [250, 300],
+      ];
+      const sample = (c, flip) => pts.map(([x, y]) => px(c, x, flip ? c.height - 1 - y : y));
+      const run = async (loadOpts, promptOpts) => {
+        await p.postModel(glb.slice(0), { name: 'order', ...loadOpts });
+        const ev = [];
+        const off = p.on('textureUpdated', (e) => ev.push(e));
+        const r = await p.postPrompt('mossy stone', { assetClass: 'prop', paintMode: 'atlas', ...promptOpts });
+        off();
+        const mapImg = p.layout.slots[0].materials[0].map.image;
+        return {
+          canvas: r.slots[0].canvas,
+          order: r.slots[0].imageOrder,
+          ev: ev.find((e) => e.kind === 'baseColor'),
+          mapImg,
+        };
+      };
+      const a = await run({}, {});
+      const b = await run({ imageOrder: 'image' }, {});
+      const c = await run({}, { imageOrder: 'image' });
+      return {
+        a: sample(a.canvas, false),
+        aOrder: a.order,
+        bFlipped: sample(b.canvas, true),
+        bOrder: b.order,
+        bEvent: sample(b.ev.canvas, true),
+        bEventOrder: b.ev.imageOrder,
+        bModel: sample(b.mapImg, false),
+        cFlipped: sample(c.canvas, true),
+      };
+    });
+    assert.equal(out.aOrder, 'gltf');
+    assert.equal(out.bOrder, 'image');
+    assert.equal(out.bEventOrder, 'image');
+    assert.deepEqual(out.bFlipped, out.a, 'result canvas flipped');
+    assert.deepEqual(out.bEvent, out.a, 'textureUpdated canvas flipped');
+    assert.deepEqual(out.bModel, out.a, 'model texture stays in glTF order');
+    assert.deepEqual(out.cFlipped, out.a, 'postPrompt option works too');
+    await page.context().close();
+  });
+
+  await step(
+    'vehicle: lights and tyre treads keep their original pixels, sidewalls are painted (both modes)',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const out = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const mod = await import('/src/sampleModel.js');
+        const glb = await mod.buildVehicleTestGlb();
+        const mean = (c, x, y, w, h) => {
+          const k = c.width / 512;
+          const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+          const m = [0, 0, 0];
+          for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+          return m.map((v) => Math.round(v / (d.length / 4)));
+        };
+        const res = {};
+        for (const mode of ['auto', 'atlas']) {
+          await p.postModel(glb.slice(0), { name: 'vehicle-test' });
+          const notes = [];
+          const off = p.on('warning', (w) => notes.push(w.message));
+          const r = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: mode });
+          off();
+          const c = r.slots[0].canvas;
+          res[mode] = {
+            head: mean(c, 30, 280, 60, 60),
+            tail: mean(c, 160, 280, 60, 60),
+            tread: mean(c, 40, 410, 180, 80),
+            side: mean(c, 290, 410, 60, 80),
+            body: mean(c, 100, 60, 300, 120),
+            note: notes.some((n) => /kept the original lights and tyre treads/.test(n)),
+          };
+        }
+        return res;
+      });
+      const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+      for (const mode of ['auto', 'atlas']) {
+        const o = out[mode];
+        assert.ok(near(o.head, [255, 224, 64]), `${mode}: headlight changed ${o.head}`);
+        assert.ok(near(o.tail, [224, 32, 32]), `${mode}: taillight changed ${o.tail}`);
+        // Original tread: stripes of #303030 and #b0b0b0 (1/3 light).
+        assert.ok(near(o.tread, [91, 91, 91], 12), `${mode}: tread changed ${o.tread}`);
+        assert.ok(!near(o.side, [128, 128, 128], 10), `${mode}: sidewall not painted ${o.side}`);
+        assert.ok(!near(o.body, [32, 80, 192], 10), `${mode}: body not painted ${o.body}`);
+        assert.ok(o.note, `${mode}: no "kept" note`);
+      }
+      await page.context().close();
+    },
+  );
 
   console.log('Single textures (postTexture) and texture ids');
   await step('events carry the glTF texture and image index of the texture they replace', async () => {

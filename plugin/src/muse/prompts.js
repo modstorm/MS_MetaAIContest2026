@@ -34,13 +34,22 @@ export function partLines(parts, { colors = true } = {}) {
   return lines;
 }
 
+/** Rules that must come first in a paint prompt (they start with "MOST IMPORTANT RULE"). */
+const isTopRule = (r) => /^MOST IMPORTANT RULE/i.test(String(r).trim());
+
 export function reskinAtlasPrompt(theme, plan, extra, parts) {
+  const extraLines = String(extra ?? '')
+    .split('\n')
+    .filter((l) => l.trim());
+  const top = extraLines.filter(isTopRule);
+  extra = extraLines.filter((l) => !isTopRule(l)).join('\n');
   const multi = parts?.length > 1;
   const lines = [
     multi
       ? 'Image 1 is a UV texture atlas (base color / albedo) that wraps a 3D model. Image 2 is a part map: the same layout with each part of the model filled in its own flat color.'
       : 'Image 1 is a UV texture atlas (base color / albedo) that wraps a 3D model. Image 2 shows its UV island layout.',
     `Repaint the atlas in this theme: "${theme}".`,
+    ...top,
     'Rules:',
     '- Keep the exact same layout. Every painted island must stay at the same position, size, shape and orientation so the texture still wraps the model correctly.',
     '- Keep the same image framing and aspect ratio. Do not crop, zoom, rotate, mirror or add borders.',
@@ -420,7 +429,10 @@ export function reskinPartPrompt(
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
     '- Ignore the grey areas; they will be discarded.',
   ];
-  for (const r of classRules ?? []) lines.push(`- ${r}`);
+  for (const r of classRules ?? []) if (!isTopRule(r)) lines.push(`- ${r}`);
+  // The most important class rules go right after the first lines, where they are read first.
+  const top = (classRules ?? []).filter(isTopRule);
+  if (top.length) lines.splice(Math.min(2, lines.length), 0, ...top);
   if (!face && !/hair/i.test(partName ?? ''))
     lines.push(
       '- No head accessories here (goggles, glasses, hats, headbands): they belong on the head only.',

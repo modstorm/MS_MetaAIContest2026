@@ -47,6 +47,7 @@ import {
   averageColor,
   blobToCanvas,
   createCanvas,
+  flipVertical,
   ctx2d,
   drawAtlasWithUvs,
   drawPartLabels,
@@ -64,6 +65,7 @@ import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
+import { keptShare, vehicleKeepTriangles } from './analysis/keepAreas.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -290,7 +292,7 @@ export class ReskinPlugin {
       for (const r of regions) {
         if (r.zone === 'underside' && opts.undersideColor !== null) continue; // flat color, no Muse call
         out.images += variants * (r.zone === 'torso' && opts.frontPanelPass !== false ? 3 : 1);
-        if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '').length;
+        if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '', r.name).length;
       }
     }
     // Suggestion, per-area themes (part by part) or a layout reading (one pass), review.
@@ -341,6 +343,8 @@ export class ReskinPlugin {
    * Load a model (File(s), Blob, ArrayBuffer or URL), analyze it and make it the current model.
    * @param {import('./io/modelIO.js').ModelInput} input
    * @param {import('./io/modelIO.js').LoadOptions} [opts]
+   *   Also opts.imageOrder: 'gltf' (default) | 'image', the row order of the canvases this
+   *   model's reskin results and textureUpdated events hand out (see PostPromptOptions).
    * @returns {Promise<{ model: LoadedModel, layout: TextureLayout }>}
    */
   async postModel(input, opts = {}) {
@@ -350,6 +354,8 @@ export class ReskinPlugin {
       this.status('loading', 'Loading model…');
       const model = await loadModel(input, opts);
       this.model = model;
+      // Order of the canvases this model's results hand out: 'gltf' (default) or 'image'.
+      this.imageOrder = opts.imageOrder === 'image' ? 'image' : 'gltf';
       this.snapshots.clear();
       this.planCache.clear();
       this.samCache.clear();
@@ -357,6 +363,8 @@ export class ReskinPlugin {
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.topBottomNoted = null;
+      this.keepCache = null;
+      this.keepNoted = null;
       this.lastPartJobs.clear();
       this.regionCache.clear();
       this.locked.clear();
@@ -1019,8 +1027,19 @@ export class ReskinPlugin {
     const maps = []; // generated maps of this result, kept with it in the history
     // Each map carries the identity of the texture it replaces (name, uuid, glTF texture and
     // image index), so a host can match it to its own image ids.
+    // imageOrder 'image': canvases handed out (events, results) are flipped into ordinary image
+    // order (top row = v 1); the model's own textures stay in glTF order.
+    const imageOrder = opts.imageOrder ?? this.imageOrder ?? 'gltf';
+    const handOut = (c) => (imageOrder === 'image' ? flipVertical(c) : c);
     const emitMap = (kind, canvas, replaces) => {
-      const entry = { slotId: slot.id, slotName: slot.name, kind, canvas, ...this.textureIdentity(replaces) };
+      const entry = {
+        slotId: slot.id,
+        slotName: slot.name,
+        kind,
+        canvas: handOut(canvas),
+        imageOrder,
+        ...this.textureIdentity(replaces),
+      };
       maps.push(entry);
       this.emit('textureUpdated', entry);
     };
@@ -1061,6 +1080,8 @@ export class ReskinPlugin {
     }
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
+    // Areas that must never change (vehicle lights, tyre treads) get their original pixels back.
+    if (atlasMode && original) this.restoreKept(slot, baseColor, original, opts);
     if (islandMap && (opts.edgePadding ?? 12) > 0) {
       // Edge padding: grow island colors into the gaps so seams never sample dark pixels.
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
@@ -1132,7 +1153,8 @@ export class ReskinPlugin {
       slotId: slot.id,
       slotName: slot.name,
       ...this.textureIdentity(slot.texture),
-      canvas: baseColor,
+      canvas: handOut(baseColor),
+      imageOrder,
       raw,
       plan,
       prompt: usedPrompt,
@@ -1765,6 +1787,7 @@ export class ReskinPlugin {
     const prev = opts.fixes || locked.size ? this.lastPartJobs.get(slot.id) : null;
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
+    const keepTris = this.keepTriangles(slot, opts);
     // Strip layouts are only read for limbs (sleeves, trouser legs); torso, hands and shoes
     // are not laid out as clean wrap-around strips.
     const STRIP_ZONES = new Set(['arms', 'legs']);
@@ -1779,7 +1802,11 @@ export class ReskinPlugin {
       // Body zones: which way each vertical strip faces (front / back / outer / inner).
       if (anatForStrips && STRIP_ZONES.has(part.zone))
         job.sides = drawFacingMap(slot, part, W, H, { grow, limbCenterX: anatForStrips.cx }).canvas;
-      if (locked.has(part.name)) {
+      // Vehicle lights (and areas that are all tyre tread) are never repainted.
+      if (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) {
+        job.keep = true;
+        job.protected = true;
+      } else if (locked.has(part.name)) {
         const old = prevByName.get(part.name);
         if (old) job.reuse = old.painted;
         else job.keep = true;
@@ -2055,7 +2082,9 @@ export class ReskinPlugin {
         }
       }
       const samRules =
-        opts.samCheck !== false && this.provider.segment ? samRulesFor(opts.assetClass, part.zone, theme) : [];
+        opts.samCheck !== false && this.provider.segment
+          ? samRulesFor(opts.assetClass, part.zone, theme, part.name)
+          : [];
       let samUpright = null;
       if (samRules.length && !this.samOff) {
         // SAM 3.1 looks for things that belong to other areas (a face on the trousers, shoes
@@ -2775,6 +2804,57 @@ export class ReskinPlugin {
    * the smallest parts are left whole if there are more.
    */
   /**
+   * Triangles of `slot` that must keep their original pixels (see keepAreas.js), or null.
+   * Vehicles: head and tail lights and tyre treads. opts.keepVehicleParts: false turns it off.
+   */
+  keepTriangles(slot, opts = {}) {
+    if (opts.keepVehicleParts === false) return null;
+    const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    if (cls !== 'vehicle') return null;
+    const zones = this.samZonesActive ? (this.samZones.get(slot.id) ?? []) : [];
+    this.keepCache ??= new Map();
+    const key = `${slot.id}|${zones.length}`;
+    if (!this.keepCache.has(key)) this.keepCache.set(key, vehicleKeepTriangles(slot, { zones }));
+    return this.keepCache.get(key);
+  }
+
+  /** Puts the original pixels back inside the kept triangles. Changes `baseColor` in place. */
+  restoreKept(slot, baseColor, original, opts) {
+    const keep = this.keepTriangles(slot, opts);
+    if (!keep) return;
+    const W = baseColor.width,
+      H = baseColor.height;
+    const layer = drawUvGuide(slot, W, H, {
+      meshes: [...keep.tris.keys()],
+      tris: keep.tris,
+      wireframe: true,
+      lineColor: '#ffffff',
+      lineWidth: 2,
+      fillColor: '#ffffff',
+      background: null,
+    });
+    const ld = ctx2d(layer).getImageData(0, 0, W, H).data;
+    const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
+    const g = ctx2d(baseColor);
+    const bd = g.getImageData(0, 0, W, H);
+    let n = 0;
+    for (let i = 0; i < ld.length; i += 4) {
+      if (ld[i + 3] < 128) continue;
+      bd.data[i] = od[i];
+      bd.data[i + 1] = od[i + 1];
+      bd.data[i + 2] = od[i + 2];
+      n++;
+    }
+    g.putImageData(bd, 0, 0);
+    this.keepNoted ??= new Set();
+    if (n && !this.keepNoted.has(slot.id)) {
+      this.keepNoted.add(slot.id);
+      const what = [keep.headlights ? 'lights' : '', keep.treads ? 'tyre treads' : ''].filter(Boolean).join(' and ');
+      this.emit('warning', { message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).` });
+    }
+  }
+
+  /**
    * One simple roofing surface for `theme` (asphalt, shingles, thatch…, picked by Muse to
    * fit it), as a seamless canvas. Cached per slot and theme, so variations share it.
    */
@@ -2916,6 +2996,15 @@ export class ReskinPlugin {
 
   paintRegions(slot, parts, opts = {}) {
     if (opts.splitRegions === false) return parts;
+    // Vehicles: every body panel (doors, fenders, hood, bumpers…) is painted as one area, so
+    // stripes and lines carry across the doors instead of each panel getting its own design.
+    if (opts.assetClass === 'vehicle' && opts.mergeBodyPanels !== false) {
+      const merged = mergeBodyPanels(parts);
+      if (merged) {
+        const [body, ...rest] = merged;
+        return [body, ...this.paintRegions(slot, rest, { ...opts, mergeBodyPanels: false })];
+      }
+    }
     const max = opts.maxPaintAreas ?? 12;
     const out = [];
     let left = max;
@@ -2927,7 +3016,11 @@ export class ReskinPlugin {
         const zones = opts.assetClass === 'avatar' ? splitAvatarZones(slot, p, this.anatomy()) : [p];
         // Avatars keep each mesh whole apart from those zones (legs stay one "pants" area).
         if (zones.length > 1 || opts.assetClass === 'avatar') split = zones;
-        else {
+        else if (opts.assetClass === 'vehicle' && isBodyPanel(p.name)) {
+          // A vehicle's body stays one area even when its doors are separate UV islands, so
+          // stripes are painted across all of it in one image.
+          split = [p];
+        } else {
           // Buildings: roofs and undersides are their own areas, so they are never painted
           // as walls (windows and doors on the roof, a facade on the underside).
           const tb = getAssetClass(opts.assetClass)?.topBottom
@@ -3182,6 +3275,40 @@ export function slug(s) {
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'reskin'
   );
+}
+
+/** Parts of a vehicle that are not body paint (they keep their own areas). */
+const NOT_BODY_PANEL =
+  /\b(wheels?|tires?|tyres?|rims?|hubcaps?|treads?|lights?|lamps?|headlights?|taillights?|glass|windows?|windshield|windscreen|interior|seats?|steering|dashboard|engine|exhaust|grille|mirror glass|chrome)\b/i;
+
+/**
+ * Vehicles: all body-panel parts merged into one "Body panels" part (first), the others
+ * after it. null when there are fewer than two body panels.
+ */
+const isBodyPanel = (name) =>
+  !NOT_BODY_PANEL.test(
+    String(name)
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/[_\-.\d]+/g, ' '),
+  );
+
+export function mergeBodyPanels(parts) {
+  const panels = parts.filter((p) => isBodyPanel(p.name));
+  if (panels.length < 2) return null;
+  const others = parts.filter((p) => !panels.includes(p));
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const p of panels)
+    for (let k = 0; k < 4; k++) box[k] = k < 2 ? Math.min(box[k], p.bbox[k]) : Math.max(box[k], p.bbox[k]);
+  const biggest = [...panels].sort((a, b) => b.area - a.area)[0];
+  const body = {
+    ...biggest,
+    name: 'Body panels',
+    meshes: panels.flatMap((p) => p.meshes),
+    bbox: box,
+    area: panels.reduce((sum, p) => sum + (p.area ?? 0), 0),
+    mergedFrom: panels.map((p) => p.name),
+  };
+  return [body, ...others];
 }
 
 /** Roof material tile size: about a fifth of the roof, so shingles and tiles stay small. */
