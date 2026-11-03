@@ -859,3 +859,9 @@ button.on {
 .suggest-dialog {
   width: min(720px, 94vw);
 }
+
+/* The Log tab uses the panel's full height; the panel scrolls under the sticky tabs. */
+#page-log .log {
+  max-height: none;
+  overflow: visible;
+}
