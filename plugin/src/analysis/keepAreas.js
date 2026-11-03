@@ -570,6 +570,9 @@ export function vehicleKeepTriangles(
         // Muse looked at the renders and says light: kept at any size when the texture is named
         // for lights (an "Optics" atlas) or the zone is not most of the texture.
         const museSure = museZ === 'light' && (LIGHT_TEXTURE.test(namesOf(mesh)) || (z.share ?? 1) <= 0.5);
+        // Already kept as a light by its own name (an "Optics" texture): nothing to reject.
+        const already = lights.get(mesh);
+        if (already && use.every((v, t) => !v || already[t])) continue;
         if (!museSure && tooBig(mesh, src, use)) {
           rejected.push({ name: 'SAM lights zone', reason: 'too big to be lights, so it is painted' });
           continue;
