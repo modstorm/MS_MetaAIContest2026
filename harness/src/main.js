@@ -213,7 +213,7 @@ function renderZones(areas) {
 async function load(input, name) {
   try {
     const { model } = await plugin.postModel(input, { name });
-    lastSuggestion = null; // a new model needs a new look from Muse
+    clearSuggestion(); // a new model needs a new look from Muse
     viewer.setContent(model.scene, model.gltf.animations);
     if (viewer.clip)
       log(`Playing animation "${viewer.clip.name || 'unnamed'}" (${model.gltf.animations.length} in file)`);
@@ -416,53 +416,85 @@ for (const [label, p] of PRESETS) {
   b.onclick = () => {
     promptText.value = p;
     promptText.focus();
+    themeChanged();
   };
   chips.append(b);
 }
 
-// ---- step 1: the prompt popup (theme + style; everything else under Advanced)
+// ---- the Reskin popup: theme, presets, Muse's review (filled in place), options, Paint
+// It keeps its state between opens for the same model, so Reskin again shows the last theme,
+// what Muse saw and the detailed prompt. A new theme only asks Muse to rewrite the prompt
+// (text only: Muse keeps what it saw of this model).
+let pending = null; // Muse's suggestion for this model, if any
+let suggestedFor = ''; // the theme that suggestion was written for
+
 function openPrompt() {
-  if (plugin.isBusy) return runDialog.open || showRun();
+  if (plugin.isBusy && !dialog.open) return runDialog.open || showRun();
   const s = plugin.summary();
   $('prompt-model-info').textContent = s
     ? `${plugin.model?.name}: ${s.slots.length} texture slot(s), ${s.triangleCount.toLocaleString()} triangles`
     : '';
   $('provider-label').textContent = `Backend: ${plugin.getProvider().name}`;
   $('suggest-row').hidden = !plugin.canSuggest;
-  if (runDialog.open) runDialog.close();
-  updateGoLabel();
-  updateCostEstimate();
+  if (runDialog.open && !plugin.isBusy) runDialog.close();
+  themeChanged();
   if (!dialog.open) dialog.showModal();
-  promptText.focus();
+  (pending && suggestEnabled() ? $('sugg-prompt') : promptText).focus();
 }
 
-// Reskin again after a run with Muse's suggestion: reopen that suggestion (what Muse sees and the
-// last detailed prompt) instead of asking Muse again. "New theme…" in the popup starts over.
-let lastSuggestion = null; // { theme, suggestion, prompt }
-function reskinClick() {
-  if (!lastSuggestion || plugin.isBusy || missingKey()) return openPrompt();
-  if (dialog.open) dialog.close();
-  promptText.value = lastSuggestion.theme;
-  openRun(lastSuggestion.theme);
-  showSuggestion(lastSuggestion.suggestion, lastSuggestion.prompt, lastSuggestion);
-  $('prompt-stage').textContent = 'Same suggestion as last time: edit the prompt if you like, then paint.';
-}
-$('btn-reskin').onclick = reskinClick;
-$('sugg-new').onclick = () => {
-  lastSuggestion = null;
-  closeSuggestion(false);
-  openPrompt();
+$('btn-reskin').onclick = openPrompt;
+$('prompt-cancel').onclick = () => {
+  if (suggesting) plugin.cancel();
+  dialog.close();
 };
-$('prompt-cancel').onclick = () => dialog.close();
+dialog.addEventListener('cancel', () => suggesting && plugin.cancel());
 
 function suggestEnabled() {
   return plugin.canSuggest && $('opt-suggest').checked;
 }
+/** Muse still has to write (or rewrite, for a new theme) the detailed prompt. */
+function needsSuggestion() {
+  return suggestEnabled() && (!pending || promptText.value.trim() !== suggestedFor);
+}
 
 function updateGoLabel() {
-  $('prompt-go').textContent = suggestEnabled() ? 'Get Muse suggestion' : 'Reskin';
+  $('prompt-go').textContent = suggesting
+    ? 'Muse is looking…'
+    : needsSuggestion()
+      ? pending
+        ? "Update Muse's prompt"
+        : 'Get Muse suggestion'
+      : 'Paint';
+  $('prompt-go').disabled = suggesting;
 }
-$('opt-suggest').addEventListener('change', updateGoLabel);
+
+/** Theme, checkbox or model changed: show or hide Muse's part and relabel the button. */
+function themeChanged() {
+  $('suggestion').hidden = !(pending && suggestEnabled());
+  const stale = pending && suggestEnabled() && promptText.value.trim() !== suggestedFor;
+  if (!suggesting)
+    setSuggStatus(
+      stale ? 'New theme: Muse rewrites the detailed prompt from what it already saw (no new look at the model).' : '',
+    );
+  updateGoLabel();
+  updateCostEstimate();
+}
+promptText.addEventListener('input', themeChanged);
+$('opt-suggest').addEventListener('change', themeChanged);
+
+function setSuggStatus(text, error = false) {
+  $('sugg-status').hidden = !text;
+  $('sugg-status').textContent = text;
+  $('sugg-status').classList.toggle('warn-text', error);
+}
+
+/** Forget Muse's suggestion (a new model was loaded). */
+function clearSuggestion() {
+  pending = null;
+  suggestedFor = '';
+  $('suggestion').hidden = true;
+  setSuggStatus('');
+}
 
 /** "About 7 Muse images ≈ $0.12" for the current choices, before painting. */
 function updateCostEstimate() {
@@ -471,7 +503,7 @@ function updateCostEstimate() {
   try {
     const e = plugin.estimateCost({
       ...paintOptions(),
-      suggest: suggestEnabled(),
+      suggest: needsSuggestion() && !pending,
       review: $('opt-review').checked && plugin.canReview,
     });
     el.textContent = `About ${e.images} Muse image${e.images === 1 ? '' : 's'} ≈ ${formatDollars(e.cost)}`;
@@ -479,57 +511,99 @@ function updateCostEstimate() {
     el.textContent = '';
   }
 }
-for (const id of ['opt-paint-mode', 'opt-variations', 'opt-suggest', 'opt-review', 'opt-sam'])
+for (const id of ['opt-paint-mode', 'opt-variations', 'opt-review', 'opt-sam'])
   $(id).addEventListener('change', updateCostEstimate);
 
 $('prompt-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  const prompt = promptText.value.trim();
-  if (!prompt) return;
+  const theme = promptText.value.trim();
+  if (!theme || suggesting) return;
   if (missingKey()) {
     dialog.close();
     updateKeyBanner(true);
     log('No Muse API key: add MUSE_API_KEY to .env and restart "npm run dev" (or paste a key in Settings).', 'error');
     return;
   }
+  if (needsSuggestion()) return askMuse(theme);
+  const useSugg = !!(pending && suggestEnabled());
+  if (useSugg) suggTexts[suggKey()] = $('sugg-prompt').value;
+  const text = (useSugg && $('sugg-prompt').value.trim()) || theme;
   dialog.close();
-  lastSuggestion = null;
-  openRun(prompt);
-  if (suggestEnabled()) runSuggest(prompt);
-  else runReskin(prompt);
+  openRun(theme);
+  runReskin(text, useSugg ? pending : undefined);
 });
 
-// ---- step 2: the progress panel (progress, Muse's detailed prompt, variations, errors)
-// The suggestion waiting for the user's OK (art-director step), if any.
-let pending = null;
-
-/** Muse's suggestion: the editable prompt at the top of the Run tab, the views and notes below. */
-const suggestDialog = $('suggest-dialog');
-let suggestionTaken = false; // Paint / Use my prompt closed the popup (not Close or Esc)
-function showSuggestionPanels(on) {
-  $('suggestion').hidden = !on;
-  $('suggestion-more').hidden = !on;
-  if (!on && suggestDialog.open) closeSuggestion(true);
+// Muse looks at the model (or, for a new theme, only rewrites the prompt) inside the popup.
+let suggesting = false;
+async function askMuse(theme) {
+  suggesting = true;
+  setSuggStatus(pending ? 'Muse is rewriting the prompt for the new theme…' : 'Muse is studying the model…');
+  updateGoLabel();
+  try {
+    const s = await plugin.postSuggest(theme, { fast: $('opt-fast').checked, orientation: $('opt-orient').value });
+    suggesting = false;
+    showSuggestion(s, theme);
+    setSuggStatus('');
+  } catch (err) {
+    suggesting = false;
+    if (err.name === 'AbortError') setSuggStatus('Cancelled.');
+    else {
+      const filtered = /content (management |moderation )?polic|filtered due to/i.test(err.message);
+      setSuggStatus(
+        `${filtered ? "Muse's safety filter rejected this theme" : 'Muse request failed'}: ${err.message}. Try again, change the theme, or untick the Muse review to paint your own prompt.`,
+        true,
+      );
+    }
+  } finally {
+    // Keep any error message in view (themeChanged would replace it).
+    $('suggestion').hidden = !(pending && suggestEnabled());
+    updateGoLabel();
+    updateCostEstimate();
+  }
 }
-function openSuggestion() {
-  suggestionTaken = false;
-  $('sugg-theme').textContent = $('run-theme').textContent;
-  if (!suggestDialog.open) suggestDialog.showModal();
+
+function showSuggestion(s, theme) {
+  pending = s;
+  suggestedFor = theme;
+  const sheet = $('sugg-sheet');
+  sheet.innerHTML = '';
+  if (s.sheet) sheet.append(named(thumb(s.sheet, 900), 'muse views', s.sheet));
+  if (s.idSheet) sheet.append(named(thumb(s.idSheet, 900), 'muse views ID map', s.idSheet));
+  $('sugg-subject').textContent = s.subject || 'not sure';
+  $('sugg-parts').innerHTML = (s.parts ?? [])
+    .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
+    .join('');
+  suggTexts.muse = s.prompt;
+  suggTexts.mine = theme;
+  $('sugg-mine').checked = false;
+  renderSuggText();
+  $('sugg-tips').textContent = s.tips ?? '';
+  const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
+    const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
+    return plan.regions.map(
+      (r) => `<li><b>${escapeHtml(name)} / ${escapeHtml(r.name)}</b>: ${escapeHtml(r.description ?? '')}</li>`,
+    );
+  });
+  $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
+  themeChanged();
   $('sugg-prompt').focus();
 }
-function closeSuggestion(taken) {
-  suggestionTaken = taken;
-  suggestDialog.close();
-}
-// Close or Esc: drop the suggestion and the run, as the run panel's Close does.
-suggestDialog.addEventListener('close', () => {
-  if (suggestionTaken || plugin.isBusy) return;
-  pending = null;
-  showSuggestionPanels(false);
-  runDialog.close();
-});
-$('sugg-close').onclick = () => closeSuggestion(false);
 
+// The prompt box shows Muse's detailed prompt, or your own with "Use my prompt instead";
+// each keeps its edits when you switch.
+const suggTexts = { muse: '', mine: '' };
+const suggKey = () => ($('sugg-mine').checked ? 'mine' : 'muse');
+function renderSuggText() {
+  const mine = $('sugg-mine').checked;
+  $('sugg-label').textContent = mine ? 'Your prompt (edit freely)' : "Muse's detailed prompt (edit freely)";
+  $('sugg-prompt').value = suggTexts[suggKey()];
+}
+$('sugg-mine').addEventListener('change', () => {
+  suggTexts[$('sugg-mine').checked ? 'muse' : 'mine'] = $('sugg-prompt').value; // keep the edits of the one left
+  renderSuggText();
+});
+
+// ---- the progress panel (Run tab): progress, errors, Stop
 /** The run panel lives in the side panel's Run tab; its progress bar sits on the viewport. */
 function showRun() {
   $('prompt-progress').hidden = false;
@@ -544,22 +618,16 @@ runDialog.addEventListener('close', () => {
 });
 
 function openRun(prompt) {
-  pending = null;
   $('run-title').textContent = 'Painting';
   $('run-theme').textContent = `"${prompt}"`;
-  showSuggestionPanels(false);
   $('prompt-bar').style.width = '0%';
   $('prompt-stage').textContent = '';
-  setRunButtons({ go: false });
+  setRunButtons({});
   hideError();
   if (!runDialog.open) showRun();
 }
 
-function setRunButtons({ go = false, busy = false, done = false } = {}) {
-  $('run-go').hidden = !go;
-  $('run-go').textContent = 'Paint';
-  $('sugg-prompt').disabled = !go;
-  $('sugg-mine').disabled = !go;
+function setRunButtons({ busy = false, done = false } = {}) {
   $('run-cancel').textContent = busy ? 'Stop' : done ? 'Done' : 'Close';
 }
 
@@ -570,34 +638,6 @@ $('run-cancel').onclick = () => {
   }
 };
 
-function showSuggestion(s, prompt = s.prompt, { mine = promptText.value.trim(), useMine = false } = {}) {
-  pending = s;
-  const sheet = $('sugg-sheet');
-  sheet.innerHTML = '';
-  if (s.sheet) sheet.append(named(thumb(s.sheet, 900), 'muse views', s.sheet));
-  if (s.idSheet) sheet.append(named(thumb(s.idSheet, 900), 'muse views ID map', s.idSheet));
-  $('sugg-subject').textContent = s.subject || 'not sure';
-  $('sugg-parts').innerHTML = (s.parts ?? [])
-    .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
-    .join('');
-  suggTexts.muse = prompt;
-  suggTexts.mine = mine;
-  $('sugg-mine').checked = useMine;
-  renderSuggText();
-  $('sugg-tips').textContent = s.tips ?? '';
-  const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
-    const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
-    return plan.regions.map(
-      (r) => `<li><b>${escapeHtml(name)} / ${escapeHtml(r.name)}</b>: ${escapeHtml(r.description ?? '')}</li>`,
-    );
-  });
-  $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
-  showSuggestionPanels(true);
-  $('run-title').textContent = 'Muse suggests';
-  setRunButtons({ go: true });
-  openSuggestion();
-}
-
 let retryAction = null;
 
 function hideError() {
@@ -605,8 +645,8 @@ function hideError() {
   retryAction = null;
 }
 
-/** Shows a failure with Retry / Edit prompt (and Skip suggestion for the suggest step). */
-function showError(err, retry, { canSkip = false } = {}) {
+/** Shows a failure with Retry / Edit prompt. */
+function showError(err, retry) {
   const filtered =
     err.code === 'content_policy_violation' ||
     /content (management |moderation )?polic|filtered due to/i.test(err.message);
@@ -615,7 +655,6 @@ function showError(err, retry, { canSkip = false } = {}) {
   $('err-text').textContent = filtered
     ? `${err.message}${step}. Tip: describe dark themes with gentler words ("spooky", "eerie", "Halloween") and avoid blood, gore, injuries and weapons.`
     : `${err.message}${step}`;
-  $('err-skip').hidden = !canSkip;
   $('err-probe').hidden = !filtered;
   $('prompt-error').hidden = false;
   $('prompt-stage').textContent = '';
@@ -630,17 +669,8 @@ $('err-retry').onclick = () => {
 };
 $('err-edit').onclick = () => {
   hideError();
-  if (pending) {
-    setRunButtons({ go: true });
-    openSuggestion();
-  } else openPrompt();
-};
-$('err-skip').onclick = () => {
-  hideError();
-  $('opt-suggest').checked = false;
-  pending = null;
-  showSuggestionPanels(false);
-  runReskin(promptText.value.trim());
+  runDialog.close();
+  openPrompt();
 };
 
 function paintOptions() {
@@ -670,7 +700,6 @@ async function runReskin(text, suggestion) {
   $('run-title').textContent = 'Painting';
   $('prompt-bar').style.width = '0%';
   setRunButtons({ busy: true });
-  if (suggestion) $('sugg-prompt').disabled = true;
   try {
     const res = await plugin.postPrompt(text, { suggestion, ...paintOptions() });
     afterPaint();
@@ -729,51 +758,6 @@ function afterPaint() {
   $('btn-review').disabled = !plugin.canReview;
   $('btn-reskin').textContent = '✨ Reskin again…';
 }
-
-async function runSuggest(prompt) {
-  hideError();
-  $('run-title').textContent = 'Muse is studying the model';
-  setRunButtons({ busy: true });
-  try {
-    showSuggestion(
-      await plugin.postSuggest(prompt, { fast: $('opt-fast').checked, orientation: $('opt-orient').value }),
-    );
-    $('prompt-stage').textContent = 'Edit the prompt if you like, then paint.';
-  } catch (err) {
-    setRunButtons({});
-    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
-    else showError(err, () => runSuggest(prompt), { canSkip: true });
-  }
-}
-
-// The popup's prompt box shows Muse's detailed prompt, or your own with "Use my prompt instead";
-// each keeps its edits when you switch.
-const suggTexts = { muse: '', mine: '' };
-const suggKey = () => ($('sugg-mine').checked ? 'mine' : 'muse');
-function renderSuggText() {
-  const mine = $('sugg-mine').checked;
-  $('sugg-label').textContent = mine ? 'Your prompt (edit freely)' : "Muse's detailed prompt (edit freely)";
-  $('sugg-prompt').value = suggTexts[suggKey()];
-}
-$('sugg-mine').addEventListener('change', () => {
-  suggTexts[$('sugg-mine').checked ? 'muse' : 'mine'] = $('sugg-prompt').value; // keep the edits of the one left
-  renderSuggText();
-});
-
-$('run-go').onclick = () => {
-  suggTexts[suggKey()] = $('sugg-prompt').value;
-  const text = $('sugg-prompt').value.trim() || promptText.value.trim();
-  if (pending)
-    lastSuggestion = {
-      theme: promptText.value.trim(),
-      suggestion: pending,
-      prompt: suggTexts.muse,
-      mine: suggTexts.mine,
-      useMine: $('sugg-mine').checked,
-    };
-  closeSuggestion(true);
-  runReskin(text, pending);
-};
 
 // ------------------------------------------------------------------ filter probe
 function addProbeResult(r) {

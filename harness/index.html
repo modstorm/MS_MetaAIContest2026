@@ -107,7 +107,6 @@
                 <div class="row">
                   <button type="button" id="err-retry">Retry</button>
                   <button type="button" id="err-edit">Edit prompt</button>
-                  <button type="button" id="err-skip" hidden>Skip suggestion and paint</button>
                   <button type="button" id="err-probe">Run filter probe</button>
                 </div>
               </div>
@@ -196,8 +195,25 @@
         ></textarea>
         <div class="chips" id="prompt-chips"></div>
         <label class="inline" id="suggest-row"
-          ><input id="opt-suggest" type="checkbox" checked /> Let Muse look at the model and improve my prompt</label
+          ><input id="opt-suggest" type="checkbox" checked /> Let Muse review the model and improve my prompt</label
         >
+        <p id="sugg-status" class="muted" hidden></p>
+        <!-- Filled in place once Muse has looked at the model. -->
+        <section id="suggestion" class="suggestion" hidden>
+          <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
+          <div id="sugg-parts" class="chips static"></div>
+          <label for="sugg-prompt" id="sugg-label">Muse's detailed prompt (edit freely)</label>
+          <textarea id="sugg-prompt" rows="5"></textarea>
+          <label class="inline"
+            ><input id="sugg-mine" type="checkbox" /> Use my prompt instead (shows and paints your own prompt)</label
+          >
+          <p class="muted" id="sugg-tips"></p>
+          <details>
+            <summary>Muse's views and paint plan</summary>
+            <div id="sugg-sheet" class="sheet"></div>
+            <ul id="sugg-regions" class="regions"></ul>
+          </details>
+        </section>
         <div class="style-row">
           <label class="inline"
             >Quality
@@ -312,35 +328,6 @@
           <button type="submit" id="prompt-go" class="primary">Reskin</button>
         </div>
       </form>
-    </dialog>
-
-    <!-- Muse's suggestion: centered popup with the editable prompt; the buttons stay at the bottom. -->
-    <dialog id="suggest-dialog" class="dialog suggest-dialog">
-      <h2>Muse suggests</h2>
-      <p class="muted" id="sugg-theme"></p>
-      <section id="suggestion" class="suggestion" hidden>
-        <label for="sugg-prompt" id="sugg-label">Muse's detailed prompt (edit freely)</label>
-        <textarea id="sugg-prompt" rows="5"></textarea>
-        <label class="inline"
-          ><input id="sugg-mine" type="checkbox" /> Use my prompt instead (shows and paints your own prompt)</label
-        >
-      </section>
-      <section id="suggestion-more" class="suggestion" hidden>
-        <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
-        <div id="sugg-parts" class="chips static"></div>
-        <p class="muted" id="sugg-tips"></p>
-        <div id="sugg-sheet" class="sheet"></div>
-        <details>
-          <summary>Paint plan per texture region</summary>
-          <ul id="sugg-regions" class="regions"></ul>
-        </details>
-      </section>
-      <div class="row dialog-foot">
-        <button type="button" id="sugg-new" title="Type a new theme (Muse looks at the model again)">New theme…</button>
-        <span class="spacer"></span>
-        <button type="button" id="sugg-close">Cancel</button>
-        <button type="button" id="run-go" class="primary" hidden>Paint</button>
-      </div>
     </dialog>
 
     <dialog id="settings-dialog" class="dialog">
