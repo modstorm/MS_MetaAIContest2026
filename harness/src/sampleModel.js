@@ -459,7 +459,13 @@ export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
  * 128-256 × 256-384 red; tread 0-256 × 384-512 striped grey; sidewalls 256-384 / 384-512
  * × 384-512 mid grey.
  */
-export async function buildVehicleTestGlb({ groupName, tyreWidth = 0.2, openTyre = false, wheelRotation = null } = {}) {
+export async function buildVehicleTestGlb({
+  groupName,
+  tyreWidth = 0.2,
+  openTyre = false,
+  wheelRotation = null,
+  windowPart = false,
+} = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d');
@@ -480,6 +486,10 @@ export async function buildVehicleTestGlb({ groupName, tyreWidth = 0.2, openTyre
   for (let x = 8; x < 256; x += 24) g.fillRect(x, 384, 8, 128);
   g.fillStyle = '#808080';
   g.fillRect(256, 384, 256, 128);
+  if (windowPart) {
+    g.fillStyle = '#334455'; // glass
+    g.fillRect(384, 256, 128, 128);
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -508,6 +518,15 @@ export async function buildVehicleTestGlb({ groupName, tyreWidth = 0.2, openTyre
   const mirror = new THREE.BoxGeometry(0.15, 0.1, 0.1);
   fit(mirror, [0.52, 0.52, 0.73, 0.73]);
   add(mirror, 'MirrorLight_L', [0.6, 0.95, 0.55]);
+  if (windowPart) {
+    // A side window and a door, for paint-order tests (the window is glass, the door body).
+    const win = new THREE.BoxGeometry(0.5, 0.25, 0.02);
+    fit(win, [0.77, 0.52, 0.98, 0.73]);
+    add(win, 'Window_Glass', [0, 1.05, 0.5]);
+    const door = new THREE.BoxGeometry(0.6, 0.4, 0.02);
+    fit(door, [0.52, 0.02, 0.73, 0.23]);
+    add(door, 'Door_L', [0, 0.6, 0.52]);
+  }
   const tail = new THREE.BoxGeometry(0.1, 0.15, 0.3);
   fit(tail, [0.27, 0.52, 0.48, 0.73]);
   add(tail, 'TailLight_R', [-1.02, 0.65, 0.3]);

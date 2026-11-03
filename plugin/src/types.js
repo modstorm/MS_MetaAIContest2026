@@ -81,6 +81,14 @@
  * @property {boolean} [useVisionPlanning] Ask the vision model to describe atlas regions first. Default true.
  * @property {number} [maxTextureSize] Longest side of generated textures. Default: source size, capped at 2048.
  * @property {string} [extraInstructions] Free text appended to the model prompt.
+ * @property {string | string[] | null} [userRules] The user's own hard rules (e.g. the editor's Context:
+ *   "don't paint the windows"). Also on postSuggest. Sent unchanged and first in every Muse call
+ *   (suggestion, every paint prompt, review) as "MOST IMPORTANT RULE (from the user): …"; they
+ *   are never rewritten by Muse. They stay for later calls until another value is passed
+ *   (null or [] clears them).
+ * @property {boolean} [prefetchAreaThemes] postSuggest only: ask for the per-area theme split of
+ *   the suggested prompt right away, so painting that prompt starts sooner. For editors that
+ *   paint suggestion.prompt unchanged. Default false.
  * @property {'gltf' | 'image'} [imageOrder] Row order of the canvases handed out (slot results, their maps, textureUpdated).
  *   'gltf' (default): as stored on the model (glTF, top row = v 0). 'image': flipped into ordinary image order (top row = v 1),
  *   ready to save as image files. Defaults to what postModel was given. The model's own textures never change.

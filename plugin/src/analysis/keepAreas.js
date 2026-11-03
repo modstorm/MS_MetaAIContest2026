@@ -14,6 +14,15 @@ import { islandIdPerTriangle, triangleCount } from './uvIslands.js';
  * fog, reverse lights and indicators). "light" / "lamp" alone count too. */
 export const HEADLIGHT_NAME =
   /(head|front|fog|tail|rear|back|brake|stop|reverse|reversing|side|turn)\s*(light|lamp)s?|\b(head|tail)lamps?\b|\blights?\b|\blamps?\b|\b(high|low)\s*beam|\bindicators?\b|\bblinkers?\b/i;
+/** Mesh / material names that mean glass: windows, windscreen. */
+export const GLASS_NAME = /\b(glass|windows?|windshield|windscreen|windscreens|sunroof|glazing)\b/i;
+
+/** A see-through material (glass): transparent, or opacity / transmission set. */
+function isGlassMaterial(mesh) {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  return mats.some((m) => m && ((m.transparent && (m.opacity ?? 1) < 0.95) || (m.transmission ?? 0) > 0.1));
+}
+
 /** Mesh / material names that mean a wheel or tyre. */
 export const WHEEL_NAME = /\b(wheels?|tires?|tyres?|treads?)\b/i;
 
@@ -363,7 +372,11 @@ function meshArea(mesh, src, use = null) {
  * @returns {{ tris: Map<object, Uint8Array>, lights: Map<object, Uint8Array>, headlights: number, treads: number, rejected: { name: string, reason: string }[] } | null}
  *   `tris` = everything kept, `lights` = the light part of it.
  */
-export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, roles = null, zoneRoles = null } = {}) {
+export function vehicleKeepTriangles(
+  slot,
+  { zones = [], maxLightShare = 0.2, maxGlassShare = 0.4, roles = null, zoneRoles = null } = {},
+) {
+  let glass = 0;
   const decisions = [];
   let arches = false;
   const tris = new Map();
@@ -407,8 +420,27 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
         ? 'light'
         : WHEEL_NAME.test(name)
           ? 'wheel'
-          : null;
-    const source = museRole ? 'Muse' : 'name';
+          : GLASS_NAME.test(name)
+            ? 'glass'
+            : isGlassMaterial(mesh)
+              ? 'glass'
+              : null;
+    const source = museRole ? 'Muse' : GLASS_NAME.test(name) || role !== 'glass' ? 'name' : 'material';
+    if (role === 'glass') {
+      // Glass is never painted (Kris): the whole part keeps its original pixels. A "glass" part
+      // that is most of the texture is not glass (a wrong label), so it is painted.
+      if (slot.meshes.length > 1 && meshArea(mesh, src) / (total || 1) > maxGlassShare) {
+        rejected.push({
+          name: label(mesh),
+          reason: `${source} says glass but it is too big to be the windows, so it is painted`,
+        });
+        continue;
+      }
+      add(mesh, new Uint8Array(n).fill(1));
+      glass += n;
+      decisions.push({ name: label(mesh), role: 'glass (kept)', source });
+      continue;
+    }
     if (role === 'light') {
       if (slot.meshes.length > 1 && tooBig(mesh, src)) {
         rejected.push({
@@ -440,6 +472,29 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
     }
   }
   for (const z of zones) {
+    if (z.zone === 'windows' && (!zoneRoles?.[z.zone] || zoneRoles[z.zone] === 'glass')) {
+      // SAM's windows zone: glass, never painted. Too big to be windows = SAM got it wrong.
+      let a = 0;
+      for (const [mesh, use] of z.tris ?? []) {
+        const src = srcs.get(mesh);
+        if (src) a += meshArea(mesh, src, use);
+      }
+      if (total > 0 && a / total > maxGlassShare) {
+        rejected.push({ name: 'SAM windows zone', reason: 'too big to be the windows, so it is painted' });
+        continue;
+      }
+      for (const [mesh, use] of z.tris ?? []) {
+        if (!srcs.get(mesh)) continue;
+        add(mesh, use);
+        glass += use.reduce((s, v) => s + v, 0);
+      }
+      decisions.push({
+        name: 'SAM windows zone',
+        role: 'glass (kept)',
+        source: zoneRoles?.[z.zone] ? 'Muse + SAM' : 'SAM',
+      });
+      continue;
+    }
     if (z.zone === 'wheel arches') {
       // Kept like lights: original pixels back, old body paint replaced by the new body paint.
       for (const [mesh, use] of z.tris ?? []) {
@@ -486,11 +541,11 @@ export function vehicleKeepTriangles(slot, { zones = [], maxLightShare = 0.2, ro
       }
     }
   }
-  if (!headlights && !treads && !arches)
+  if (!headlights && !treads && !arches && !glass)
     return rejected.length || decisions.length
-      ? { tris, lights, soft, headlights, treads, rejected, decisions, none: true }
+      ? { tris, lights, soft, headlights, treads, glass, rejected, decisions, none: true }
       : null;
-  return { tris, lights, soft, headlights, treads, rejected, decisions };
+  return { tris, lights, soft, headlights, treads, glass, rejected, decisions };
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */

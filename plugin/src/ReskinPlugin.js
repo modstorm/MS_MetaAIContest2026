@@ -613,8 +613,11 @@ export class ReskinPlugin {
     if (!theme) throw new Error('Prompt is empty');
     this.startReskinUsage(); // a suggestion starts a new reskin; the paint that follows adds to it
     this.usageAfterSuggest = true;
+    this.setUserRules(opts.userRules);
     const thinkStart = (this.thinkingLog ??= []).length;
-    const cached = this.suggestionCache.get(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`);
+    const cached = this.suggestionCache.get(
+      `${theme}|${JSON.stringify(opts.orientation ?? 'auto')}|${(this.userRules ?? []).join('|')}`,
+    );
     if (cached) {
       this.emit('suggestion', cached);
       return cached;
@@ -745,7 +748,11 @@ export class ReskinPlugin {
         for (const r of plan.regions) r.description = r.description && sanitizePrompt(r.description);
       }
       const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, idSheet, views };
-      this.suggestionCache.set(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`, suggestion);
+      this.suggestionCache.set(
+        `${theme}|${JSON.stringify(opts.orientation ?? 'auto')}|${(this.userRules ?? []).join('|')}`,
+        suggestion,
+      );
+      this.prefetchAreaThemes(suggestion, opts);
       this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
       this.think('identify', `Muse sees: ${suggestion.subject || 'unknown object'}`, {
         subject: suggestion.subject,
@@ -779,6 +786,7 @@ export class ReskinPlugin {
     if (!this.model || !this.layout) throw new Error('Post a model before posting a prompt');
     const theme = prompt.trim();
     const thinkStart = (this.thinkingLog ??= []).length;
+    this.setUserRules(opts.userRules);
     if (!theme) throw new Error('Prompt is empty');
     // A new reskin starts its own cost tally, unless it follows its suggestion or is a review fix.
     if (!opts.fixes && !(this.usageAfterSuggest && opts.suggestion)) this.startReskinUsage();
@@ -1897,11 +1905,38 @@ export class ReskinPlugin {
       }));
   }
 
+  /**
+   * Speed: while the user reads the suggestion, the per-area theme split for its prompt is
+   * already asked for, so painting that prompt starts with it ready (one Muse call less on
+   * the clock). Opt-in (opts.prefetchAreaThemes: true on postSuggest), for editors that paint
+   * the suggested prompt as is: if the prompt is edited, the call was wasted. Part mode only.
+   */
+  prefetchAreaThemes(suggestion, opts = {}) {
+    if (opts.prefetchAreaThemes !== true || opts.paintMode === 'atlas' || opts.areaThemes === false) return;
+    if (!this.provider.areaThemes || typeof this.provider.reskinPart !== 'function') return;
+    const theme = String(suggestion.prompt ?? '').trim();
+    if (!theme) return;
+    const o = { ...opts, assetClass: this.resolveAssetClass({ ...opts, suggestion }), suggestion };
+    for (const slot of this.layout?.slots ?? []) {
+      if (!slot.texture || slot.tiled) continue;
+      let names;
+      try {
+        names = this.idRegions(slot, o).map((r) => r.name);
+      } catch {
+        continue;
+      }
+      if (names.length < 2) continue;
+      this.areaThemesFor(theme, names, suggestion.plans?.[slot.id] ?? { subject: suggestion.subject }, null).catch(
+        () => {},
+      );
+    }
+  }
+
   /** Per-area theme descriptions (cached per theme + area list; failures fall back to the theme). */
   async areaThemesFor(theme, names, plan, signal) {
     if (!this.provider.areaThemes) return new Map();
     this.areaThemeCache ??= new Map();
-    const key = `${theme}|${names.join(',')}`;
+    const key = `${theme}|${[...names].sort().join(',')}`;
     if (!this.areaThemeCache.has(key)) {
       const p = this.timed('split theme per area', null, () =>
         this.provider.areaThemes({ theme, areas: names, subject: plan?.subject, signal }),
@@ -1987,7 +2022,7 @@ export class ReskinPlugin {
         zone: zoneOf(j),
         action: j.keep ? 'keep' : j.reuse ? 'reuse' : 'paint',
         why: j.protected
-          ? 'vehicle rule: lights / tyre treads are never repainted'
+          ? 'vehicle rule: lights, glass and tyre treads are never repainted'
           : j.locked
             ? 'locked by the user'
             : j.reuse
@@ -2469,17 +2504,34 @@ export class ReskinPlugin {
     const rest = jobs.slice();
     const reused = jobs.find((j) => j.reuse && !j.note);
     if (reused) styleRef = reused.reuse;
-    const styleFirst = !reused && (opts.styleReference ?? true) && jobs.length > 2;
+    // Only areas that are really painted count (kept lights / arches and reused areas don't).
+    const toPaintJobs = jobs.filter((j) => !j.keep && !j.reuse);
+    const styleFirst = !reused && (opts.styleReference ?? true) && toPaintJobs.length > 2;
+    let ordered = jobs;
     if (styleFirst) {
       // Paint the biggest area first so every other call can match its palette and style.
-      const first = rest.shift();
-      const [r] = await mapLimit([first], 1, paintOne);
-      results.push(r);
-      if (r.status === 'fulfilled') styleRef = r.value;
+      // Speed: glass (windows) needs no style match, and kept areas need no call, so they run
+      // alongside it instead of waiting.
+      const first = rest.find((j) => !j.keep && !j.reuse);
+      const noStyle = (j) =>
+        j !== first &&
+        (j.keep || /\b(windows?|glass|windshield|windscreen)\b/i.test(`${j.part.zone ?? ''} ${j.part.name}`));
+      const now = [first, ...rest.filter(noStyle)];
+      const later = rest.filter((j) => !now.includes(j));
+      const firstRun = mapLimit([first], 1, paintOne).then(([r]) => {
+        if (r.status === 'fulfilled') styleRef = r.value;
+        return r;
+      });
+      const side = mapLimit(now.slice(1), opts.partConcurrency ?? 4, paintOne);
+      const [r1, sideResults] = await Promise.all([firstRun, side]);
+      results.push(r1, ...sideResults);
+      results.push(...(await mapLimit(later, opts.partConcurrency ?? 4, paintOne)));
+      ordered = [...now, ...later];
+    } else {
+      results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
+      ordered = rest;
     }
-    results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
     signal.throwIfAborted();
-    const ordered = styleFirst ? jobs : rest;
     const failed = results.map((r, i) => [r, ordered[i]]).filter(([r]) => r.status === 'rejected');
     if (failed.length === jobs.length && failed.length) throw failed[0][0].reason;
     for (const [r, job] of failed) {
@@ -2544,7 +2596,28 @@ export class ReskinPlugin {
   }
 
   lessonsFor(assetClass) {
-    return [...(this.lessons.all ?? []), ...(this.lessons[assetClass] ?? [])];
+    return [...this.userRuleLines(), ...(this.lessons.all ?? []), ...(this.lessons[assetClass] ?? [])];
+  }
+
+  /**
+   * The user's own hard rules (opts.userRules on postSuggest / postPrompt, e.g. the editor's
+   * Context field: "don't paint the windows"). Passed through unchanged, never rewritten by
+   * Muse, and sent first in every Muse call of the run: the suggestion, every paint prompt
+   * and the review. They stay until a call passes other userRules (null or [] clears them).
+   */
+  setUserRules(rules) {
+    if (rules === undefined) return;
+    const list = (Array.isArray(rules) ? rules : [rules])
+      .flatMap((r) => String(r ?? '').split(/\n+/))
+      .map((r) => r.trim())
+      .filter(Boolean);
+    this.userRules = list;
+    if (list.length)
+      this.think('rules', `Your rules, sent first in every Muse call: ${list.join(' | ')}`, { userRules: list });
+  }
+
+  userRuleLines() {
+    return (this.userRules ?? []).map((r) => `MOST IMPORTANT RULE (from the user): ${r}`);
   }
 
   getLessons() {
@@ -3197,7 +3270,9 @@ export class ReskinPlugin {
     this.keepNoted ??= new Set();
     if (n && !this.keepNoted.has(slot.id)) {
       this.keepNoted.add(slot.id);
-      const what = [keep.headlights ? 'lights' : '', keep.treads ? 'tyre treads' : ''].filter(Boolean).join(' and ');
+      const what = [keep.headlights ? 'lights' : '', keep.glass ? 'glass' : '', keep.treads ? 'tyre treads' : '']
+        .filter(Boolean)
+        .join(', ');
       const extra = repainted ? ' Old body color around them was painted like the body.' : '';
       this.emit('warning', {
         message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).${extra}`,

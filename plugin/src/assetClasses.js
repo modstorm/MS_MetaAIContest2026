@@ -135,7 +135,7 @@ export const ASSET_CLASSES = [
       'This is a vehicle. Paint body panels with continuous paint; keep panel lines where they are.',
       'STRIPES AND LINES ARE CONTINUOUS: if the design has racing stripes, pinstripes or lines, paint them on EVERY body panel they would cross, including the doors, fenders, bumpers, hood and trunk, at the same height and width, so they run unbroken along the whole car. Never leave a door or any panel plain while its neighbours have stripes.',
       'Only the clear lens of each light is kept. The body-colored ring or housing around a light, the side mirrors, the grille, bumpers and trim are painted in the theme like the body: never leave any of the old body color anywhere.',
-      'Windows stay glass (dark or reflective).',
+      'NEVER PAINT ON THE WINDOWS OR ANY GLASS: no stripes, lines, patterns or colors on the windscreen, side windows or rear window. Windows stay plain glass exactly as they are.',
       'Never draw wheels, tyres, rims, hubcaps or spare wheels on the body, the doors, the tailgate, the windows or inside the wheel arches: wheels exist only on the separate wheel parts. Wheel arches are part of the body and stay dark. Windows show only glass.',
       'No readable text, numbers or brand logos.',
     ],

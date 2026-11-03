@@ -1636,6 +1636,50 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'speed + glass: windows are never painted (no Muse call); other areas wait for the body style reference',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const png = makePng().toString('base64');
+      const t0 = Date.now();
+      const calls = [];
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const body = req.postDataJSON();
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions'))
+          return ok({ choices: [{ message: { content: '{"areas": {}}' } }] });
+        const area = /"([^"]+)" area/.exec(body.prompt ?? '')?.[1] ?? '?';
+        const start = Date.now() - t0;
+        await new Promise((r) => setTimeout(r, 600));
+        calls.push({ area, start, end: Date.now() - t0 });
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const glb = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        return Array.from(new Uint8Array(await mod.buildVehicleTestGlb({ windowPart: true })));
+      });
+      await page.evaluate(async (bytes) => {
+        const p = window.reskin.plugin;
+        await p.postModel(new Uint8Array(bytes).buffer, { name: 'speed' });
+        await p.postPrompt('neon', { assetClass: 'vehicle', normalMaps: false, roughnessMaps: false, samCheck: false });
+      }, glb);
+      const body = calls.find((c) => /^Body/.test(c.area));
+      // Glass is a hard vehicle rule: the window is never sent to Muse (kept as the original).
+      assert.ok(body && !calls.some((c) => /Window/.test(c.area)), `areas painted: ${JSON.stringify(calls)}`);
+      const wheel = calls.find((c) => /Wheel/.test(c.area));
+      assert.ok(wheel && wheel.start >= body.end - 50, 'other areas still get the body as style reference');
+      await page.context().close();
+    },
+  );
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
@@ -1690,6 +1734,7 @@ try {
         useVisionPlanning: false,
         normalMaps: false,
         roughnessMaps: false,
+        userRules: 'Do not paint the windows',
       });
       const r = await p.postReview({ passes: 1 });
       const brief = (list) => list.map((t) => ({ step: t.step, prompt: t.prompt, areas: t.areas, issues: t.issues }));
@@ -1713,6 +1758,13 @@ try {
     assert.match(chats[0].messages[0].content[0].text, /- Body = \w+/);
     assert.deepEqual(res.repainted, ['Body']);
     assert.equal(res.sheet[0], 1024); // 4 columns x 256
+    // The user's rules reach every paint prompt (first) and the review, unchanged.
+    const rule = 'MOST IMPORTANT RULE (from the user): Do not paint the windows';
+    assert.ok(
+      edits.every((e) => e.prompt.includes(rule)),
+      'user rule in every paint prompt',
+    );
+    assert.ok(JSON.stringify(chats[0]).includes(rule), 'user rule in the review');
     // "What Muse is thinking": the class, the paint plan and the exact prompts, then the review.
     const steps = res.thinking.map((t) => t.step);
     for (const s of ['assetClass', 'plan', 'ask', 'paint']) assert.ok(steps.includes(s), `thinking has ${s}: ${steps}`);
@@ -2097,7 +2149,7 @@ try {
             tread: mean(c, 40, 410, 180, 80),
             side: mean(c, 290, 410, 60, 80),
             body: mean(c, 100, 60, 300, 120),
-            note: notes.some((n) => /kept the original lights and tyre treads/.test(n)),
+            note: notes.some((n) => /kept the original lights.*tyre treads/.test(n)),
           };
         }
         // The car grouped under "Body + Wheel_FL" (as ModStorm does): the body is not a wheel.
@@ -2120,6 +2172,25 @@ try {
           parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions ?? []),
           checks: m.thinking.filter((t) => t.step === 'check').length,
         };
+        // Glass is never painted, in both modes (named window; and a see-through material).
+        res.glass = [];
+        for (const [mode, unnamed] of [
+          ['auto', false],
+          ['atlas', false],
+          ['atlas', true],
+        ]) {
+          await p.postModel(await mod.buildVehicleTestGlb({ windowPart: true }), { name: 'glass' });
+          if (unnamed) {
+            const w = p.model.scene.getObjectByName('Window_Glass');
+            w.name = 'Part_7';
+            w.material = w.material.clone();
+            w.material.name = 'mat7';
+            w.material.transparent = true;
+            w.material.opacity = 0.5;
+          }
+          const gr = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: mode });
+          res.glass.push(mean(gr.slots[0].canvas, 410, 280, 80, 80));
+        }
         // A wide tyre (more tread than sidewall): its tread is still found and kept.
         await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true }), { name: 'wide' });
         const wide = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
@@ -2183,6 +2254,7 @@ try {
       assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
       assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
       assert.ok(near(out.wideTread, [91, 91, 91], 12), `wide tyre: tread painted ${out.wideTread}`);
+      out.glass.forEach((c, i) => assert.ok(near(c, [51, 68, 85], 6), `glass ${i}: window painted ${c}`));
       out.turned.forEach((c, i) => assert.ok(near(c, [91, 91, 91], 12), `turned wheel ${i}: tread painted ${c}`));
       assert.deepEqual(
         out.zoneWheel,
