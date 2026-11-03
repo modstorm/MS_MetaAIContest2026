@@ -132,6 +132,7 @@ export const ASSET_CLASSES = [
       /\b(vehicle|car|cars|truck|bus|tank|ship|boat|plane|aircraft|jet|spaceship|bike|motorcycle|train|kart|wheels?|tires?|tyres?|hull|wing|suv|van|jeep|pickup|sedan|coupe|hatchback|lorry|taxi|racecar|bumper|chassis|hood|bonnet|fender|windshield|windscreen|porsche|lambo|lamborghini|ferrari)\b/i,
     rules: [
       'MOST IMPORTANT RULE: DO NOT CHANGE THE LIGHTS OR THE TYRE TREADS. Every headlight and tail light (also brake, fog and indicator lights) and the tread of every tyre (the rubber running surface that touches the road) must stay EXACTLY as they are in the input image: same colors, same details, same position. Do not paint over them, recolor them or add anything to them. Only the tyre sidewalls and the wheel rims may be repainted in the theme.',
+      'Paint no splashes, brush strokes, rings, glows or lines around or across any light (headlights, fog lights, tail lights): the surface right next to a light gets the plain body paint, and stripes stop before a light instead of crossing it.',
       'This is a vehicle. Paint body panels with continuous paint; keep panel lines where they are.',
       'STRIPES AND LINES ARE CONTINUOUS: if the design has racing stripes, pinstripes or lines, paint them on EVERY body panel they would cross, including the doors, fenders, bumpers, hood and trunk, at the same height and width, so they run unbroken along the whole car. Never leave a door or any panel plain while its neighbours have stripes.',
       'Only the clear lens of each light is kept. The body-colored ring or housing around a light, the side mirrors, the grille, bumpers and trim are painted in the theme like the body: never leave any of the old body color anywhere.',
@@ -152,6 +153,8 @@ export const ASSET_CLASSES = [
         { zone: 'wheels', concept: 'wheel' },
         { zone: 'windows', concept: 'window' },
         { zone: 'lights', concept: 'headlight' },
+        { zone: 'lights', concept: 'fog light' },
+        { zone: 'lights', concept: 'tail light' },
       ],
       rest: 'body',
     },

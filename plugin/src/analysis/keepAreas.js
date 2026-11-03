@@ -679,3 +679,119 @@ export function zoneHasWheel(slot, zone) {
   }
   return false;
 }
+
+/** True for a clearly colored paint (red, blue…), false for white, grey, silver or black. */
+export function isColorful(color) {
+  if (!color) return false;
+  const mx = Math.max(...color),
+    mn = Math.min(...color);
+  return mx > 0 && (mx - mn) / mx >= 0.35 && mx >= 40;
+}
+
+/**
+ * Cleans the paint in and right around kept lights. Muse tends to paint splashes, rings and
+ * strokes around a light it was told to leave alone, and the old body paint inside a light
+ * area (a lens ring, a fog light housing) must get the new paint, not a pattern from elsewhere.
+ * Both get the new paint found right next to that light (the median of the painted pixels
+ * 1..3 ring widths away), shaded by the original's light and dark.
+ *
+ * Changes `painted` in place. Call it after the original pixels were put back on kept pixels,
+ * with `before` = the painted pixels as Muse returned them (for the surrounding color).
+ * @param {{ W: number, H: number, painted: Uint8ClampedArray, before: Uint8ClampedArray,
+ *   orig: Uint8ClampedArray, light: Uint8Array, kept: Uint8Array, cover: Uint8Array,
+ *   body: number[], bodyInside: (i: number) => boolean, bodyAround: (i: number) => boolean,
+ *   ring?: number, fallback?: Uint8ClampedArray }} o  light/kept/cover: 1 per pixel; i = rgba
+ *   index; fallback: new body paint (rgba) for old body paint inside a light with no painted
+ *   surface next to it (a light that is its own UV island)
+ * @returns {{ inside: number, around: number, lights: number }} pixels changed, light spots
+ */
+export function cleanAroundLights(o) {
+  const { W, H, painted, before, orig, light, kept, cover, body, bodyInside, bodyAround, fallback } = o;
+  const R = Math.max(2, o.ring ?? Math.round(W / 128));
+  const N = W * H;
+  const dist = new Int16Array(N).fill(-1);
+  const comp = new Int32Array(N).fill(-1);
+  // Light spots: 4-connected parts of the light mask.
+  let spots = 0;
+  const queue = new Int32Array(N);
+  for (let p = 0; p < N; p++) {
+    if (!light[p] || comp[p] >= 0) continue;
+    let h = 0,
+      t = 0;
+    queue[t++] = p;
+    comp[p] = spots;
+    dist[p] = 0;
+    while (h < t) {
+      const q = queue[h++];
+      const x = q % W,
+        y = (q - x) / W;
+      for (const n of [x > 0 ? q - 1 : -1, x < W - 1 ? q + 1 : -1, y > 0 ? q - W : -1, y < H - 1 ? q + W : -1])
+        if (n >= 0 && light[n] && comp[n] < 0) {
+          comp[n] = spots;
+          dist[n] = 0;
+          queue[t++] = n;
+        }
+    }
+    spots++;
+  }
+  if (!spots) return { inside: 0, around: 0, lights: 0 };
+  // Grow outwards (inside the texture's islands, not over other kept pixels), up to 3 rings.
+  let h = 0,
+    t = 0;
+  for (let p = 0; p < N; p++) if (light[p]) queue[t++] = p;
+  while (h < t) {
+    const q = queue[h++];
+    if (dist[q] >= 3 * R) continue;
+    const x = q % W,
+      y = (q - x) / W;
+    for (const n of [x > 0 ? q - 1 : -1, x < W - 1 ? q + 1 : -1, y > 0 ? q - W : -1, y < H - 1 ? q + W : -1])
+      if (n >= 0 && dist[n] < 0 && cover[n] && !kept[n]) {
+        dist[n] = dist[q] + 1;
+        comp[n] = comp[q];
+        queue[t++] = n;
+      }
+  }
+  // The new paint next to each light: per-channel median of the outer rings.
+  const samples = Array.from({ length: spots }, () => [[], [], []]);
+  for (let p = 0; p < N; p++) {
+    if (dist[p] <= R || light[p]) continue;
+    const s = samples[comp[p]];
+    if (s[0].length >= 4000) continue;
+    const i = p * 4;
+    s[0].push(before[i]);
+    s[1].push(before[i + 1]);
+    s[2].push(before[i + 2]);
+  }
+  const median = (a) => {
+    a.sort((u, v) => u - v);
+    return a[a.length >> 1];
+  };
+  const local = samples.map((s) => (s[0].length >= 6 ? s.map(median) : null));
+  const lum = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+  const bodyLum = lum(body[0], body[1], body[2]);
+  let inside = 0,
+    around = 0;
+  for (let p = 0; p < N; p++) {
+    const d = dist[p];
+    if (d < 0 || d > R) continue;
+    const i = p * 4;
+    const c = local[comp[p]];
+    if (!c) {
+      if (d === 0 && fallback && bodyInside(i)) {
+        painted[i] = fallback[i];
+        painted[i + 1] = fallback[i + 1];
+        painted[i + 2] = fallback[i + 2];
+        inside++;
+      }
+      continue;
+    }
+    if (d === 0 ? !bodyInside(i) : !bodyAround(i)) continue;
+    const shade = bodyLum < 24 ? 1 : Math.min(1.2, Math.max(0.6, lum(orig[i], orig[i + 1], orig[i + 2]) / bodyLum));
+    painted[i] = Math.min(255, c[0] * shade);
+    painted[i + 1] = Math.min(255, c[1] * shade);
+    painted[i + 2] = Math.min(255, c[2] * shade);
+    if (d === 0) inside++;
+    else around++;
+  }
+  return { inside, around, lights: spots };
+}

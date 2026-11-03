@@ -69,7 +69,9 @@ import {
   WHEEL_NAME,
   zoneHasWheel,
   bestSquare,
+  cleanAroundLights,
   dominantColor,
+  isColorful,
   keptShare,
   namesOf,
   nearColor,
@@ -3242,9 +3244,10 @@ export class ReskinPlugin {
 
   /**
    * Puts the original pixels back inside the kept triangles (light lenses, tyre treads).
-   * Kept pixels whose original color is the old body paint (the painted ring or housing
-   * around a lens, a mirror or grille that the light finder took for a light) are not kept:
-   * they get the newly painted body instead, so no old body color is left behind.
+   * Kept pixels whose original color is a colored old body paint (the painted ring or housing
+   * around a lens, a mirror the light finder took for a light) get the new paint found next to
+   * that light, and Muse's splashes right around each light are cleaned the same way
+   * (cleanAroundLights).
    * Changes `baseColor` in place.
    */
   restoreKept(slot, baseColor, original, opts) {
@@ -3304,42 +3307,85 @@ export class ReskinPlugin {
         ? null
         : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
     const tol = opts.keepBodyTolerance ?? 64;
+    // A white, silver, grey or black body can't be told from a lens (white, clear, chrome), so
+    // with such a body every pixel inside a light keeps its original. A colored body (the red
+    // Porsche) can: its old paint inside a light area (lens ring, mirror) gets the new paint.
+    const colorful = isColorful(body);
     const isBody = (i) =>
       body &&
+      colorful &&
       lightLayer?.[i + 3] >= 128 &&
       (softLayer?.[i + 3] >= 128
         ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
         : nearColor(od[i], od[i + 1], od[i + 2], body, tol));
-    let bodyFill = null;
-    let n = 0,
-      repainted = 0;
-    for (let i = 0; i < ld.length; i += 4) if (ld[i + 3] >= 128 && isBody(i)) repainted++;
-    if (repainted) {
-      // A swatch of the new body paint: the square where the old body color was most common
-      // (outside the kept areas), tiled and shaded by the original's light and dark.
-      const on = new Uint8Array(W * H);
-      const isOld = (i) => sameShade(od[i], od[i + 1], od[i + 2], body, tol);
-      for (let p = 0; p < W * H; p++) on[p] = cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128 && isOld(p * 4) ? 1 : 0;
-      const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
-      if (sq.share > 0.5) {
-        const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });
-        const mask = createCanvas(W, H);
-        const mctx = ctx2d(mask);
-        const md = mctx.createImageData(W, H);
-        for (let i = 0; i < ld.length; i += 4)
-          if (ld[i + 3] >= 128 && isBody(i)) md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
-        mctx.putImageData(md, 0, 0);
-        const fill = materialFill(resizeCanvas(original, W, H), mask, swatch, { tile: sq.size });
-        bodyFill = ctx2d(fill).getImageData(0, 0, W, H).data;
-      } else repainted = 0;
-    }
+    const before = new Uint8ClampedArray(bd.data);
+    let n = 0;
     for (let i = 0; i < ld.length; i += 4) {
       if (ld[i + 3] < 128) continue;
-      const src = bodyFill && isBody(i) ? bodyFill : od;
-      if (src === od) n++;
-      bd.data[i] = src[i];
-      bd.data[i + 1] = src[i + 1];
-      bd.data[i + 2] = src[i + 2];
+      n++;
+      bd.data[i] = od[i];
+      bd.data[i + 1] = od[i + 1];
+      bd.data[i + 2] = od[i + 2];
+    }
+    // Around and inside each light: Muse's splashes and rings, and old body paint, get the new
+    // paint found right next to that light.
+    let repainted = 0,
+      cleaned = 0;
+    if (body && lightLayer && opts.cleanAroundLights !== false) {
+      const N = W * H;
+      const light = new Uint8Array(N),
+        kept = new Uint8Array(N),
+        inUv = new Uint8Array(N);
+      for (let p = 0; p < N; p++) {
+        light[p] = lightLayer[p * 4 + 3] >= 128 ? 1 : 0;
+        kept[p] = ld[p * 4 + 3] >= 128 ? 1 : 0;
+        inUv[p] = cover[p * 4 + 3] >= 128 ? 1 : 0;
+      }
+      // For a light that is its own UV island (nothing painted next to it in the texture),
+      // its old body paint gets a swatch of the new body paint instead.
+      let fallback = null;
+      if (colorful) {
+        const on = new Uint8Array(N);
+        for (let p = 0; p < N; p++)
+          on[p] = inUv[p] && !kept[p] && sameShade(od[p * 4], od[p * 4 + 1], od[p * 4 + 2], body, tol) ? 1 : 0;
+        const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
+        if (sq.share > 0.5) {
+          const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });
+          const mask = createCanvas(W, H);
+          const mctx = ctx2d(mask);
+          const md = mctx.createImageData(W, H);
+          for (let i = 0; i < ld.length; i += 4)
+            if (ld[i + 3] >= 128 && isBody(i)) md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
+          mctx.putImageData(md, 0, 0);
+          fallback = ctx2d(materialFill(resizeCanvas(original, W, H), mask, swatch, { tile: sq.size })).getImageData(
+            0,
+            0,
+            W,
+            H,
+          ).data;
+        }
+      }
+      const r = cleanAroundLights({
+        fallback,
+        W,
+        H,
+        painted: bd.data,
+        before,
+        orig: od,
+        light,
+        kept,
+        cover: inUv,
+        body,
+        bodyInside: isBody,
+        bodyAround: (i) =>
+          colorful
+            ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
+            : nearColor(od[i], od[i + 1], od[i + 2], body, tol),
+        ring: opts.lightRing,
+      });
+      repainted = r.inside;
+      cleaned = r.around;
+      n -= r.inside;
     }
     g.putImageData(bd, 0, 0);
     let covered = 0;
@@ -3359,6 +3405,7 @@ export class ReskinPlugin {
       treadTriangles: keep.treads,
       keptPixels: n,
       bodyColorRepaintedPixels: repainted,
+      cleanedAroundLights: cleaned,
       oldBodyColor: body ? body.map(Math.round) : null,
       share: keptShareOfTexture,
     });

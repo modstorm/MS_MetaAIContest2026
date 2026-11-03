@@ -4,6 +4,8 @@ import {
   HEADLIGHT_NAME,
   WHEEL_NAME,
   bestSquare,
+  cleanAroundLights,
+  isColorful,
   dominantColor,
   namesOf,
   nearColor,
@@ -94,5 +96,89 @@ describe('old body paint in SAM-found kept areas', () => {
     const c = dominantColor(new Uint8ClampedArray(px), () => true);
     expect(c[0]).toBeGreaterThan(100);
     expect(c[1]).toBeLessThan(20);
+  });
+});
+
+describe('cleanAroundLights', () => {
+  // 64×64: a light disc (radius 6) at the center. Original: white body, light grey lens.
+  // Painted by "Muse": black body with a blue splash ring around the light and a blue line
+  // over the lens.
+  const W = 64,
+    H = 64,
+    N = W * H;
+  const setup = (bodyColor) => {
+    const orig = new Uint8ClampedArray(N * 4),
+      painted = new Uint8ClampedArray(N * 4);
+    const light = new Uint8Array(N),
+      cover = new Uint8Array(N).fill(1);
+    for (let p = 0; p < N; p++) {
+      const x = p % W,
+        y = (p - x) / W,
+        r = Math.hypot(x - 32, y - 32);
+      const i = p * 4;
+      const o = r <= 3 ? [220, 220, 225] : bodyColor;
+      orig.set([...o, 255], i);
+      light[p] = r <= 6 ? 1 : 0;
+      const splash = r > 6 && r <= 9;
+      painted.set([...(splash ? [20, 80, 240] : [10, 10, 10]), 255], i);
+    }
+    return { orig, painted, light, cover };
+  };
+  it('a white body: the splash around the light gets the paint next to it, the lens stays', () => {
+    const { orig, painted, light, cover } = setup([245, 245, 245]);
+    const before = new Uint8ClampedArray(painted);
+    for (let p = 0; p < N; p++) if (light[p]) painted.set(orig.subarray(p * 4, p * 4 + 3), p * 4);
+    const r = cleanAroundLights({
+      W,
+      H,
+      painted,
+      before,
+      orig,
+      light,
+      kept: light,
+      cover,
+      body: [245, 245, 245],
+      bodyInside: () => false,
+      bodyAround: (i) => nearColor(orig[i], orig[i + 1], orig[i + 2], [245, 245, 245], 64),
+      ring: 4,
+    });
+    expect(r.lights).toBe(1);
+    expect(r.around).toBeGreaterThan(0);
+    const at = (x, y) => [...painted.subarray((y * W + x) * 4, (y * W + x) * 4 + 3)];
+    expect(at(32 + 8, 32)[2]).toBeLessThan(40); // splash gone
+    expect(at(32, 32)).toEqual([220, 220, 225]); // lens original
+    expect(at(32 + 5, 32)).toEqual([245, 245, 245]); // white housing kept (can't tell from a lens)
+  });
+  it('a red body: old red inside the light area gets the new paint too', () => {
+    const red = [200, 20, 20];
+    const { orig, painted, light, cover } = setup(red);
+    const before = new Uint8ClampedArray(painted);
+    for (let p = 0; p < N; p++) if (light[p]) painted.set(orig.subarray(p * 4, p * 4 + 3), p * 4);
+    const isRed = (i) => isColorful(red) && sameShade(orig[i], orig[i + 1], orig[i + 2], red, 64);
+    const r = cleanAroundLights({
+      W,
+      H,
+      painted,
+      before,
+      orig,
+      light,
+      kept: light,
+      cover,
+      body: red,
+      bodyInside: (i) => light[i / 4] && isRed(i),
+      bodyAround: isRed,
+      ring: 4,
+    });
+    expect(r.inside).toBeGreaterThan(0);
+    const at = (x, y) => [...painted.subarray((y * W + x) * 4, (y * W + x) * 4 + 3)];
+    expect(at(32 + 5, 32)[0]).toBeLessThan(40); // red housing now black
+    expect(at(32 + 8, 32)[2]).toBeLessThan(40);
+    expect(at(32, 32)).toEqual([220, 220, 225]);
+  });
+  it('isColorful: red yes, white/grey/black no', () => {
+    expect(isColorful([200, 20, 20])).toBe(true);
+    expect(isColorful([245, 245, 245])).toBe(false);
+    expect(isColorful([120, 120, 125])).toBe(false);
+    expect(isColorful([10, 10, 12])).toBe(false);
   });
 });
