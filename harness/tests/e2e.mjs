@@ -702,6 +702,8 @@ try {
       let failWheels = true;
       const edits = [];
       await page.route('https://api.meta.ai/v1/**', (route) => {
+        // SAM (looking for the car's windows and lights) finds nothing here.
+        if (route.request().url().endsWith('/responses')) return route.fulfill(samNone());
         const isChat = route.request().url().endsWith('/chat/completions');
         const body = route.request().postDataJSON();
         if (!isChat) edits.push(body.prompt);
@@ -1679,6 +1681,50 @@ try {
       await page.context().close();
     },
   );
+
+  await step('never painted: a Glass mesh, an Optics texture and what the user rules say (any class)', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      const res = {};
+      for (const cls of ['vehicle', 'prop']) {
+        await p.postModel(await mod.buildGlassOpticsTestGlb(), { name: 'glass-optics' });
+        const notes = [];
+        const off = p.on('warning', (w) => notes.push(w.message));
+        const r = await p.postPrompt('police cruiser', {
+          assetClass: cls,
+          paintMode: 'atlas',
+          userRules: "police style, don't paint the badge",
+        });
+        off();
+        const body = r.slots.find(
+          (s) => s.canvas && /body/i.test(p.layout.slots.find((x) => x.id === s.slotId)?.materials[0]?.name ?? ''),
+        );
+        const d = body.canvas.getContext('2d').getImageData(0, Math.round(body.canvas.height * 0.9), 4, 4).data;
+        res[cls] = {
+          painted: r.slots.map((s) => p.layout.slots.find((x) => x.id === s.slotId)?.materials[0]?.name),
+          badge: [d[0], d[1], d[2]],
+          notes,
+        };
+      }
+      return res;
+    });
+    for (const cls of ['vehicle', 'prop']) {
+      const o = out[cls];
+      assert.ok(!o.painted.includes('Glass'), `${cls}: glass painted ${o.painted}`);
+      assert.ok(
+        o.notes.some((n) => /"Glass" is glass/.test(n)),
+        `${cls}: ${o.notes.join(' | ')}`,
+      );
+      assert.ok(
+        Math.abs(o.badge[0] - 255) < 20 && Math.abs(o.badge[1] - 238) < 20 && o.badge[2] < 40,
+        `${cls}: badge ${o.badge}`,
+      );
+    }
+    assert.ok(!out.vehicle.painted.includes('Optics'), `vehicle: Optics painted ${out.vehicle.painted}`);
+    await page.context().close();
+  });
 
   await step('change request: Muse picks the areas, only those are repainted from their current paint', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });

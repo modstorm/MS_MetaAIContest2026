@@ -546,3 +546,51 @@ export async function buildVehicleTestGlb({
   if (groupName) root.name = groupName;
   return exportGLB(root);
 }
+
+/**
+ * Test asset for the never-painted rules: a textured body with a "Badge" part, a big
+ * untextured "Glass" mesh (see-through, like a game car's windows) and an "Optics" mesh with
+ * its own texture (all the lights of the car in one picture).
+ */
+export async function buildGlassOpticsTestGlb() {
+  const tex = (color) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = color;
+    g.fillRect(0, 0, 128, 128);
+    g.fillStyle = '#ffee00';
+    g.fillRect(0, 96, 128, 32); // the badge's corner of the body atlas
+    const t = new THREE.CanvasTexture(c);
+    t.flipY = false;
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  const root = new THREE.Group();
+  root.name = 'suv';
+  const bodyMat = new THREE.MeshStandardMaterial({ map: tex('#101010'), name: 'Body' });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2, 0.8, 1), bodyMat);
+  body.name = 'Body';
+  const uv = body.geometry.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i), uv.getY(i) * 0.7);
+  root.add(body);
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.05), bodyMat);
+  badge.name = 'Badge';
+  const buv = badge.geometry.getAttribute('uv');
+  for (let i = 0; i < buv.count; i++) buv.setXY(i, buv.getX(i), 0.8 + buv.getY(i) * 0.2);
+  badge.position.set(1.02, 0.1, 0);
+  root.add(badge);
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.4, 0.9),
+    new THREE.MeshStandardMaterial({ name: 'Glass', color: 0x050505, transparent: true, opacity: 0.81 }),
+  );
+  glass.position.set(0, 0.6, 0);
+  root.add(glass);
+  const optics = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.2, 0.9),
+    new THREE.MeshStandardMaterial({ map: tex('#e0e0e0'), name: 'Optics' }),
+  );
+  optics.position.set(1.05, 0.2, 0);
+  root.add(optics);
+  return exportGLB(root);
+}

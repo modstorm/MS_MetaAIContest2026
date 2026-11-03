@@ -13,12 +13,14 @@ import { islandIdPerTriangle, triangleCount } from './uvIslands.js';
 /** Mesh / material names that mean a vehicle light: headlights and taillights (also brake,
  * fog, reverse lights and indicators). "light" / "lamp" alone count too. */
 export const HEADLIGHT_NAME =
-  /(head|front|fog|tail|rear|back|brake|stop|reverse|reversing|side|turn)\s*(light|lamp)s?|\b(head|tail)lamps?\b|\blights?\b|\blamps?\b|\b(high|low)\s*beam|\bindicators?\b|\bblinkers?\b/i;
+  /(head|front|fog|tail|rear|back|brake|stop|reverse|reversing|side|turn)\s*(light|lamp)s?|\b(head|tail)lamps?\b|\blights?\b|\blamps?\b|\b(high|low)\s*beam|\bindicators?\b|\bblinkers?\b|\boptics?\b/i;
+/** A texture / material that holds only lights (an "Optics" atlas). */
+const LIGHT_TEXTURE = /\b(optics?|lights?|lamps?|headlights?|taillights?)\b/i;
 /** Mesh / material names that mean glass: windows, windscreen. */
 export const GLASS_NAME = /\b(glass|windows?|windshield|windscreen|windscreens|sunroof|glazing)\b/i;
 
 /** A see-through material (glass): transparent, or opacity / transmission set. */
-function isGlassMaterial(mesh) {
+export function isGlassMaterial(mesh) {
   const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   return mats.some((m) => m && ((m.transparent && (m.opacity ?? 1) < 0.95) || (m.transmission ?? 0) > 0.1));
 }
@@ -374,9 +376,19 @@ function meshArea(mesh, src, use = null) {
  */
 export function vehicleKeepTriangles(
   slot,
-  { zones = [], maxLightShare = 0.2, maxGlassShare = 0.4, roles = null, zoneRoles = null } = {},
+  {
+    zones = [],
+    maxLightShare = 0.2,
+    maxGlassShare = 0.4,
+    roles = null,
+    zoneRoles = null,
+    glassOnly = false,
+    userKeep = [],
+  } = {},
 ) {
-  let glass = 0;
+  let glass = 0,
+    user = 0;
+  const userMatch = (text) => userKeep.find((k) => k.re.test(text));
   const decisions = [];
   let arches = false;
   const tris = new Map();
@@ -412,6 +424,18 @@ export function vehicleKeepTriangles(
     // Muse's reading of the renders (roles) first; the mesh / material name only as a fallback.
     const museRole = roles?.get(mesh);
     const name = namesOf(mesh);
+    // The user's own "don't paint the X" (userRules): a part named like X is kept whole.
+    const uk = userMatch(name);
+    if (uk) {
+      if (meshArea(mesh, src) / (total || 1) > maxGlassShare)
+        rejected.push({ name: label(mesh), reason: `user rule "${uk.noun}": too big to keep, so it is painted` });
+      else {
+        add(mesh, new Uint8Array(n).fill(1));
+        user += n;
+        decisions.push({ name: label(mesh), role: `kept (user rule: ${uk.noun})`, source: 'user rule' });
+        continue;
+      }
+    }
     const role = museRole
       ? museRole === 'tyre'
         ? 'wheel'
@@ -441,6 +465,7 @@ export function vehicleKeepTriangles(
       decisions.push({ name: label(mesh), role: 'glass (kept)', source });
       continue;
     }
+    if (glassOnly) continue; // not a vehicle: only glass (and the user's rules) is kept
     if (role === 'light') {
       if (slot.meshes.length > 1 && tooBig(mesh, src)) {
         rejected.push({
@@ -472,7 +497,29 @@ export function vehicleKeepTriangles(
     }
   }
   for (const z of zones) {
-    if (z.zone === 'windows' && (!zoneRoles?.[z.zone] || zoneRoles[z.zone] === 'glass')) {
+    const uz = userKeep.find((k) => z.zone === `keep: ${k.noun}`) ?? userMatch(z.zone);
+    if (uz) {
+      let a = 0;
+      for (const [mesh, use] of z.tris ?? []) {
+        const src = srcs.get(mesh);
+        if (src) a += meshArea(mesh, src, use);
+      }
+      if (total > 0 && a / total > maxGlassShare) {
+        rejected.push({
+          name: `SAM ${z.zone} zone`,
+          reason: `user rule "${uz.noun}": too big to keep, so it is painted`,
+        });
+        continue;
+      }
+      for (const [mesh, use] of z.tris ?? []) {
+        if (!srcs.get(mesh)) continue;
+        add(mesh, use);
+        user += use.reduce((s, v) => s + v, 0);
+      }
+      decisions.push({ name: `SAM ${z.zone} zone`, role: `kept (user rule: ${uz.noun})`, source: 'user rule + SAM' });
+      continue;
+    }
+    if ((z.zone === 'windows' || GLASS_NAME.test(z.zone)) && (!zoneRoles?.[z.zone] || zoneRoles[z.zone] === 'glass')) {
       // SAM's windows zone: glass, never painted. Too big to be windows = SAM got it wrong.
       let a = 0;
       for (const [mesh, use] of z.tris ?? []) {
@@ -495,6 +542,7 @@ export function vehicleKeepTriangles(
       });
       continue;
     }
+    if (glassOnly) continue;
     if (z.zone === 'wheel arches') {
       // Kept like lights: original pixels back, old body paint replaced by the new body paint.
       for (const [mesh, use] of z.tris ?? []) {
@@ -505,7 +553,7 @@ export function vehicleKeepTriangles(
       arches = true;
       continue;
     }
-    if (z.zone !== 'lights' && z.zone !== 'wheels') continue;
+    if (z.zone !== 'lights' && z.zone !== 'wheels' && zoneRoles?.[z.zone] !== 'light') continue;
     // Muse's role for this zone (it sees the zones as the parts of the model) wins over the
     // zone's name.
     const museZ = zoneRoles?.[z.zone];
@@ -519,7 +567,10 @@ export function vehicleKeepTriangles(
       const src = srcs.get(mesh);
       if (!src) continue;
       if (kind === 'lights') {
-        if (tooBig(mesh, src, use)) {
+        // Muse looked at the renders and says light: kept at any size when the texture is named
+        // for lights (an "Optics" atlas) or the zone is not most of the texture.
+        const museSure = museZ === 'light' && (LIGHT_TEXTURE.test(namesOf(mesh)) || (z.share ?? 1) <= 0.5);
+        if (!museSure && tooBig(mesh, src, use)) {
           rejected.push({ name: 'SAM lights zone', reason: 'too big to be lights, so it is painted' });
           continue;
         }
@@ -541,11 +592,11 @@ export function vehicleKeepTriangles(
       }
     }
   }
-  if (!headlights && !treads && !arches && !glass)
+  if (!headlights && !treads && !arches && !glass && !user)
     return rejected.length || decisions.length
-      ? { tris, lights, soft, headlights, treads, glass, rejected, decisions, none: true }
+      ? { tris, lights, soft, headlights, treads, glass, user, rejected, decisions, none: true }
       : null;
-  return { tris, lights, soft, headlights, treads, glass, rejected, decisions };
+  return { tris, lights, soft, headlights, treads, glass, user, rejected, decisions };
 }
 
 /** Share (0..1) of a paint area's triangles that are in `keep` (Map mesh → Uint8Array). */
@@ -794,4 +845,78 @@ export function cleanAroundLights(o) {
     else around++;
   }
   return { inside, around, lights: spots };
+}
+
+const KEEP_VERB =
+  /\b(?:do\s*not|don'?t|never|no|avoid|without|stop)\s+(?:paint(?:ing)?|touch(?:ing)?|chang(?:e|ing)|recolou?r(?:ing)?|colou?r(?:ing)?|draw(?:ing)?|cover(?:ing)?)\s+(?:anything\s+)?(?:on|over|onto|in|across)?\s*(?:the|any|a|my)?\s*([a-z][a-z\s,/&-]*)/gi;
+const KEEP_AS_IS =
+  /\b(?:keep|leave)\s+(?:the|all|any|my)?\s*([a-z][a-z\s,/&-]*?)\s+(?:original|clean|untouched|unpainted|alone|as\s+(?:it|they)\s+(?:is|are|were|was))\b/gi;
+const STOP_WORDS = new Set([
+  'it',
+  'them',
+  'that',
+  'this',
+  'anything',
+  'everything',
+  'model',
+  'thing',
+  'things',
+  'stuff',
+]);
+
+/**
+ * What the user's rules (userRules) say must not be painted: "don't paint on the windows",
+ * "never touch the badge", "keep the grille original". Returns [{ noun, re }] where `re`
+ * matches a part or zone name for that noun (singular or plural). Glass words are left in:
+ * glass is matched like any noun (and is never painted anyway).
+ * @param {string[]} rules
+ */
+export function keepTargetsFromRules(rules = []) {
+  const out = new Map();
+  for (const rule of rules ?? []) {
+    const text = String(rule ?? '');
+    for (const rx of [KEEP_VERB, KEEP_AS_IS]) {
+      rx.lastIndex = 0;
+      let m;
+      while ((m = rx.exec(text))) {
+        // The phrase ends at a clause break ("…windows, and make it blue").
+        const phrase = m[1].split(
+          /\b(?:and\s+(?:make|paint|use|give|add|keep|do)|but|because|please|even|with|in\s+the\s+theme|red|blue|green|black|white|yellow|orange|pink|purple|gold|silver)\b/i,
+        )[0];
+        for (let noun of phrase.split(/,|\/|&|\bor\b|\band\b/i)) {
+          noun = noun
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .replace(/^(?:the|a|an|any|all|my|its|their)\s+/, '');
+          if (/^(?:make|paint|use|give|add|keep|turn|change|put|do|let|it)\b/.test(noun)) continue;
+          if (!noun || STOP_WORDS.has(noun) || noun.split(' ').length > 3) continue;
+          const stem = noun.endsWith('ss') ? noun : noun.replace(/s$/, '');
+          const words = stem
+            .split(' ')
+            .map((w) => w.replace(/[^a-z0-9-]/g, ''))
+            .filter(Boolean);
+          if (!words.length) continue;
+          const re = new RegExp(`(?<![a-z])${words.join('[\\s_-]*')}(?:e?s)?(?![a-z])`, 'i');
+          out.set(noun, { noun, re });
+        }
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+/**
+ * True when every mesh of `slot` is glass: named so (Glass, Windows…), see-through, or
+ * labelled glass by Muse (`roles`: Map mesh → role). Such a texture slot is never painted.
+ */
+export function slotIsGlass(slot, roles = null) {
+  return (
+    slot.meshes.length > 0 &&
+    slot.meshes.every((m) => {
+      const r = roles?.get(m);
+      if (r) return r === 'glass';
+      return GLASS_NAME.test(namesOf(m)) || isGlassMaterial(m);
+    })
+  );
 }

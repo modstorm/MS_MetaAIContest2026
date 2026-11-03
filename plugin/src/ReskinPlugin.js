@@ -72,7 +72,9 @@ import {
   cleanAroundLights,
   dominantColor,
   isColorful,
+  keepTargetsFromRules,
   keptShare,
+  slotIsGlass,
   namesOf,
   nearColor,
   sameShade,
@@ -162,6 +164,8 @@ export class ReskinPlugin {
   samOff = false;
   /** Paint zones found by SAM 3.1, per slot id (see findZones; cleared with a new model). */
   samZones = new Map();
+  /** SAM zones per slot used only to find what is never painted (glass, lights, the user's "don't paint X"). */
+  keepZones = new Map();
   /** Use SAM-found zones for models without a profile (setSamZones / opts.samZones). */
   samZonesOn = false;
   /** Art-director suggestions per theme for the current model. */
@@ -422,6 +426,7 @@ export class ReskinPlugin {
       this.planCache.clear();
       this.samCache.clear();
       this.samZones.clear();
+      this.keepZones.clear();
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.topBottomNoted = null;
@@ -846,6 +851,9 @@ export class ReskinPlugin {
       if (this.samZonesActive && !opts.fixes && this.slotsWithoutSamZones().length) {
         await this.findZones(opts, signal);
       }
+      // What must never be painted (windows, lights, the user's "don't paint X"), found by SAM
+      // when the paint areas did not come from SAM. Once per model.
+      if (!opts.fixes) await this.findKeepZones(opts, signal);
 
       const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
       // Small untextured parts (a button, an eye, an antenna ball) are tinted locally
@@ -868,7 +876,26 @@ export class ReskinPlugin {
         this.emit('warning', { message: 'Generated box-projected UVs for meshes without UVs.' });
       }
 
-      const remote = this.layout.slots.filter((s) => wanted(s) && !localIds.has(s.id));
+      // Never painted: a glass texture slot (the windows), and a vehicle texture that is all
+      // lights (an "Optics" atlas). They keep their original look and cost no Muse call.
+      const neverPainted = new Map();
+      for (const s of this.layout.slots) {
+        if (!wanted(s)) continue;
+        const why = this.slotNeverPainted(s, opts);
+        if (why) neverPainted.set(s.id, why);
+      }
+      for (const s of this.layout.slots.filter((x) => neverPainted.has(x.id))) {
+        localIds.delete(s.id);
+        const why = neverPainted.get(s.id);
+        this.think('kept', `"${s.name}" is ${why}: never painted, keeps its original look`, {
+          slotId: s.id,
+          slotName: s.name,
+          why,
+          share: 1,
+        });
+        this.emit('warning', { message: `"${s.name}" is ${why}, so it keeps its original look (never painted).` });
+      }
+      const remote = this.layout.slots.filter((s) => wanted(s) && !localIds.has(s.id) && !neverPainted.has(s.id));
       const local = this.layout.slots.filter((s) => localIds.has(s.id));
       const fractions = remote.map(() => 0);
       const progress = (i, frac, stage, message, slotId) => {
@@ -1839,6 +1866,9 @@ export class ReskinPlugin {
       const names = new Set();
       for (const slot of slots) {
         const found = res.zones.get(slot.id) ?? [];
+        // Even when the usual areas are kept for painting, SAM's windows and lights still say
+        // what is never painted.
+        this.keepZones.set(slot.id, found);
         // Fewer zones than the usual split means SAM missed parts (the live run: hair, hands and
         // shoes not seen on the test avatar), so the usual areas are kept unless preferSam is set.
         const usual = this.paintRegions(slot, slotParts(slot), { ...opts, assetClass }).length;
@@ -1893,6 +1923,89 @@ export class ReskinPlugin {
       if (signal?.aborted) throw err;
       this.emit('warning', { message: `SAM zone finding failed (${toError(err).message}); using the usual areas.` });
       return null;
+    }
+  }
+
+  /**
+   * SAM noun phrases for what is never painted: windows (any model Muse says has glass, every
+   * vehicle), vehicle lights, and each "don't paint X" from the user's rules.
+   */
+  keepConcepts(opts = {}) {
+    const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    const out = [];
+    const roles = Object.values(this.partRolesFor(opts) ?? {});
+    if (cls === 'vehicle')
+      out.push(
+        { zone: 'windows', concept: 'window' },
+        { zone: 'lights', concept: 'headlight' },
+        { zone: 'lights', concept: 'fog light' },
+        { zone: 'lights', concept: 'tail light' },
+      );
+    else if (roles.includes('glass')) out.push({ zone: 'windows', concept: 'window' });
+    for (const k of keepTargetsFromRules(this.userRules)) out.push({ zone: `keep: ${k.noun}`, concept: k.noun });
+    return out.slice(0, 8);
+  }
+
+  /**
+   * Finds the never-painted areas with SAM when the paint areas didn't come from SAM (SAM zones
+   * off, or SAM's zones were fewer than the usual areas). Never throws apart from a cancel.
+   * opts.keepSam: false skips it.
+   */
+  async findKeepZones(opts, signal) {
+    if (opts.keepSam === false || typeof this.provider.segment !== 'function' || !this.model || !this.layout) return;
+    const concepts = this.keepConcepts(opts);
+    if (!concepts.length) return;
+    const key = concepts.map((c) => c.zone + '=' + c.concept).join('|');
+    const slots = (this.layout.slots ?? []).filter(
+      (s) =>
+        s.texture &&
+        !s.tiled &&
+        !(this.samZonesActive && this.samZones.get(s.id)?.length) &&
+        this.keepZonesKey?.get(s.id) !== key,
+    );
+    if (!slots.length) return;
+    const shown = !!this.lastResult;
+    const idMap = this.idMapVisible;
+    try {
+      if (idMap) this.showIdMap(false);
+      if (shown) this.showOriginal(true);
+      this.status(
+        'analyzing',
+        `SAM 3.1 is finding what is never painted: ${concepts.map((c) => c.concept).join(', ')}…`,
+      );
+      const res = await this.timed('sam keep areas', null, async () => {
+        const { views } = renderAxisViews(this.model.scene, { size: opts.zoneViewSize ?? 384 });
+        return findSamZones({
+          root: this.model.scene,
+          slots,
+          views,
+          concepts,
+          rest: 'paint',
+          segment: (o) => this.provider.segment(o),
+          signal,
+        });
+      });
+      this.keepZonesKey ??= new Map();
+      for (const slot of slots) {
+        this.keepZones.set(
+          slot.id,
+          (res.zones.get(slot.id) ?? []).filter((z) => z.zone !== 'paint'),
+        );
+        this.keepZonesKey.set(slot.id, key);
+      }
+      this.keepCache = null;
+      const missed = res.found.filter((f) => !f.masks).map((f) => f.concept);
+      this.think(
+        'zones',
+        `SAM looked for what is never painted: ${concepts.map((c) => c.concept).join(', ')}${missed.length ? ` (not seen: ${missed.join(', ')})` : ''}`,
+        { keep: true, concepts, notSeen: missed },
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      this.emit('warning', { message: `SAM could not look for the never-painted areas (${toError(err).message}).` });
+    } finally {
+      if (shown) this.showOriginal(false);
+      if (idMap) this.showIdMap(true);
     }
   }
 
@@ -3181,8 +3294,14 @@ export class ReskinPlugin {
   keepTriangles(slot, opts = {}) {
     if (opts.keepVehicleParts === false) return null;
     const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
-    if (cls !== 'vehicle') return null;
-    const zones = this.samZonesActive ? (this.samZones.get(slot.id) ?? []) : [];
+    // Vehicles keep lights, glass and tyre treads; every other model keeps its glass. Both keep
+    // what the user's rules say not to paint.
+    const glassOnly = cls !== 'vehicle';
+    const userKeep = keepTargetsFromRules(this.userRules);
+    const zones =
+      this.samZonesActive && this.samZones.get(slot.id)?.length
+        ? this.samZones.get(slot.id)
+        : (this.keepZones.get(slot.id) ?? []);
     // What each part is: Muse's own reading of the renders first (partRoles), names only
     // for parts Muse did not cover.
     const roleByName = this.partRolesFor(opts);
@@ -3193,7 +3312,7 @@ export class ReskinPlugin {
         if (role) for (const m of part.meshes) roles.set(m, role);
       }
     this.keepCache ??= new Map();
-    const key = `${slot.id}|${zones.length}|${roles.size}`;
+    const key = `${slot.id}|${cls}|${zones.length}|${roles.size}|${userKeep.map((k) => k.noun).join(',')}`;
     if (!this.keepCache.has(key)) {
       // Muse sees SAM zones as parts named "<part> (<zone>)": its roles are matched per zone.
       let zoneRoles = null;
@@ -3202,7 +3321,7 @@ export class ReskinPlugin {
           const role = roleByName[roleKey(z.name)] ?? roleByName[roleKey(z.zone)];
           if (role) (zoneRoles ??= {})[z.zone] = role;
         }
-      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles });
+      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles, glassOnly, userKeep });
       this.think(
         'parts',
         roleByName
@@ -3228,6 +3347,31 @@ export class ReskinPlugin {
       for (const r of keep?.rejected ?? []) this.think('note', `"${slot.name}": ${r.name}: ${r.reason}.`);
     }
     return this.keepCache.get(key);
+  }
+
+  /**
+   * Why `slot` is never painted ('glass', 'all lights', 'kept by your rules'), or null.
+   * Glass on any model; a texture that is all kept area (vehicle lights, the user's rules).
+   */
+  slotNeverPainted(slot, opts = {}) {
+    if (opts.keepVehicleParts === false) return null;
+    const roleByName = this.partRolesFor(opts);
+    const roles = new Map();
+    if (roleByName)
+      for (const part of slotParts(slot)) {
+        const role = roleByName[roleKey(part.name)];
+        if (role) for (const m of part.meshes) roles.set(m, role);
+      }
+    if (slotIsGlass(slot, roles)) return 'glass';
+    if (!slot.texture) return null;
+    const keep = this.keepTriangles(slot, opts);
+    if (!keep) return null;
+    if (keptShare(slot, { meshes: slot.meshes }, keep.tris) < 0.98) return null;
+    return keep.user && !keep.headlights
+      ? 'kept by your rules'
+      : keep.glass && !keep.headlights
+        ? 'glass'
+        : 'all lights';
   }
 
   /**

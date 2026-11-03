@@ -182,3 +182,28 @@ describe('cleanAroundLights', () => {
     expect(isColorful([10, 10, 12])).toBe(false);
   });
 });
+
+describe('keepTargetsFromRules / slotIsGlass', () => {
+  it('reads "don\'t paint X" and "keep X original" from the user rules', async () => {
+    const { keepTargetsFromRules } = await import('../src/analysis/keepAreas.js');
+    const nouns = (r) => keepTargetsFromRules([r]).map((k) => k.noun);
+    expect(nouns("Don't paint on the windows")).toEqual(['windows']);
+    expect(nouns('do not paint the windows or the badge, make it blue')).toEqual(['windows', 'badge']);
+    expect(nouns('Keep the grille original')).toEqual(['grille']);
+    expect(nouns('Make it a police car with blue stripes')).toEqual([]);
+    const [w] = keepTargetsFromRules(['never paint the tyres']);
+    expect(w.re.test('Tyre_FL')).toBe(true);
+    expect(w.re.test('tyres')).toBe(true);
+  });
+  it('a Glass material or a see-through one is a glass slot; Optics is a light', async () => {
+    const { slotIsGlass } = await import('../src/analysis/keepAreas.js');
+    const glass = mesh('', 'vehicle_suv', 'Glass');
+    expect(slotIsGlass({ meshes: [glass] })).toBe(true);
+    const clear = mesh('', null, 'Mat3');
+    clear.material.transparent = true;
+    clear.material.opacity = 0.5;
+    expect(slotIsGlass({ meshes: [clear] })).toBe(true);
+    expect(slotIsGlass({ meshes: [mesh('Body', null, 'Body')] })).toBe(false);
+    expect(HEADLIGHT_NAME.test(namesOf(mesh('', 'vehicle_suv', 'Optics')))).toBe(true);
+  });
+});
