@@ -2124,6 +2124,20 @@ try {
         await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true }), { name: 'wide' });
         const wide = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
         res.wideTread = mean(wide.slots[0].canvas, 40, 410, 180, 80);
+        // Whatever way the wheel was imported (axle along X, Y, Z or tilted), the tread is kept.
+        res.turned = [];
+        for (const rot of [
+          [0, 0, 0],
+          [0, Math.PI / 2, 0],
+          [0.6, 0.9, 0.3],
+          [2.2, -0.5, 1.4],
+        ]) {
+          await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true, wheelRotation: rot }), {
+            name: 'turned',
+          });
+          const t = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+          res.turned.push(mean(t.slots[0].canvas, 40, 410, 180, 80));
+        }
         // A texture left as the original is flagged by the check.
         await p.postModel(glb.slice(0), { name: 'unpainted' });
         const slot = p.layout.slots[0];
@@ -2169,6 +2183,7 @@ try {
       assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
       assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
       assert.ok(near(out.wideTread, [91, 91, 91], 12), `wide tyre: tread painted ${out.wideTread}`);
+      out.turned.forEach((c, i) => assert.ok(near(c, [91, 91, 91], 12), `turned wheel ${i}: tread painted ${c}`));
       assert.deepEqual(
         out.zoneWheel,
         [false, true, false],

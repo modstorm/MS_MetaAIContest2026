@@ -70,81 +70,176 @@ function triangleGeometry(mesh, src) {
   return { normal, centroid, area, n };
 }
 
-/**
- * The axle direction of a wheel (0 = X, 1 = Y, 2 = Z): the axis the most surface faces along
- * (the flat sidewalls and rim face sideways along the axle).
- */
-function axleAxis(g, use) {
-  // A wheel's size: two sides equal (its diameter) and the axle side different. That odd
-  // side is the axle. Normals decide only when the box does not say (a wide tyre has more
-  // tread than sidewall, so its tread faces outvote the sidewalls).
-  const lo = [Infinity, Infinity, Infinity],
-    hi = [-Infinity, -Infinity, -Infinity];
-  for (let t = 0; t < g.n; t++) {
-    if (use && !use[t]) continue;
-    for (let k = 0; k < 3; k++) {
-      const c = g.centroid[t * 3 + k];
-      if (c < lo[k]) lo[k] = c;
-      if (c > hi[k]) hi[k] = c;
+/** Eigen decomposition of a symmetric 3×3 matrix (Jacobi). Returns { values, vectors (columns) }. */
+function eigenSym3(m) {
+  const a = m.map((r) => r.slice());
+  const v = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+  for (let sweep = 0; sweep < 30; sweep++) {
+    let off = Math.abs(a[0][1]) + Math.abs(a[0][2]) + Math.abs(a[1][2]);
+    if (off < 1e-14) break;
+    for (const [p, q] of [
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ]) {
+      if (Math.abs(a[p][q]) < 1e-18) continue;
+      const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1),
+        s = t * c;
+      for (let k = 0; k < 3; k++) {
+        const akp = a[k][p],
+          akq = a[k][q];
+        a[k][p] = c * akp - s * akq;
+        a[k][q] = s * akp + c * akq;
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = a[p][k],
+          aqk = a[q][k];
+        a[p][k] = c * apk - s * aqk;
+        a[q][k] = s * apk + c * aqk;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = v[k][p],
+          vkq = v[k][q];
+        v[k][p] = c * vkp - s * vkq;
+        v[k][q] = s * vkp + c * vkq;
+      }
     }
   }
-  const d = [0, 1, 2].map((k) => Math.max(0, hi[k] - lo[k]));
-  let best = -1,
+  return { values: [a[0][0], a[1][1], a[2][2]], vectors: [0, 1, 2].map((j) => [v[0][j], v[1][j], v[2][j]]) };
+}
+
+const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+
+/**
+ * A wheel's own frame, in world space, whatever way it was imported (axle along X, Y, Z or
+ * tilted, rotations baked into the nodes): `a` = axle, `u`, `v` = the wheel's plane, `c` =
+ * centre, `size` = [along axle, along u, along v]. The axle is the odd one out of the shape's
+ * three main directions (two are equal: the diameter). When the shape does not say (a cube),
+ * the axis most faces point along is used.
+ */
+export function wheelFrame(g, use = null) {
+  let wsum = 0;
+  const mean = [0, 0, 0];
+  for (let t = 0; t < g.n; t++) {
+    if (use && !use[t]) continue;
+    const w = g.area[t] || 1e-12;
+    wsum += w;
+    for (let k = 0; k < 3; k++) mean[k] += w * g.centroid[t * 3 + k];
+  }
+  if (!wsum) return null;
+  for (let k = 0; k < 3; k++) mean[k] /= wsum;
+  const cov = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
+  for (let t = 0; t < g.n; t++) {
+    if (use && !use[t]) continue;
+    const w = g.area[t] || 1e-12;
+    const d = [0, 1, 2].map((k) => g.centroid[t * 3 + k] - mean[k]);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[i][j] += (w * d[i] * d[j]) / wsum;
+  }
+  const { values, vectors } = eigenSym3(cov);
+  let axis = -1,
     bestScore = Infinity;
   for (let k = 0; k < 3; k++) {
     const [i, j] = [0, 1, 2].filter((x) => x !== k);
-    const big = Math.max(d[i], d[j]);
-    if (!big) continue;
-    const score = Math.abs(d[i] - d[j]) / big;
-    if (score < bestScore && d[k] < big * 0.85) {
+    const big = Math.max(values[i], values[j]);
+    if (!(big > 0)) continue;
+    const score = Math.abs(values[i] - values[j]) / big;
+    if (score < bestScore && values[k] < big * 0.72) {
       bestScore = score;
-      best = k;
+      axis = k;
     }
   }
-  if (best >= 0 && bestScore < 0.25) return best;
-  const share = [0, 0, 0];
+  let a;
+  if (axis >= 0 && bestScore < 0.35) a = vectors[axis];
+  else {
+    // Fallback: of the shape's own main directions, the one most faces point along (flat
+    // sidewalls face along the axle). World axes are only tried when the shape has no main
+    // directions at all (as round as a ball or a cube), so a tilted import gives the same answer.
+    const lmax = Math.max(...values),
+      lmin = Math.min(...values);
+    const candidates = [...vectors];
+    if (lmax > 0 && (lmax - lmin) / lmax < 0.2) candidates.push([1, 0, 0], [0, 1, 0], [0, 0, 1]);
+    let best = -1;
+    a = candidates[0];
+    for (const cand of candidates) {
+      let share = 0;
+      for (let t = 0; t < g.n; t++) {
+        if (use && !use[t]) continue;
+        const nd = Math.abs(g.normal[t * 3] * cand[0] + g.normal[t * 3 + 1] * cand[1] + g.normal[t * 3 + 2] * cand[2]);
+        if (nd > 0.85) share += g.area[t];
+      }
+      if (share > best) {
+        best = share;
+        a = cand;
+      }
+    }
+  }
+  const len = Math.hypot(...a) || 1;
+  a = a.map((x) => x / len);
+  // u, v across the axle: the shape's other two main directions when the axle is one of them
+  // (so a long body is measured along its length and width, however it is turned); else any.
+  const ai = vectors.findIndex((e) => Math.abs(dot(e, a)) > 0.999);
+  let u, v;
+  if (ai >= 0) [u, v] = vectors.filter((_, k) => k !== ai);
+  else {
+    const helper = Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    u = [a[1] * helper[2] - a[2] * helper[1], a[2] * helper[0] - a[0] * helper[2], a[0] * helper[1] - a[1] * helper[0]];
+    const ul = Math.hypot(...u);
+    u = u.map((x) => x / ul);
+    v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]];
+  }
+  // Extents and the box centre in this frame.
+  const lo = [Infinity, Infinity, Infinity],
+    hi = [-Infinity, -Infinity, -Infinity];
+  const axes = [a, u, v];
   for (let t = 0; t < g.n; t++) {
     if (use && !use[t]) continue;
-    for (let k = 0; k < 3; k++) if (Math.abs(g.normal[t * 3 + k]) > 0.85) share[k] += g.area[t];
+    const p = [g.centroid[t * 3], g.centroid[t * 3 + 1], g.centroid[t * 3 + 2]];
+    for (let k = 0; k < 3; k++) {
+      const x = dot(p, axes[k]);
+      if (x < lo[k]) lo[k] = x;
+      if (x > hi[k]) hi[k] = x;
+    }
   }
-  return share.indexOf(Math.max(...share));
+  const mid = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+  const c = [0, 1, 2].map((k) => a[k] * mid[0] + u[k] * mid[1] + v[k] * mid[2]);
+  return { a, u, v, c, size: [0, 1, 2].map((k) => Math.max(0, hi[k] - lo[k])) };
 }
 
 /**
  * Tread triangles of a wheel: faces pointing outward, across the axle (not along it), on the
- * outside of the wheel. `use` limits it to some triangles (a SAM wheel zone).
+ * outside of the wheel. `use` limits it to some triangles (a SAM wheel zone). Works in the
+ * wheel's own frame, so the import direction does not matter.
  */
 export function treadTriangles(mesh, src, use = null) {
   const g = triangleGeometry(mesh, src);
-  const axis = axleAxis(g, use);
   const out = new Uint8Array(g.n);
-  // One wheel per mesh: also require the outer ring (inner rim barrels face across the axle too).
-  const box = new THREE.Box3();
+  const f = wheelFrame(g, use);
+  if (!f) return out;
+  const [da, du, dv] = f.size;
+  // One wheel: also require the outer ring (inner rim barrels face across the axle too).
+  const single = du > 0 && dv > 0 && Math.max(du, dv) / Math.min(du, dv) < 1.4 && da < Math.min(du, dv);
+  const radius = single ? Math.max(du, dv) / 2 : 0;
   for (let t = 0; t < g.n; t++) {
     if (use && !use[t]) continue;
-    box.expandByPoint(_a.set(g.centroid[t * 3], g.centroid[t * 3 + 1], g.centroid[t * 3 + 2]));
-  }
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const others = [0, 1, 2].filter((k) => k !== axis);
-  const d0 = size.getComponent(others[0]),
-    d1 = size.getComponent(others[1]);
-  const single =
-    d0 > 0 && d1 > 0 && Math.max(d0, d1) / Math.min(d0, d1) < 1.4 && size.getComponent(axis) < Math.min(d0, d1);
-  const radius = single ? Math.max(d0, d1) / 2 : 0;
-  for (let t = 0; t < g.n; t++) {
-    if (use && !use[t]) continue;
-    if (Math.abs(g.normal[t * 3 + axis]) > 0.45) continue; // sidewall / rim face
+    const n = [g.normal[t * 3], g.normal[t * 3 + 1], g.normal[t * 3 + 2]];
+    if (Math.abs(dot(n, f.a)) > 0.45) continue; // sidewall / rim face
     if (single) {
-      const r = Math.hypot(
-        g.centroid[t * 3 + others[0]] - center.getComponent(others[0]),
-        g.centroid[t * 3 + others[1]] - center.getComponent(others[1]),
-      );
-      if (r < radius * 0.7) continue; // inside the rim
+      const d = [0, 1, 2].map((k) => g.centroid[t * 3 + k] - f.c[k]);
+      const x = dot(d, f.u),
+        y = dot(d, f.v);
+      if (Math.hypot(x, y) < radius * 0.7) continue; // inside the rim
       // The face must point away from the wheel's center (outward), not into it.
-      const ox = g.centroid[t * 3 + others[0]] - center.getComponent(others[0]);
-      const oy = g.centroid[t * 3 + others[1]] - center.getComponent(others[1]);
-      if (ox * g.normal[t * 3 + others[0]] + oy * g.normal[t * 3 + others[1]] <= 0) continue;
+      if (x * dot(n, f.u) + y * dot(n, f.v) <= 0) continue;
     }
     out[t] = 1;
   }
@@ -199,27 +294,19 @@ export function meshPieces(mesh, src, use = null) {
  */
 export function isWheelShaped(mesh, src, use = null) {
   const g = triangleGeometry(mesh, src);
-  const axis = axleAxis(g, use);
-  const box = new THREE.Box3();
-  for (let t = 0; t < g.n; t++) {
-    if (use && !use[t]) continue;
-    box.expandByPoint(_a.set(g.centroid[t * 3], g.centroid[t * 3 + 1], g.centroid[t * 3 + 2]));
-  }
-  const size = box.getSize(new THREE.Vector3());
-  const others = [0, 1, 2].filter((k) => k !== axis);
-  const d0 = size.getComponent(others[0]),
-    d1 = size.getComponent(others[1]);
-  if (!(d0 > 0 && d1 > 0 && Math.max(d0, d1) / Math.min(d0, d1) < 1.4 && size.getComponent(axis) <= Math.min(d0, d1)))
-    return false;
+  const f = wheelFrame(g, use);
+  if (!f) return false;
+  const [da, du, dv] = f.size;
+  if (!(du > 0 && dv > 0 && Math.max(du, dv) / Math.min(du, dv) < 1.4 && da <= Math.min(du, dv))) return false;
   // Round all the way: the outer ring must go around the axle (a wheel arch or a patch only
   // covers part of the circle). At least 9 of 12 sectors around the centre must be filled.
-  const center = box.getCenter(new THREE.Vector3());
-  const R = Math.max(d0, d1) / 2;
+  const R = Math.max(du, dv) / 2;
   const sectors = new Set();
   for (let t = 0; t < g.n; t++) {
     if (use && !use[t]) continue;
-    const x = g.centroid[t * 3 + others[0]] - center.getComponent(others[0]);
-    const y = g.centroid[t * 3 + others[1]] - center.getComponent(others[1]);
+    const d = [0, 1, 2].map((k) => g.centroid[t * 3 + k] - f.c[k]);
+    const x = dot(d, f.u),
+      y = dot(d, f.v);
     if (Math.hypot(x, y) < R * 0.5) continue;
     sectors.add(Math.floor(((Math.atan2(y, x) + Math.PI) / (2 * Math.PI)) * 12) % 12);
   }
