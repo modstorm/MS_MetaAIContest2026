@@ -159,6 +159,8 @@ plugin.onUpdate((e) => {
       showGenerated(e.data.slotId, e.data.kind, e.data.canvas);
       break;
     case 'loaded':
+      // The asset type is per model: a new model starts on Auto again.
+      $('opt-asset-class').value = 'auto';
       renderLayout(e.data.layout);
       break;
     case 'locks':

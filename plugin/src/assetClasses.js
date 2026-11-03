@@ -280,13 +280,26 @@ export function getAssetClass(id) {
 }
 
 /** Normalizes a free-text class from Muse ("Character", "car") to a registry id. */
+/** "Prop_Barrel01" / "propBarrel" → "Prop Barrel 01" / "prop Barrel", so word matches work. */
+export function splitWords(name) {
+  return String(name ?? '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/[_\-.]+/g, ' ');
+}
+
 export function normalizeAssetClass(text) {
   if (!text) return null;
-  const t = String(text).trim().toLowerCase();
+  const t = splitWords(String(text)).trim().toLowerCase();
   const exact = ASSET_CLASSES.find((c) => c.id === t || c.label.toLowerCase() === t);
   if (exact) return exact.id;
-  const byWord = ASSET_CLASSES.find((c) => c.keywords?.test(t));
-  return byWord?.id ?? null;
+  // "prop (storage barrel)", "Prop / object": a class id as the first word wins.
+  const first = t.match(/[a-z]+/)?.[0];
+  const lead = ASSET_CLASSES.find((c) => c.id === first);
+  if (lead) return lead.id;
+  // Otherwise the class with the most keyword hits (not the first one in the list that has any).
+  const best = detectAssetClass({ subject: t });
+  return best === 'generic' ? null : best;
 }
 
 /**
@@ -294,7 +307,7 @@ export function normalizeAssetClass(text) {
  * keyword hits; 'generic' when nothing matches.
  */
 export function detectAssetClass({ subject = '', partNames = [], modelName = '' } = {}) {
-  const words = [subject, modelName, ...partNames].join(' | ');
+  const words = [subject, modelName, ...partNames].map(splitWords).join(' | ');
   let best = 'generic',
     bestHits = 0;
   for (const c of ASSET_CLASSES) {

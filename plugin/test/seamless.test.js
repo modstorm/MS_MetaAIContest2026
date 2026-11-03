@@ -91,3 +91,13 @@ describe('building detection', () => {
     expect(detectAssetClass({ subject: 'a small brick house', partNames: ['Walls', 'Roof'] })).toBe('building');
   });
 });
+
+describe('barrels are props', () => {
+  it('Prop_Barrel and Muse class text map to prop, not building', async () => {
+    const { normalizeAssetClass } = await import('../src/assetClasses.js');
+    expect(detectAssetClass({ modelName: 'Prop_Barrel', partNames: ['Prop_Barrel'] })).toBe('prop');
+    expect(normalizeAssetClass('prop (wooden barrel structure)')).toBe('prop');
+    expect(normalizeAssetClass('Storage barrel')).toBe('prop');
+    expect(normalizeAssetClass('building')).toBe('building');
+  });
+});
