@@ -2,6 +2,7 @@ import './styles.css';
 import { ASSET_CLASSES, MuseProvider, ProceduralProvider, ReskinPlugin, formatDollars } from '@metaai26/reskin-plugin';
 import { Viewer } from './viewer.js';
 import { buildSampleGlb } from './sampleModel.js';
+import { hideWaitCrew, showWaitCrew } from './waitCrew.js';
 
 // Asset type choices come from the plugin's class registry.
 for (const c of ASSET_CLASSES) {
@@ -438,8 +439,9 @@ function openPrompt() {
   $('suggest-row').hidden = !plugin.canSuggest;
   if (runDialog.open && !plugin.isBusy) runDialog.close();
   themeChanged();
+  $('theme-box').open = !(pending && suggestEnabled() && !needsSuggestion());
   if (!dialog.open) dialog.showModal();
-  (pending && suggestEnabled() ? $('sugg-prompt') : promptText).focus();
+  ($('theme-box').open ? promptText : $('sugg-prompt')).focus();
 }
 
 $('btn-reskin').onclick = openPrompt;
@@ -470,6 +472,7 @@ function updateGoLabel() {
 
 /** Theme, checkbox or model changed: show or hide Muse's part and relabel the button. */
 function themeChanged() {
+  $('theme-summary').textContent = promptText.value.trim() ? `"${promptText.value.trim()}"` : '';
   $('suggestion').hidden = !(pending && suggestEnabled());
   const stale = pending && suggestEnabled() && promptText.value.trim() !== suggestedFor;
   if (!suggesting)
@@ -488,11 +491,18 @@ function setSuggStatus(text, error = false) {
   $('sugg-status').classList.toggle('warn-text', error);
 }
 
+/** The animated "Muse is working" line in the popup ('' hides it). */
+function setSuggWait(text) {
+  $('sugg-wait').hidden = !text;
+  $('sugg-wait').lastElementChild.textContent = text;
+}
+
 /** Forget Muse's suggestion (a new model was loaded). */
 function clearSuggestion() {
   pending = null;
   suggestedFor = '';
   $('suggestion').hidden = true;
+  $('theme-box').open = true;
   setSuggStatus('');
 }
 
@@ -526,7 +536,6 @@ $('prompt-form').addEventListener('submit', (e) => {
   }
   if (needsSuggestion()) return askMuse(theme);
   const useSugg = !!(pending && suggestEnabled());
-  if (useSugg) suggTexts[suggKey()] = $('sugg-prompt').value;
   const text = (useSugg && $('sugg-prompt').value.trim()) || theme;
   dialog.close();
   openRun(theme);
@@ -537,7 +546,8 @@ $('prompt-form').addEventListener('submit', (e) => {
 let suggesting = false;
 async function askMuse(theme) {
   suggesting = true;
-  setSuggStatus(pending ? 'Muse is rewriting the prompt for the new theme…' : 'Muse is studying the model…');
+  setSuggStatus('');
+  setSuggWait(pending ? 'Muse is rewriting the prompt for the new theme…' : 'Muse is studying the model…');
   updateGoLabel();
   try {
     const s = await plugin.postSuggest(theme, { fast: $('opt-fast').checked, orientation: $('opt-orient').value });
@@ -555,6 +565,7 @@ async function askMuse(theme) {
       );
     }
   } finally {
+    setSuggWait('');
     // Keep any error message in view (themeChanged would replace it).
     $('suggestion').hidden = !(pending && suggestEnabled());
     updateGoLabel();
@@ -573,10 +584,7 @@ function showSuggestion(s, theme) {
   $('sugg-parts').innerHTML = (s.parts ?? [])
     .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
     .join('');
-  suggTexts.muse = s.prompt;
-  suggTexts.mine = theme;
-  $('sugg-mine').checked = false;
-  renderSuggText();
+  $('sugg-prompt').value = s.prompt;
   $('sugg-tips').textContent = s.tips ?? '';
   const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
     const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
@@ -586,22 +594,9 @@ function showSuggestion(s, theme) {
   });
   $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
   themeChanged();
+  $('theme-box').open = false; // Muse has the theme: fold it away (open it to change the theme)
   $('sugg-prompt').focus();
 }
-
-// The prompt box shows Muse's detailed prompt, or your own with "Use my prompt instead";
-// each keeps its edits when you switch.
-const suggTexts = { muse: '', mine: '' };
-const suggKey = () => ($('sugg-mine').checked ? 'mine' : 'muse');
-function renderSuggText() {
-  const mine = $('sugg-mine').checked;
-  $('sugg-label').textContent = mine ? 'Your prompt (edit freely)' : "Muse's detailed prompt (edit freely)";
-  $('sugg-prompt').value = suggTexts[suggKey()];
-}
-$('sugg-mine').addEventListener('change', () => {
-  suggTexts[$('sugg-mine').checked ? 'muse' : 'mine'] = $('sugg-prompt').value; // keep the edits of the one left
-  renderSuggText();
-});
 
 // ---- the progress panel (Run tab): progress, errors, Stop
 /** The run panel lives in the side panel's Run tab; its progress bar sits on the viewport. */
@@ -612,13 +607,20 @@ function showRun() {
   runDialog.show();
   showTab('run');
 }
+/** The paint crew dims the 3D view while a paint run is working. */
+function setBusy(on) {
+  if (on) showWaitCrew($('viewport'));
+  else hideWaitCrew();
+}
 runDialog.addEventListener('close', () => {
+  setBusy(false);
   $('result-actions').hidden = !plugin.lastResult;
   $('prompt-progress').hidden = true;
 });
 
 function openRun(prompt) {
   $('run-title').textContent = 'Painting';
+  setBusy(true);
   $('run-theme').textContent = `"${prompt}"`;
   $('prompt-bar').style.width = '0%';
   $('prompt-stage').textContent = '';
@@ -658,6 +660,7 @@ function showError(err, retry) {
   $('err-probe').hidden = !filtered;
   $('prompt-error').hidden = false;
   $('prompt-stage').textContent = '';
+  setBusy(false);
   if (!runDialog.open) showRun();
   retryAction = retry;
 }
@@ -698,6 +701,7 @@ async function runReskin(text, suggestion) {
   hideError();
   if (!runDialog.open) openRun(text);
   $('run-title').textContent = 'Painting';
+  setBusy(true);
   $('prompt-bar').style.width = '0%';
   setRunButtons({ busy: true });
   try {
@@ -713,8 +717,10 @@ async function runReskin(text, suggestion) {
     else setCompare(true); // show before/after straight away
   } catch (err) {
     setRunButtons({});
-    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
-    else showError(err, () => runReskin(text, suggestion));
+    if (err.name === 'AbortError') {
+      $('prompt-stage').textContent = 'Cancelled';
+      setBusy(false);
+    } else showError(err, () => runReskin(text, suggestion));
   }
 }
 
@@ -739,6 +745,7 @@ async function retrySlot(f, text) {
   hideError();
   openRun(text);
   $('run-title').textContent = `Painting "${f.name}"`;
+  setBusy(true);
   setRunButtons({ busy: true });
   try {
     const res = await plugin.postPrompt(text, { ...paintOptions(), variants: 1, slotIds: [f.slotId] });
@@ -747,8 +754,10 @@ async function retrySlot(f, text) {
     runDialog.close();
   } catch (err) {
     setRunButtons({});
-    if (err.name === 'AbortError') $('prompt-stage').textContent = 'Cancelled';
-    else showError(err, () => retrySlot(f, text));
+    if (err.name === 'AbortError') {
+      $('prompt-stage').textContent = 'Cancelled';
+      setBusy(false);
+    } else showError(err, () => retrySlot(f, text));
   }
 }
 

@@ -186,27 +186,32 @@
       <form method="dialog" id="prompt-form">
         <h2>Reskin</h2>
         <p class="muted small" id="prompt-model-info"></p>
-        <textarea
-          id="prompt-text"
-          rows="3"
-          required
-          aria-label="Theme"
-          placeholder="Describe a theme, e.g. haunted Halloween pumpkin armor with glowing orange cracks"
-        ></textarea>
-        <div class="chips" id="prompt-chips"></div>
-        <label class="inline" id="suggest-row"
-          ><input id="opt-suggest" type="checkbox" checked /> Let Muse review the model and improve my prompt</label
-        >
-        <p id="sugg-status" class="muted" hidden></p>
+        <!-- Theme: folds away once Muse has written the detailed prompt; open it to change the theme. -->
+        <details id="theme-box" class="theme-box" open>
+          <summary>Theme <span class="muted" id="theme-summary"></span></summary>
+          <textarea
+            id="prompt-text"
+            rows="3"
+            required
+            aria-label="Theme"
+            placeholder="Describe a theme, e.g. haunted Halloween pumpkin armor with glowing orange cracks"
+          ></textarea>
+          <div class="chips" id="prompt-chips"></div>
+          <label class="inline" id="suggest-row"
+            ><input id="opt-suggest" type="checkbox" checked /> Let Muse review the model and improve my prompt</label
+          >
+          <p id="sugg-wait" class="muted sugg-wait" hidden>
+            <span class="paint-spinner" aria-hidden="true"><b></b><i></i><i></i><i></i></span>
+            <span>Muse is studying the model…</span>
+          </p>
+          <p id="sugg-status" class="muted" hidden></p>
+        </details>
         <!-- Filled in place once Muse has looked at the model. -->
         <section id="suggestion" class="suggestion" hidden>
           <p><strong>Muse sees:</strong> <span id="sugg-subject"></span></p>
           <div id="sugg-parts" class="chips static"></div>
           <label for="sugg-prompt" id="sugg-label">Muse's detailed prompt (edit freely)</label>
           <textarea id="sugg-prompt" rows="5"></textarea>
-          <label class="inline"
-            ><input id="sugg-mine" type="checkbox" /> Use my prompt instead (shows and paints your own prompt)</label
-          >
           <p class="muted" id="sugg-tips"></p>
           <details>
             <summary>Muse's views and paint plan</summary>

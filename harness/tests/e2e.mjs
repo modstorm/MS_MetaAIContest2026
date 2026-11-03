@@ -148,11 +148,14 @@ async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review
   await setReview(page, review);
   await page.selectOption('#opt-variations', String(variations));
   if (paintMode) await setPaintMode(page, paintMode);
+  await page.$eval('#theme-box', (d) => (d.open = true));
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
   await page.fill('#prompt-text', prompt);
   await page.click('#prompt-go');
   await page.waitForSelector('#prompt-dialog:not([open])', { state: 'attached', timeout: 120_000 });
   await page.waitForSelector('#run-dialog:not([open])', { state: 'attached', timeout: 120_000 });
+  // The paint crew popped up over the view while painting and is gone again.
+  assert.ok(await page.$eval('#wait-crew', (e) => e.hidden), 'paint crew hidden after the run');
 }
 
 function parseGlb(buf) {
@@ -457,16 +460,10 @@ try {
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.textContent('#prompt-go'), 'Paint');
     assert.equal(calls.length, n1, 'no Muse call to reopen the suggestion');
-    // "Use my prompt instead" switches the box to the typed theme and back, keeping edits.
-    await page.check('#sugg-mine');
-    assert.equal(await page.inputValue('#sugg-prompt'), 'ice');
-    assert.match(await page.textContent('#sugg-label'), /Your prompt/);
-    await page.fill('#sugg-prompt', 'ice and snow');
-    await page.uncheck('#sugg-mine');
-    assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
-    await page.check('#sugg-mine');
-    assert.equal(await page.inputValue('#sugg-prompt'), 'ice and snow');
-    await page.uncheck('#sugg-mine');
+    // The theme part is folded away while Muse's prompt is current; opening it lets you change the theme.
+    assert.ok(!(await page.isVisible('#prompt-text')), 'theme folded after the suggestion');
+    assert.match(await page.textContent('#theme-summary'), /"ice"/);
+    await page.click('#theme-box > summary');
     // A new theme in the same popup: Muse only rewrites the prompt (one text call, no renders).
     await page.fill('#prompt-text', 'lava');
     assert.equal(await page.textContent('#prompt-go'), "Update Muse's prompt");
