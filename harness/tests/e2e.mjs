@@ -26,7 +26,15 @@ const server = await createServer({
 });
 await server.listen();
 const url = 'http://localhost:5199/';
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+const browser = await chromium.launch({
+  args: [
+    '--use-gl=swiftshader',
+    '--enable-unsafe-swiftshader',
+    // A fake microphone (a beep) for the voice theme test.
+    '--use-fake-ui-for-media-stream',
+    '--use-fake-device-for-media-stream',
+  ],
+});
 let failures = 0;
 
 async function step(name, fn) {
@@ -486,6 +494,75 @@ try {
     assert.match(reuseBody[0].text, /already studied/);
     assert.match(reuseBody[0].text, /"mossy stone"/);
     assert.equal(again.subject, suggestion.subject);
+    await page.context().close();
+  });
+
+  await step('voice theme: mic records, Muse Voice Transcribe fills the theme, Muse reviews it', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    await page.context().grantPermissions(['microphone']);
+    const calls = [];
+    const suggestion = {
+      subject: 'toy robot',
+      parts: [],
+      prompt: 'Rusty pirate robot with brass rivets.',
+      atlases: [],
+    };
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const path = req.url().split('/v1/')[1];
+      if (path === 'asr/transcribe') {
+        const raw = req.postDataBuffer().toString('latin1');
+        calls.push({ path, contentType: req.headers()['content-type'], auth: req.headers().authorization, raw });
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({
+            sessionId: 's1',
+            transcript: 'make it a rusty pirate robot',
+            audioDurationMs: 1800,
+            turns: [],
+          }),
+        });
+      }
+      calls.push({ path });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(suggestion) } }] }),
+      });
+    });
+    await ui(page, 'btn-sample');
+    await page.waitForSelector('#prompt-dialog[open]');
+    assert.ok(await page.isVisible('#mic-btn'), 'mic shows next to the theme');
+    await page.click('#mic-btn');
+    await page.waitForSelector('#mic-btn.recording');
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: `${outDir}05b-voice-recording.png` });
+    await page.click('#mic-btn');
+    await page.waitForSelector('#suggestion:not([hidden])', { timeout: 30_000 });
+    assert.equal(await page.inputValue('#prompt-text'), 'make it a rusty pirate robot');
+    assert.deepEqual(
+      calls.map((c) => c.path),
+      ['asr/transcribe', 'chat/completions'],
+      'transcribe, then the usual Muse review (no painting)',
+    );
+    const t = calls[0];
+    assert.match(t.contentType, /^multipart\/form-data; boundary=/);
+    assert.equal(t.auth, 'Bearer k');
+    assert.match(t.raw, /"model":"muse-voice-transcribe-1.0"/);
+    assert.match(t.raw, /"audioEncoding":"WAV"/);
+    // The audio part is a 16 kHz mono 16-bit WAV.
+    const wav = Buffer.from(t.raw.slice(t.raw.indexOf('RIFF')), 'latin1');
+    assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(wav.readUInt16LE(22), 1);
+    assert.equal(wav.readUInt32LE(24), 16000);
+    assert.equal(wav.readUInt16LE(34), 16);
+    assert.match(await page.textContent('#prompt-go'), /Paint/);
+    await page.screenshot({ path: `${outDir}05c-voice-reviewed.png` });
+    const usage = await page.evaluate(() => window.reskin.plugin.getUsage().session.audioSeconds);
+    assert.equal(usage, 1);
     await page.context().close();
   });
 

@@ -437,6 +437,7 @@ function openPrompt() {
     : '';
   $('provider-label').textContent = `Backend: ${plugin.getProvider().name}`;
   $('suggest-row').hidden = !plugin.canSuggest;
+  $('mic-btn').hidden = !micAvailable();
   if (runDialog.open && !plugin.isBusy) runDialog.close();
   themeChanged();
   $('theme-box').open = !(pending && suggestEnabled() && !needsSuggestion());
@@ -450,6 +451,101 @@ $('prompt-cancel').onclick = () => {
   dialog.close();
 };
 dialog.addEventListener('cancel', () => suggesting && plugin.cancel());
+dialog.addEventListener('close', () => stopMic(true));
+
+// ---- mic: speak the theme. The browser records, Muse Voice Transcribe (through the plugin's
+// postVoice) writes it into the Theme box, then Muse reviews it as if it had been typed.
+const MIC_MAX_MS = 30_000;
+let mic = null; // { recorder, stream, chunks, timer, discard } while recording
+let transcribing = false;
+
+function micAvailable() {
+  return plugin.canTranscribe && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
+}
+
+function setMicState(state, text = '', error = false) {
+  const btn = $('mic-btn');
+  btn.classList.toggle('recording', state === 'recording');
+  btn.classList.toggle('working', state === 'working');
+  btn.title = state === 'recording' ? 'Stop and use what I said' : 'Speak the theme (Muse Voice Transcribe)';
+  btn.setAttribute('aria-pressed', String(state === 'recording'));
+  $('mic-status').hidden = !text;
+  $('mic-status').textContent = text;
+  $('mic-status').classList.toggle('warn-text', error);
+}
+
+$('mic-btn').addEventListener('click', () => {
+  if (transcribing) return;
+  if (mic) return stopMic();
+  startMic();
+});
+
+async function startMic() {
+  if (missingKey()) {
+    dialog.close();
+    updateKeyBanner(true);
+    log('No Muse API key: add MUSE_API_KEY to .env and restart "npm run dev" (or paste a key in Settings).', 'error');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (err) {
+    setMicState(
+      'idle',
+      `The microphone is not available: ${err.message}. Allow it in the browser and try again.`,
+      true,
+    );
+    return;
+  }
+  const recorder = new MediaRecorder(stream);
+  const m = (mic = { recorder, stream, chunks: [], discard: false });
+  recorder.ondataavailable = (e) => e.data.size && m.chunks.push(e.data);
+  recorder.onstop = () => {
+    clearTimeout(m.timer);
+    for (const t of m.stream.getTracks()) t.stop();
+    if (mic === m) mic = null;
+    if (m.discard) return setMicState('idle');
+    transcribeTheme(new Blob(m.chunks, { type: recorder.mimeType || 'audio/webm' }));
+  };
+  recorder.start();
+  m.timer = setTimeout(() => stopMic(), MIC_MAX_MS);
+  setMicState('recording', 'Listening… say the theme, then press the mic again.');
+}
+
+/** Stops recording; `discard` drops the audio (popup closed). */
+function stopMic(discard = false) {
+  if (!mic) return;
+  mic.discard = discard;
+  if (mic.recorder.state !== 'inactive') mic.recorder.stop();
+}
+
+async function transcribeTheme(audio) {
+  transcribing = true;
+  setMicState('working', 'Muse is listening back…');
+  try {
+    const { text } = await plugin.postVoice(audio, { languageBias: ['English'] });
+    if (!text) {
+      setMicState('idle', "Muse didn't catch any words. Try again a little closer to the mic.", true);
+      return;
+    }
+    log(`🎙️ Muse heard: "${text}"`);
+    promptText.value = text;
+    setMicState('idle', `Heard: "${text}"`);
+    themeChanged();
+    // Spoken theme goes straight to Muse's review (never straight to paint).
+    if (dialog.open && needsSuggestion() && !suggesting) askMuse(text);
+    else promptText.focus();
+  } catch (err) {
+    setMicState('idle', `Muse Voice Transcribe failed: ${err.message}`, true);
+    log(`Muse Voice Transcribe failed: ${err.message}`, 'error');
+  } finally {
+    transcribing = false;
+    $('mic-btn').classList.remove('working');
+  }
+}
 
 function suggestEnabled() {
   return plugin.canSuggest && $('opt-suggest').checked;

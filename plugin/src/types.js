@@ -234,6 +234,7 @@
  *   over `limit` that still show the original; the next review asks to repaint them).
  * - 'review': the review of the result. issues ({ area, problem, fix }[]), lessons, learned.
  * - 'note': every 'warning' message, so the log reads in one place.
+ * - 'voice': a spoken theme transcribed by Muse Voice Transcribe (postVoice). text, durationMs.
  * @typedef {{ step: string, text: string, at: number } & Record<string, any>} ThinkingEntry
  */
 

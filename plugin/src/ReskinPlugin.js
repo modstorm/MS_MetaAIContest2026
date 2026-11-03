@@ -74,6 +74,7 @@ import {
   nearColor,
   vehicleKeepTriangles,
 } from './analysis/keepAreas.js';
+import { toTranscribeWav } from './audio/wav.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -550,6 +551,39 @@ export class ReskinPlugin {
       this.busy = false;
       this.abort = null;
     }
+  }
+
+  // ---------------------------------------------------------------- post: voice
+
+  /** True if the current provider can turn speech into text (postVoice). */
+  get canTranscribe() {
+    return typeof this.provider.transcribe === 'function';
+  }
+
+  /**
+   * Speech -> text with Muse Voice Transcribe, e.g. to speak a theme. `audio` is any
+   * recording the browser can decode (MediaRecorder webm/opus or mp4, or a WAV); it is
+   * converted to 16 kHz mono WAV first. Nothing is painted, and no model is needed.
+   * Emits 'transcript' with the result. Does not block (or get blocked by) a reskin.
+   * @param {Blob} audio
+   * @param {{ signal?: AbortSignal, languageBias?: string[], keywords?: string[] }} [opts]
+   * @returns {Promise<{ text: string, durationMs: number }>}
+   */
+  async postVoice(audio, opts = {}) {
+    if (!this.canTranscribe) throw new Error(`${this.provider.name} cannot transcribe speech`);
+    if (!(audio instanceof Blob) || !audio.size) throw new Error('postVoice needs a recorded audio Blob');
+    const { wav, durationMs } = await toTranscribeWav(audio);
+    if (durationMs < 300) throw new Error('The recording is too short: hold the mic a little longer');
+    const res = await this.provider.transcribe({
+      audio: wav,
+      signal: opts.signal,
+      languageBias: opts.languageBias,
+      keywords: opts.keywords,
+    });
+    const out = { text: res.text, durationMs: res.durationMs || durationMs };
+    this.think('voice', `Heard: "${out.text}"`, { durationMs: out.durationMs });
+    this.emit('transcript', out);
+    return out;
   }
 
   // ---------------------------------------------------------------- post: prompt

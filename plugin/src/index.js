@@ -7,7 +7,10 @@ export {
   MUSE_DEFAULT_BASE,
   MUSE_IMAGE_MODEL,
   MUSE_VISION_MODEL,
+  MUSE_TRANSCRIBE_MODEL,
 } from './muse/MuseClient.js';
+
+export { encodeWav, readWavHeader, toTranscribeWav, TRANSCRIBE_RATE } from './audio/wav.js';
 
 export {
   MUSE_PRICES,

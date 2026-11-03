@@ -67,6 +67,11 @@ export class MuseProvider {
   /** Optional hook for notices the host should show (e.g. a model fallback): (message) => void. */
   onNotice = null;
 
+  /** Muse Voice Transcribe: WAV speech -> { text, durationMs } (see MuseClient.transcribe). */
+  transcribe(o) {
+    return this.client.transcribe(o);
+  }
+
   /** SAM 3.1: masks for one noun phrase in an image (see MuseClient.segment). */
   segment(o) {
     return this.client.segment(o);

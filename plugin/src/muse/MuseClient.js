@@ -6,6 +6,7 @@
  *  - POST {base}/images/edits        image(s) + text -> image (JSON body with `images: [{image_url}]`)
  *  - POST {base}/chat/completions    vision / text  (muse-spark-1.3)
  *  - POST {base}/responses           image + noun phrase -> masks (sam-3.1), see segment()
+ *  - POST {base}/asr/transcribe      WAV speech -> text (muse-voice-transcribe-1.0), see transcribe()
  *
  * Works in the browser with an API key (direct), or against a proxy that adds the key
  * (see `@metaai26/reskin-plugin/server`). If the direct call fails at the network level
@@ -18,6 +19,7 @@ export const MUSE_DEFAULT_BASE = 'https://api.meta.ai/v1';
 export const MUSE_IMAGE_MODEL = 'muse-image-1.0';
 export const MUSE_VISION_MODEL = 'muse-spark-1.3';
 export const SAM_MODEL = 'sam-3.1';
+export const MUSE_TRANSCRIBE_MODEL = 'muse-voice-transcribe-1.0';
 
 export class MuseApiError extends Error {
   constructor(message, status, type, code, body) {
@@ -65,6 +67,7 @@ export class MuseClient {
       imageModel: opts.imageModel ?? MUSE_IMAGE_MODEL,
       visionModel: opts.visionModel ?? MUSE_VISION_MODEL,
       samModel: opts.samModel ?? SAM_MODEL,
+      transcribeModel: opts.transcribeModel ?? MUSE_TRANSCRIBE_MODEL,
       timeoutMs: opts.timeoutMs ?? 180_000,
       maxRetries: opts.maxRetries ?? 2,
       user: opts.user,
@@ -166,6 +169,34 @@ export class MuseClient {
     ).finalResult;
   }
 
+  /**
+   * Muse Voice Transcribe, file endpoint (docs: https://dev.meta.ai/docs/speech-to-text/).
+   * `audio` must be a WAV Blob: mono, 16-bit PCM, 16 or 24 kHz (see audio/wav.js
+   * toTranscribeWav to convert a browser recording). At most 10 minutes / 32 MB.
+   * Returns { text, durationMs, sessionId }.
+   * @param {{ audio: Blob, languageBias?: string[], keywords?: string[], mode?: string, signal?: AbortSignal }} o
+   */
+  async transcribe(o) {
+    if (!o?.audio) throw new Error('transcribe needs an audio Blob');
+    const request = {
+      model: this.options.transcribeModel,
+      audioEncoding: 'WAV',
+      mode: o.mode ?? 'PUSH_TO_TALK',
+    };
+    if (o.languageBias?.length) request.languageBias = o.languageBias;
+    if (o.keywords?.length) request.keywords = o.keywords;
+    const form = new FormData();
+    form.append('request', new Blob([JSON.stringify(request)], { type: 'application/json' }));
+    form.append('audio', o.audio, 'speech.wav');
+    const json = await this.post('/asr/transcribe', form, o.signal);
+    const durationMs = Number(json?.audioDurationMs) || 0;
+    // Billed per second of audio processed ($3 / 1,000 minutes, see pricing.js).
+    this.reportUsage({ model: request.model, kind: 'audio', images: 0, audioSeconds: Math.floor(durationMs / 1000) });
+    if (typeof json?.transcript !== 'string')
+      throw new MuseApiError('Unexpected transcribe response shape', 200, undefined, undefined, json);
+    return { text: json.transcript.trim(), durationMs, sessionId: json.sessionId };
+  }
+
   imageBody(o) {
     // Only documented fields: unknown top-level fields return 400.
     const body = {
@@ -208,7 +239,9 @@ export class MuseClient {
 
   /** raw: return { text, contentType } instead of parsed JSON (for streamed responses). */
   async postTo(base, path, body, signal, raw = false) {
-    const headers = { 'Content-Type': 'application/json' };
+    // FormData (multipart, e.g. transcribe): fetch sets the Content-Type with its boundary.
+    const multipart = typeof FormData !== 'undefined' && body instanceof FormData;
+    const headers = multipart ? { Accept: 'application/json' } : { 'Content-Type': 'application/json' };
     if (raw) headers.Accept = 'text/event-stream, application/json';
     // Only send the key to the real API; a proxy adds its own.
     if (this.options.apiKey && /^https?:\/\//.test(base)) headers.Authorization = `Bearer ${this.options.apiKey}`;
@@ -222,7 +255,7 @@ export class MuseClient {
       this.onExchange?.({
         url: `${base}${path}`,
         method: 'POST',
-        request: redactImages(body),
+        request: multipart ? describeForm(body) : redactImages(body),
         status,
         ms: performance.now() - t0,
         error,
@@ -233,7 +266,7 @@ export class MuseClient {
       const res = await this.fetchImpl(`${base}${path}`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: multipart ? body : JSON.stringify(body),
         signal: combined,
       });
       const text = await res.text();
@@ -332,6 +365,15 @@ export function* toResponsesEvents({ text }) {
     }
   }
   yield* closeOpen();
+}
+
+/** A multipart body for the request log: the JSON part parsed, files as "[audio/wav, 12 KB]". */
+function describeForm(form) {
+  const out = {};
+  for (const [k, v] of form.entries()) {
+    out[k] = typeof v === 'string' ? v : `[${v.type || 'file'}, ${Math.round(v.size / 1024)} KB]`;
+  }
+  return out;
 }
 
 /** Deep copy of a request body with data-URL images replaced by a short placeholder. */
