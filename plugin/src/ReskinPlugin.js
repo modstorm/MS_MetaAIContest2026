@@ -292,7 +292,7 @@ export class ReskinPlugin {
       for (const r of regions) {
         if (r.zone === 'underside' && opts.undersideColor !== null) continue; // flat color, no Muse call
         out.images += variants * (r.zone === 'torso' && opts.frontPanelPass !== false ? 3 : 1);
-        if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '').length;
+        if (sam) out.samChecks += variants * samRulesFor(assetClass, r.zone, '', r.name).length;
       }
     }
     // Suggestion, per-area themes (part by part) or a layout reading (one pass), review.
@@ -2082,7 +2082,9 @@ export class ReskinPlugin {
         }
       }
       const samRules =
-        opts.samCheck !== false && this.provider.segment ? samRulesFor(opts.assetClass, part.zone, theme) : [];
+        opts.samCheck !== false && this.provider.segment
+          ? samRulesFor(opts.assetClass, part.zone, theme, part.name)
+          : [];
       let samUpright = null;
       if (samRules.length && !this.samOff) {
         // SAM 3.1 looks for things that belong to other areas (a face on the trousers, shoes

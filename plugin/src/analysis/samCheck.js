@@ -13,7 +13,7 @@
  */
 
 import { decodeMaskToRaster, recordsOfKind } from '@meta-sam/parser';
-import { getAssetClass } from '../assetClasses.js';
+import { getAssetClass, splitWords } from '../assetClasses.js';
 
 /**
  * @typedef {{ concept: string, minShare?: number, maxShare?: number, minConfidence?: number }} SamRule
@@ -41,9 +41,12 @@ const THEME_WANTS_MARKS =
  * The SAM rules for one area: the asset class's rules for its zone plus the stray text/logo
  * check, minus concepts the theme asks for.
  */
-export function samRulesFor(assetClassId, zone, theme = '') {
+export function samRulesFor(assetClassId, zone, theme = '', partName = '') {
   const table = getAssetClass(assetClassId)?.samCheck;
-  const list = (table && zone && table[zone]) || [];
+  // '*': rules for areas with no zone of their own (named mesh parts), unless the part's
+  // name matches table.skipNames (a vehicle's wheels may of course show a wheel).
+  const any = table?.['*'] && !(table.skipNames && table.skipNames.test(splitWords(`${zone ?? ''} ${partName ?? ''}`)));
+  const list = (table && zone && table[zone]) || (any ? table['*'] : []);
   const t = String(theme).toLowerCase();
   const zoneRules = list
     .map((r) => (typeof r === 'string' ? { concept: r } : r))
