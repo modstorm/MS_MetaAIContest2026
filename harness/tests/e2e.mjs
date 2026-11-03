@@ -444,6 +444,18 @@ try {
     assert.match(edit.prompt, /Add tiny snowflakes/);
     assert.match(edit.prompt, /frosted ice face plate/);
     assert.match(edit.prompt, /cartoon toy robot/);
+    // Reskin again reopens the same suggestion with the last prompt: no new Muse call.
+    const n1 = calls.length;
+    await page.click('#btn-reskin');
+    await page.waitForSelector('#suggest-dialog[open]');
+    assert.match(await page.inputValue('#sugg-prompt'), /Add tiny snowflakes/);
+    assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
+    assert.equal(calls.length, n1, 'no Muse call to reopen the suggestion');
+    // New theme… goes back to the prompt popup.
+    await page.click('#sugg-new');
+    await page.waitForSelector('#prompt-dialog[open]');
+    assert.ok(!(await page.isVisible('#suggest-dialog')));
+    await page.click('#prompt-cancel');
     // A new theme on the same model reuses what Muse saw: one text-only call, no renders.
     const n0 = calls.length;
     const again = await page.evaluate(async () => {

@@ -213,6 +213,7 @@ function renderZones(areas) {
 async function load(input, name) {
   try {
     const { model } = await plugin.postModel(input, { name });
+    lastSuggestion = null; // a new model needs a new look from Muse
     viewer.setContent(model.scene, model.gltf.animations);
     if (viewer.clip)
       log(`Playing animation "${viewer.clip.name || 'unnamed'}" (${model.gltf.animations.length} in file)`);
@@ -435,7 +436,23 @@ function openPrompt() {
   promptText.focus();
 }
 
-$('btn-reskin').onclick = openPrompt;
+// Reskin again after a run with Muse's suggestion: reopen that suggestion (what Muse sees and the
+// last detailed prompt) instead of asking Muse again. "New theme…" in the popup starts over.
+let lastSuggestion = null; // { theme, suggestion, prompt }
+function reskinClick() {
+  if (!lastSuggestion || plugin.isBusy || missingKey()) return openPrompt();
+  if (dialog.open) dialog.close();
+  promptText.value = lastSuggestion.theme;
+  openRun(lastSuggestion.theme);
+  showSuggestion(lastSuggestion.suggestion, lastSuggestion.prompt);
+  $('prompt-stage').textContent = 'Same suggestion as last time: edit the prompt if you like, then paint.';
+}
+$('btn-reskin').onclick = reskinClick;
+$('sugg-new').onclick = () => {
+  lastSuggestion = null;
+  closeSuggestion(false);
+  openPrompt();
+};
 $('prompt-cancel').onclick = () => dialog.close();
 
 function suggestEnabled() {
@@ -476,6 +493,7 @@ $('prompt-form').addEventListener('submit', (e) => {
     return;
   }
   dialog.close();
+  lastSuggestion = null;
   openRun(prompt);
   if (suggestEnabled()) runSuggest(prompt);
   else runReskin(prompt);
@@ -558,7 +576,7 @@ $('run-cancel').onclick = () => {
   }
 };
 
-function showSuggestion(s) {
+function showSuggestion(s, prompt = s.prompt) {
   pending = s;
   const sheet = $('sugg-sheet');
   sheet.innerHTML = '';
@@ -568,7 +586,7 @@ function showSuggestion(s) {
   $('sugg-parts').innerHTML = (s.parts ?? [])
     .map((p) => `<span title="${escapeHtml(p.description ?? '')}">${escapeHtml(p.name)}</span>`)
     .join('');
-  $('sugg-prompt').value = s.prompt;
+  $('sugg-prompt').value = prompt;
   $('sugg-tips').textContent = s.tips ?? '';
   const regions = Object.entries(s.plans ?? {}).flatMap(([slotId, plan]) => {
     const name = plugin.layout?.slots.find((x) => x.id === slotId)?.name ?? slotId;
@@ -765,10 +783,13 @@ async function runSuggest(prompt) {
 
 $('run-go').onclick = () => {
   const text = $('sugg-prompt').value.trim() || promptText.value.trim();
+  if (pending) lastSuggestion = { theme: promptText.value.trim(), suggestion: pending, prompt: text };
   closeSuggestion(true);
   runReskin(text, pending);
 };
 $('prompt-original').onclick = () => {
+  if (pending)
+    lastSuggestion = { theme: promptText.value.trim(), suggestion: pending, prompt: $('sugg-prompt').value.trim() };
   closeSuggestion(true);
   runReskin(promptText.value.trim(), pending);
 };
