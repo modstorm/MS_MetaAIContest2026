@@ -844,6 +844,62 @@ button.on {
   margin-top: 10px;
 }
 
+/* Mic in the Theme box: speak the theme (Muse Voice Transcribe). */
+.theme-input {
+  position: relative;
+}
+.theme-input #prompt-text {
+  padding-right: 46px;
+}
+.mic-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 10px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #1a1d26;
+  color: var(--text);
+  cursor: pointer;
+}
+button.mic-btn:hover:not(:disabled) {
+  background: #1a1d26;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.mic-btn.recording,
+button.mic-btn.recording:hover:not(:disabled) {
+  background: #e5484d;
+  border-color: #e5484d;
+  color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+.mic-btn.working {
+  opacity: 0.6;
+  cursor: progress;
+}
+@keyframes mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(229, 72, 77, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mic-btn.recording {
+    animation: none;
+  }
+}
+.mic-status {
+  margin: 4px 0 0;
+}
+
 /* Prompt popup footer (Cancel / Reskin) stays at the bottom while the rest scrolls. */
 .dialog-foot {
   position: sticky;
@@ -1034,4 +1090,14 @@ button.on {
 }
 .theme-box:not([open]) > summary {
   margin-bottom: 4px;
+}
+
+.change-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.change-row input {
+  flex: 1;
+  min-width: 0;
 }

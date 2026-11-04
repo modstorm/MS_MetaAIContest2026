@@ -437,6 +437,7 @@ function openPrompt() {
     : '';
   $('provider-label').textContent = `Backend: ${plugin.getProvider().name}`;
   $('suggest-row').hidden = !plugin.canSuggest;
+  $('mic-btn').hidden = !micAvailable();
   if (runDialog.open && !plugin.isBusy) runDialog.close();
   themeChanged();
   $('theme-box').open = !(pending && suggestEnabled() && !needsSuggestion());
@@ -450,6 +451,101 @@ $('prompt-cancel').onclick = () => {
   dialog.close();
 };
 dialog.addEventListener('cancel', () => suggesting && plugin.cancel());
+dialog.addEventListener('close', () => stopMic(true));
+
+// ---- mic: speak the theme. The browser records, Muse Voice Transcribe (through the plugin's
+// postVoice) writes it into the Theme box, then Muse reviews it as if it had been typed.
+const MIC_MAX_MS = 30_000;
+let mic = null; // { recorder, stream, chunks, timer, discard } while recording
+let transcribing = false;
+
+function micAvailable() {
+  return plugin.canTranscribe && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
+}
+
+function setMicState(state, text = '', error = false) {
+  const btn = $('mic-btn');
+  btn.classList.toggle('recording', state === 'recording');
+  btn.classList.toggle('working', state === 'working');
+  btn.title = state === 'recording' ? 'Stop and use what I said' : 'Speak the theme (Muse Voice Transcribe)';
+  btn.setAttribute('aria-pressed', String(state === 'recording'));
+  $('mic-status').hidden = !text;
+  $('mic-status').textContent = text;
+  $('mic-status').classList.toggle('warn-text', error);
+}
+
+$('mic-btn').addEventListener('click', () => {
+  if (transcribing) return;
+  if (mic) return stopMic();
+  startMic();
+});
+
+async function startMic() {
+  if (missingKey()) {
+    dialog.close();
+    updateKeyBanner(true);
+    log('No Muse API key: add MUSE_API_KEY to .env and restart "npm run dev" (or paste a key in Settings).', 'error');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (err) {
+    setMicState(
+      'idle',
+      `The microphone is not available: ${err.message}. Allow it in the browser and try again.`,
+      true,
+    );
+    return;
+  }
+  const recorder = new MediaRecorder(stream);
+  const m = (mic = { recorder, stream, chunks: [], discard: false });
+  recorder.ondataavailable = (e) => e.data.size && m.chunks.push(e.data);
+  recorder.onstop = () => {
+    clearTimeout(m.timer);
+    for (const t of m.stream.getTracks()) t.stop();
+    if (mic === m) mic = null;
+    if (m.discard) return setMicState('idle');
+    transcribeTheme(new Blob(m.chunks, { type: recorder.mimeType || 'audio/webm' }));
+  };
+  recorder.start();
+  m.timer = setTimeout(() => stopMic(), MIC_MAX_MS);
+  setMicState('recording', 'Listening… say the theme, then press the mic again.');
+}
+
+/** Stops recording; `discard` drops the audio (popup closed). */
+function stopMic(discard = false) {
+  if (!mic) return;
+  mic.discard = discard;
+  if (mic.recorder.state !== 'inactive') mic.recorder.stop();
+}
+
+async function transcribeTheme(audio) {
+  transcribing = true;
+  setMicState('working', 'Muse is listening back…');
+  try {
+    const { text } = await plugin.postVoice(audio, { languageBias: ['English'] });
+    if (!text) {
+      setMicState('idle', "Muse didn't catch any words. Try again a little closer to the mic.", true);
+      return;
+    }
+    log(`🎙️ Muse heard: "${text}"`);
+    promptText.value = text;
+    setMicState('idle', `Heard: "${text}"`);
+    themeChanged();
+    // Spoken theme goes straight to Muse's review (never straight to paint).
+    if (dialog.open && needsSuggestion() && !suggesting) askMuse(text);
+    else promptText.focus();
+  } catch (err) {
+    setMicState('idle', `Muse Voice Transcribe failed: ${err.message}`, true);
+    log(`Muse Voice Transcribe failed: ${err.message}`, 'error');
+  } finally {
+    transcribing = false;
+    $('mic-btn').classList.remove('working');
+  }
+}
 
 function suggestEnabled() {
   return plugin.canSuggest && $('opt-suggest').checked;
@@ -694,6 +790,7 @@ function paintOptions() {
     maxTextureSize: Number($('opt-size').value),
     samCheck: $('opt-sam').checked,
     samZones: $('opt-sam-zones').checked,
+    paintFace: $('opt-paint-face').checked,
   };
 }
 
@@ -1050,7 +1147,7 @@ $('compare-handle').addEventListener('pointerdown', (e) => {
 });
 
 viewer.onSpinChange = (on) => $('btn-spin').classList.toggle('on', on);
-$('btn-spin').onclick = () => viewer.setSpin(!viewer.controls.autoRotate);
+$('btn-spin').onclick = () => viewer.spinFromButton(!viewer.controls.autoRotate);
 
 // ------------------------------------------------------------------ history + undo
 function renderHistory(h) {
@@ -1076,7 +1173,13 @@ function renderHistory(h) {
   };
   add(-1, 'Original', h.originalThumb);
   h.entries.forEach((e, i) =>
-    add(i, `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`, e.thumb),
+    add(
+      i,
+      e.change
+        ? `Change: ${e.change}`
+        : `${e.prompt}${e.of > 1 ? ` · v${e.variant + 1}` : ''}${e.fixes ? ' · fixed' : ''}`,
+      e.thumb,
+    ),
   );
   $('btn-undo').disabled = h.index < 0;
   $('btn-redo').disabled = h.index >= h.entries.length - 1;
@@ -1088,6 +1191,24 @@ const undo = () => {
 const redo = () => {
   plugin.redo();
   if (compareOn) setCompare(true);
+};
+// Change request on the shown result: Muse picks the areas, only those are repainted.
+$('change-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $('change-text').value.trim();
+  if (!text || plugin.isBusy) return;
+  $('btn-change').disabled = true;
+  try {
+    const r = await plugin.postChange(text);
+    log(
+      `Change "${text}": repainted ${Object.keys(r.change.areas).join(', ')}${r.change.summary ? ` (${r.change.summary})` : ''}`,
+    );
+    $('change-text').value = '';
+  } catch (err) {
+    log(`Change failed: ${err.message}`, 'error');
+  } finally {
+    $('btn-change').disabled = false;
+  }
 };
 $('btn-undo').onclick = undo;
 $('btn-redo').onclick = redo;

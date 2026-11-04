@@ -81,6 +81,14 @@
  * @property {boolean} [useVisionPlanning] Ask the vision model to describe atlas regions first. Default true.
  * @property {number} [maxTextureSize] Longest side of generated textures. Default: source size, capped at 2048.
  * @property {string} [extraInstructions] Free text appended to the model prompt.
+ * @property {string | string[] | null} [userRules] The user's own hard rules (e.g. the editor's Context:
+ *   "don't paint the windows"). Also on postSuggest. Sent unchanged and first in every Muse call
+ *   (suggestion, every paint prompt, review) as "MOST IMPORTANT RULE (from the user): …"; they
+ *   are never rewritten by Muse. They stay for later calls until another value is passed
+ *   (null or [] clears them).
+ * @property {boolean} [prefetchAreaThemes] postSuggest only: ask for the per-area theme split of
+ *   the suggested prompt right away, so painting that prompt starts sooner. For editors that
+ *   paint suggestion.prompt unchanged. Default false.
  * @property {'gltf' | 'image'} [imageOrder] Row order of the canvases handed out (slot results, their maps, textureUpdated).
  *   'gltf' (default): as stored on the model (glTF, top row = v 0). 'image': flipped into ordinary image order (top row = v 1),
  *   ready to save as image files. Defaults to what postModel was given. The model's own textures never change.
@@ -110,6 +118,8 @@
  * @property {boolean} [plainNarrowStrips] Narrow pieces between two limbs (inseam strip) get the plain fabric color. Default true.
  * @property {{ image: CanvasImageSource, slot?: string, rect?: number[], flipY?: boolean }[]} [templates] Artists' templates (panel outlines and labels laid out like the texture); each area is sent to Muse with its part of the template. Also settable for every run with plugin.setProfile({ templates, panels }).
  * @property {{ zone?: string, area?: string, slot?: string, facing: 'front' | 'back', rect: number[] }[]} [panels] Exact front / back panels in texture fractions [u0, v0, u1, v1], used instead of reading them from the 3D data.
+ * @property {boolean} [paintFace] Paint the face with the theme too: keep rects named "face" (opts.keepRects or the profile's `keep`) are dropped, and kept skin (rects named hands/skin) keeps its shape and shading but takes the painted face's new skin color (a zombie's green hands).
+ * @property {{ rect: number[], slot?: string, name?: string, skinOnly?: boolean }[]} [keepRects] Never-painted rects in texture fractions [u0, v0, u1, v1] measured from the top of the image (a game avatar's face and hands): areas all inside them get no Muse call, and their original pixels are put back. With `skinOnly` (default on when the name says hands or skin) only the pixels in the shades of the rect's main skin tone are put back, so a sleeve reaching into the rect keeps its paint. Also settable for every run as `keep` in plugin.setProfile({ templates, panels, keep }).
  * @property {string[]} [locked] Area names that keep their current paint (default: plugin.locked).
  * @property {number} [edgePadding] Pixels (at 1024px) to grow island colors into gaps, against seams. Default 12; 0 = off.
  * @property {Suggestion} [suggestion] Result of postSuggest: its per-region plans are used instead of a new layout reading.
@@ -127,6 +137,10 @@
  * @property {string} [tips]
  * @property {HTMLCanvasElement} sheet The six-view contact sheet that was sent.
  * @property {{ name: string, axis: string, canvas: HTMLCanvasElement }[]} views
+ * @property {Record<string, string>} [partRoles] What Muse says each listed part is, judged from
+ *   the renders: 'body' | 'wheel' | 'tyre' | 'light' | 'glass' | 'trim' | 'interior' | 'other'.
+ *   Used before part names for the vehicle rules and body panels.
+ * @property {ThinkingEntry[]} [thinking] What was decided and asked while making this suggestion.
  */
 
 /**
@@ -205,6 +219,33 @@
  * @property {number} durationMs
  * @property {{ reskin: object, session: object, reskinCost: number, sessionCost: number, text: string }} [usage]
  *   Muse usage so far for this reskin (suggestion + paint) and the session, with cost estimates in dollars.
+ * @property {ThinkingEntry[]} thinking What was decided and asked during this call, in order
+ *   (also on Suggestion.thinking, postReview()'s `thinking`, and live as 'thinking' events).
+ */
+
+/**
+ * One step of "what Muse is thinking", for an editor to show. Every entry has
+ * `step`, `text` (one readable line) and `at` (ms timestamp); the other fields depend on the step:
+ * - 'identify': Muse looked at the six views. subject, assetClass, prompt, parts, plans.
+ * - 'assetClass': the class used. assetClass, source ('set by the editor' | 'Muse identified it' |
+ *   'guessed from names'), rules (string[] sent to Muse), paintMode, detailPreserve, samZones.
+ * - 'zones': SAM 3.1 zones found. zones (per slot summary), notSeen (concepts not found).
+ * - 'plan': the paint plan of one texture. slotId, slotName, mode ('parts' | 'atlas'),
+ *   areas: { name, zone?, action: 'paint' | 'keep' | 'reuse', why?, mergedFrom?, paint? }[].
+ * - 'ask': a question to Muse Spark. model, url, status, ms, ok, question, instructions, error?.
+ * - 'paint': one Muse Image request. model, url, status, ms, ok, prompt (the exact text sent), error?.
+ * - 'kept': vehicle lights / tyre treads given back their original pixels. slotId, slotName,
+ *   lightTriangles, treadTriangles, keptPixels, share (of the texture), bodyColorRepaintedPixels,
+ *   oldBodyColor ([r, g, b] or null).
+ * - 'parts': what each part is for the vehicle rules. decisions: { name, role, source: 'Muse' |
+ *   'Muse (over its name)' | 'SAM' | 'name', wheels? }[], rejected: { name, reason }[]
+ *   (a "wheel" that isn't round, or a "light" too big to be one, is painted).
+ * - 'check': the final texture compared with the plan. unpainted: { area, share }[] (areas
+ *   over `limit` that still show the original; the next review asks to repaint them).
+ * - 'review': the review of the result. issues ({ area, problem, fix }[]), lessons, learned.
+ * - 'note': every 'warning' message, so the log reads in one place.
+ * - 'voice': a spoken theme transcribed by Muse Voice Transcribe (postVoice). text, durationMs.
+ * @typedef {{ step: string, text: string, at: number } & Record<string, any>} ThinkingEntry
  */
 
 /**

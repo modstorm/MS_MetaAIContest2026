@@ -121,12 +121,13 @@ function paintAtlas() {
  * Test asset for UV orientation: two planes sharing one atlas. "Head" (top half of the
  * atlas) is stored upside down, "Body" (bottom half) is stored upright.
  */
-export async function buildOrientationTestGlb() {
+export async function buildOrientationTestGlb({ paint } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const g = c.getContext('2d');
   g.fillStyle = '#888';
   g.fillRect(0, 0, 256, 256);
+  paint?.(g); // optional: draw the texture (256², glTF order: top row is v = 0)
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -459,14 +460,26 @@ export async function buildBuildingTestGlb({ sharedUnderside = false } = {}) {
  * 128-256 × 256-384 red; tread 0-256 × 384-512 striped grey; sidewalls 256-384 / 384-512
  * × 384-512 mid grey.
  */
-export async function buildVehicleTestGlb() {
+export async function buildVehicleTestGlb({
+  groupName,
+  tyreWidth = 0.2,
+  openTyre = false,
+  wheelRotation = null,
+  windowPart = false,
+  mirrorName = 'MirrorLight_L',
+} = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d');
   g.fillStyle = '#2050c0';
   g.fillRect(0, 0, 512, 256);
-  g.fillStyle = '#ffe040';
+  // Headlight: a yellow lens inside a ring of body paint (the housing), and a body-colored
+  // side mirror whose name says "light" (a light finder mistake).
+  g.fillStyle = '#2050c0';
   g.fillRect(0, 256, 128, 128);
+  g.fillRect(256, 256, 128, 128);
+  g.fillStyle = '#ffe040';
+  g.fillRect(30, 286, 68, 68);
   g.fillStyle = '#e02020';
   g.fillRect(128, 256, 128, 128);
   g.fillStyle = '#303030';
@@ -475,6 +488,10 @@ export async function buildVehicleTestGlb() {
   for (let x = 8; x < 256; x += 24) g.fillRect(x, 384, 8, 128);
   g.fillStyle = '#808080';
   g.fillRect(256, 384, 256, 128);
+  if (windowPart) {
+    g.fillStyle = '#334455'; // glass
+    g.fillRect(384, 256, 128, 128);
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -500,11 +517,24 @@ export async function buildVehicleTestGlb() {
   const head = new THREE.BoxGeometry(0.1, 0.15, 0.3);
   fit(head, [0.02, 0.52, 0.23, 0.73]);
   add(head, 'Headlight_L', [1.02, 0.65, 0.3]);
+  const mirror = new THREE.BoxGeometry(0.15, 0.1, 0.1);
+  fit(mirror, [0.52, 0.52, 0.73, 0.73]);
+  add(mirror, mirrorName, [0.6, 0.95, 0.55]);
+  if (windowPart) {
+    // A side window and a door, for paint-order tests (the window is glass, the door body).
+    const win = new THREE.BoxGeometry(0.5, 0.25, 0.02);
+    fit(win, [0.77, 0.52, 0.98, 0.73]);
+    add(win, 'Window_Glass', [0, 1.05, 0.5]);
+    const door = new THREE.BoxGeometry(0.6, 0.4, 0.02);
+    fit(door, [0.52, 0.02, 0.73, 0.23]);
+    add(door, 'Door_L', [0, 0.6, 0.52]);
+  }
   const tail = new THREE.BoxGeometry(0.1, 0.15, 0.3);
   fit(tail, [0.27, 0.52, 0.48, 0.73]);
   add(tail, 'TailLight_R', [-1.02, 0.65, 0.3]);
   // Wheel: axle along Z (the car's side axis here is Z: the wheel faces ±Z).
-  const wheel = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 24);
+  // openTyre: a tube with no side caps (a wide tyre: more tread than sidewall).
+  const wheel = new THREE.CylinderGeometry(0.3, 0.3, tyreWidth, 24, 1, openTyre);
   const n = wheel.getAttribute('normal');
   const isCap = (i, s) => Math.abs(n.getY(i)) > 0.9 && Math.sign(n.getY(i)) === s;
   fit(wheel, [0.02, 0.77, 0.48, 0.98], (i) => Math.abs(n.getY(i)) <= 0.9);
@@ -512,5 +542,57 @@ export async function buildVehicleTestGlb() {
   fit(wheel, [0.77, 0.77, 0.98, 0.98], (i) => isCap(i, -1));
   const w = add(wheel, 'Wheel_FL', [0.7, 0.3, 0.55]);
   w.rotation.x = Math.PI / 2;
+  // wheelRotation: the wheel imported turned some other way (axle along X, Y or tilted).
+  if (wheelRotation) w.rotation.set(...wheelRotation);
+  // An editor may group the whole car under a name like "Body + Wheel_FL".
+  if (groupName) root.name = groupName;
+  return exportGLB(root);
+}
+
+/**
+ * Test asset for the never-painted rules: a textured body with a "Badge" part, a big
+ * untextured "Glass" mesh (see-through, like a game car's windows) and an "Optics" mesh with
+ * its own texture (all the lights of the car in one picture).
+ */
+export async function buildGlassOpticsTestGlb() {
+  const tex = (color) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = color;
+    g.fillRect(0, 0, 128, 128);
+    g.fillStyle = '#ffee00';
+    g.fillRect(0, 96, 128, 32); // the badge's corner of the body atlas
+    const t = new THREE.CanvasTexture(c);
+    t.flipY = false;
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  const root = new THREE.Group();
+  root.name = 'suv';
+  const bodyMat = new THREE.MeshStandardMaterial({ map: tex('#101010'), name: 'Body' });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2, 0.8, 1), bodyMat);
+  body.name = 'Body';
+  const uv = body.geometry.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i), uv.getY(i) * 0.7);
+  root.add(body);
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.05), bodyMat);
+  badge.name = 'Badge';
+  const buv = badge.geometry.getAttribute('uv');
+  for (let i = 0; i < buv.count; i++) buv.setXY(i, buv.getX(i), 0.8 + buv.getY(i) * 0.2);
+  badge.position.set(1.02, 0.1, 0);
+  root.add(badge);
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.4, 0.9),
+    new THREE.MeshStandardMaterial({ name: 'Glass', color: 0x050505, transparent: true, opacity: 0.81 }),
+  );
+  glass.position.set(0, 0.6, 0);
+  root.add(glass);
+  const optics = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.2, 0.9),
+    new THREE.MeshStandardMaterial({ map: tex('#e0e0e0'), name: 'Optics' }),
+  );
+  optics.position.set(1.05, 0.2, 0);
+  root.add(optics);
   return exportGLB(root);
 }

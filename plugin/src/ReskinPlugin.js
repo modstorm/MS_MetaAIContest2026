@@ -25,7 +25,7 @@ import {
 } from './analysis/facing.js';
 import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.js';
 import { findSamZones, regionData, zoneConceptsFor } from './analysis/samZones.js';
-import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass } from './assetClasses.js';
+import { assetClassRules, detectAssetClass, getAssetClass, normalizeAssetClass, splitWords } from './assetClasses.js';
 import { exportGLB, loadModel } from './io/modelIO.js';
 import { makeZip } from './io/zip.js';
 import { MuseProvider } from './providers/MuseProvider.js';
@@ -64,8 +64,33 @@ import {
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
+import {
+  fillMasked,
+  growMask,
+  horizontalRuns,
+  seamLineMask,
+  templateLineMask,
+  verticalRuns,
+} from './texture/lineCleanup.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
-import { keptShare, vehicleKeepTriangles } from './analysis/keepAreas.js';
+import {
+  WHEEL_NAME,
+  zoneHasWheel,
+  bestSquare,
+  cleanAroundLights,
+  dominantColor,
+  isColorful,
+  keepTargetsFromRules,
+  keptShare,
+  slotIsGlass,
+  namesOf,
+  nearColor,
+  sameShade,
+  sameStrongShade,
+  looksLikeGlass,
+  vehicleKeepTriangles,
+} from './analysis/keepAreas.js';
+import { toTranscribeWav } from './audio/wav.js';
 import {
   copyCanvas,
   cropCanvas,
@@ -136,6 +161,113 @@ import {
  *   await plugin.postPrompt('haunted pumpkin armor');
  *   const { glb } = await plugin.postExport();
  */
+/** Share (0..1) of a mask canvas's covered pixels (alpha >= 128) inside any of `rects`. */
+function rectShare(mask, rects) {
+  const W = mask.width,
+    H = mask.height;
+  const d = mask.getContext('2d').getImageData(0, 0, W, H).data;
+  let all = 0,
+    inside = 0;
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      if (d[(y * W + x) * 4 + 3] < 128) continue;
+      all++;
+      const u = (x + 0.5) / W,
+        v = (y + 0.5) / H;
+      if (rects.some(({ rect: [u0, v0, u1, v1] }) => u >= u0 && u < u1 && v >= v0 && v < v1)) inside++;
+    }
+  return all ? inside / all : 0;
+}
+
+/** Mean color of the most common color bin (16 levels per channel) among pixels `use(p)`. */
+function mainColor(d, use) {
+  const bins = new Map();
+  const key = (i) => ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+  for (let p = 0; p < d.length / 4; p++) {
+    if (d[p * 4 + 3] < 128 || !use(p)) continue;
+    const k = key(p * 4);
+    bins.set(k, (bins.get(k) ?? 0) + 1);
+  }
+  if (!bins.size) return null;
+  const top = [...bins].sort((a, b) => b[1] - a[1])[0][0];
+  const sum = [0, 0, 0];
+  let n = 0;
+  for (let p = 0; p < d.length / 4; p++) {
+    if (d[p * 4 + 3] < 128 || !use(p) || key(p * 4) !== top) continue;
+    for (let c = 0; c < 3; c++) sum[c] += d[p * 4 + c];
+    n++;
+  }
+  return sum.map((v) => v / n);
+}
+
+/**
+ * Which pixels of a rect of `canvas` have the rect's main skin tone (any shade of it: same
+ * hue mix, lighter or darker): a 0/1 array over the rect, or null when the rect's main color is
+ * not a skin-like color (then the whole rect is kept).
+ */
+function skinPixels(canvas, x, y, w, h) {
+  const d = ctx2d(canvas).getImageData(x, y, w, h).data;
+  const bins = new Map();
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    if (d[i + 3] < 128) continue;
+    const key = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+    bins.set(key, (bins.get(key) ?? 0) + 1);
+  }
+  if (!bins.size) return null;
+  const top = [...bins].sort((a, b) => b[1] - a[1])[0][0];
+  let r = 0,
+    gr = 0,
+    b = 0,
+    n = 0;
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    if (d[i + 3] < 128 || (((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4)) !== top) continue;
+    r += d[i];
+    gr += d[i + 1];
+    b += d[i + 2];
+    n++;
+  }
+  r /= n;
+  gr /= n;
+  b /= n;
+  const sum = r + gr + b;
+  // A grey or black main color is no skin tone to match: keep the whole rect.
+  if (!sum || (Math.max(r, gr, b) - Math.min(r, gr, b)) / Math.max(r, gr, b) < 0.15) return null;
+  const tr = r / sum,
+    tg = gr / sum,
+    tb = b / sum;
+  const out = new Uint8Array(w * h);
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    const s = d[i] + d[i + 1] + d[i + 2];
+    if (d[i + 3] < 128 || !s) continue;
+    const shade = s / sum;
+    if (shade < 0.35 || shade > 1.3) continue;
+    const dc = Math.max(Math.abs(d[i] / s - tr), Math.abs(d[i + 1] / s - tg), Math.abs(d[i + 2] / s - tb));
+    if (dc <= 0.035) out[q] = 1;
+  }
+  return out;
+}
+
+/** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
+const KEEP_MEMO = new Map();
+
+/** A cheap fingerprint of a model's layout: same file posted again → same string. */
+function modelSignature(layout) {
+  return (layout?.slots ?? [])
+    .map((s) => {
+      const img = s.texture?.image;
+      const meshes = s.meshes.map((m) => {
+        const pos = m.geometry.getAttribute('position');
+        const head = pos ? Array.from(pos.array.slice(0, 12), (v) => v.toFixed(3)).join(',') : '';
+        return `${pos?.count ?? 0}:${head}`;
+      });
+      return `${img?.width ?? 0}x${img?.height ?? 0}[${meshes.join(';')}]`;
+    })
+    .join('|');
+}
+
 export class ReskinPlugin {
   provider;
   listeners = new Map();
@@ -149,6 +281,8 @@ export class ReskinPlugin {
   samOff = false;
   /** Paint zones found by SAM 3.1, per slot id (see findZones; cleared with a new model). */
   samZones = new Map();
+  /** SAM zones per slot used only to find what is never painted (glass, lights, the user's "don't paint X"). */
+  keepZones = new Map();
   /** Use SAM-found zones for models without a profile (setSamZones / opts.samZones). */
   samZonesOn = false;
   /** Art-director suggestions per theme for the current model. */
@@ -204,8 +338,54 @@ export class ReskinPlugin {
   }
 
   emit(type, data) {
+    if (type === 'warning' && data?.message) this.think('note', data.message);
     for (const cb of this.listeners.get(type) ?? []) safeCall(cb, data);
     for (const cb of this.anyListeners) safeCall(cb, { type, data });
+  }
+
+  /** One Muse request as a thinking entry: the exact image prompt, or the question asked. */
+  thinkExchange(info) {
+    const req = info?.request ?? {};
+    const ok = !info.error && (info.status == null || info.status < 400);
+    const meta = { url: info.url, model: req.model, status: info.status, ms: Math.round(info.ms ?? 0), ok };
+    if (info.error) meta.error = String(info.error?.message ?? info.error).slice(0, 300);
+    if (/images\//.test(info.url ?? '') && typeof req.prompt === 'string') {
+      this.think('paint', `Asked Muse Image to paint${ok ? '' : ' (failed)'}`, { ...meta, prompt: req.prompt });
+      return;
+    }
+    const msgs = req.messages ?? req.input;
+    if (Array.isArray(msgs)) {
+      const textOf = (m) =>
+        typeof m?.content === 'string'
+          ? m.content
+          : (m?.content ?? [])
+              .map((c) => c?.text ?? '')
+              .filter(Boolean)
+              .join('\n');
+      const last = [...msgs].reverse().find((m) => m?.role === 'user');
+      const system = msgs.find((m) => m?.role === 'system');
+      this.think('ask', `Asked ${req.model ?? 'Muse'}${ok ? '' : ' (failed)'}`, {
+        ...meta,
+        question: textOf(last).slice(0, 8000),
+        instructions: system ? textOf(system).slice(0, 8000) : undefined,
+      });
+    }
+  }
+
+  /**
+   * What the plugin and Muse decided, step by step, for an editor to show ("what Muse is
+   * thinking"). Each entry is emitted as a 'thinking' event and collected in the result's
+   * `thinking` array (postSuggest, postPrompt, postReview). See types.js ThinkingEntry.
+   * @param {string} step 'identify' | 'assetClass' | 'zones' | 'plan' | 'ask' | 'paint' | 'kept' | 'review' | 'note'
+   * @param {string} text one readable line
+   * @param {object} [data] details for that step
+   */
+  think(step, text, data = {}) {
+    const entry = { step, text, at: Date.now(), ...data };
+    (this.thinkingLog ??= []).push(entry);
+    if (this.thinkingLog.length > 500) this.thinkingLog.shift();
+    for (const cb of this.listeners.get('thinking') ?? []) safeCall(cb, entry);
+    for (const cb of this.anyListeners) safeCall(cb, { type: 'thinking', data: entry });
   }
 
   status(state, message) {
@@ -218,7 +398,10 @@ export class ReskinPlugin {
     this.provider = provider;
     // Surface every raw model request (images shortened) as a `request` event, for debugging.
     if (provider?.client && 'onExchange' in provider.client) {
-      provider.client.onExchange = (info) => this.emit('request', info);
+      provider.client.onExchange = (info) => {
+        this.emit('request', info);
+        this.thinkExchange(info);
+      };
     }
     if (provider?.client && 'onUsage' in provider.client) {
       provider.client.onUsage = (u) => this.recordUsage(u);
@@ -360,6 +543,8 @@ export class ReskinPlugin {
       this.planCache.clear();
       this.samCache.clear();
       this.samZones.clear();
+      this.keepZones.clear();
+      this.keepZonesKey = null;
       this.suggestionCache.clear();
       this.modelAnalysis = null;
       this.topBottomNoted = null;
@@ -495,6 +680,39 @@ export class ReskinPlugin {
     }
   }
 
+  // ---------------------------------------------------------------- post: voice
+
+  /** True if the current provider can turn speech into text (postVoice). */
+  get canTranscribe() {
+    return typeof this.provider.transcribe === 'function';
+  }
+
+  /**
+   * Speech -> text with Muse Voice Transcribe, e.g. to speak a theme. `audio` is any
+   * recording the browser can decode (MediaRecorder webm/opus or mp4, or a WAV); it is
+   * converted to 16 kHz mono WAV first. Nothing is painted, and no model is needed.
+   * Emits 'transcript' with the result. Does not block (or get blocked by) a reskin.
+   * @param {Blob} audio
+   * @param {{ signal?: AbortSignal, languageBias?: string[], keywords?: string[] }} [opts]
+   * @returns {Promise<{ text: string, durationMs: number }>}
+   */
+  async postVoice(audio, opts = {}) {
+    if (!this.canTranscribe) throw new Error(`${this.provider.name} cannot transcribe speech`);
+    if (!(audio instanceof Blob) || !audio.size) throw new Error('postVoice needs a recorded audio Blob');
+    const { wav, durationMs } = await toTranscribeWav(audio);
+    if (durationMs < 300) throw new Error('The recording is too short: hold the mic a little longer');
+    const res = await this.provider.transcribe({
+      audio: wav,
+      signal: opts.signal,
+      languageBias: opts.languageBias,
+      keywords: opts.keywords,
+    });
+    const out = { text: res.text, durationMs: res.durationMs || durationMs };
+    this.think('voice', `Heard: "${out.text}"`, { durationMs: out.durationMs });
+    this.emit('transcript', out);
+    return out;
+  }
+
   // ---------------------------------------------------------------- post: prompt
 
   /** True if the current provider can recommend prompts (postSuggest). */
@@ -520,7 +738,11 @@ export class ReskinPlugin {
     if (!theme) throw new Error('Prompt is empty');
     this.startReskinUsage(); // a suggestion starts a new reskin; the paint that follows adds to it
     this.usageAfterSuggest = true;
-    const cached = this.suggestionCache.get(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`);
+    this.setUserRules(opts.userRules);
+    const thinkStart = (this.thinkingLog ??= []).length;
+    const cached = this.suggestionCache.get(
+      `${theme}|${JSON.stringify(opts.orientation ?? 'auto')}|${(this.userRules ?? []).join('|')}`,
+    );
     if (cached) {
       this.emit('suggestion', cached);
       return cached;
@@ -556,6 +778,7 @@ export class ReskinPlugin {
         raw.subject ||= an.subject;
         raw.assetClass ||= an.assetClass;
         if (!raw.parts?.length) raw.parts = an.parts;
+        raw.partRoles ??= an.partRoles;
         if (!raw.atlases?.length) raw.atlases = an.atlases;
       } else {
         this.restoreSnapshots(); // study the original look
@@ -625,6 +848,7 @@ export class ReskinPlugin {
           subject: raw.subject,
           assetClass: raw.assetClass,
           parts: raw.parts,
+          partRoles: raw.partRoles,
           atlases: (raw.atlases ?? []).map((a) => ({
             index: a.index,
             regions: (a.regions ?? []).map((r) => ({ name: r.name, bbox: r.bbox })),
@@ -649,8 +873,21 @@ export class ReskinPlugin {
         for (const r of plan.regions) r.description = r.description && sanitizePrompt(r.description);
       }
       const suggestion = { ...raw, theme, prompt: sanitizePrompt(raw.prompt || theme), plans, sheet, idSheet, views };
-      this.suggestionCache.set(`${theme}|${JSON.stringify(opts.orientation ?? 'auto')}`, suggestion);
+      this.suggestionCache.set(
+        `${theme}|${JSON.stringify(opts.orientation ?? 'auto')}|${(this.userRules ?? []).join('|')}`,
+        suggestion,
+      );
+      this.prefetchAreaThemes(suggestion, opts);
       this.emit('progress', { stage: 'plan', message: 'Suggestion ready', progress: 1 });
+      this.think('identify', `Muse sees: ${suggestion.subject || 'unknown object'}`, {
+        subject: suggestion.subject,
+        assetClass: suggestion.assetClass,
+        prompt: suggestion.prompt,
+        parts: suggestion.parts,
+        partRoles: suggestion.partRoles ?? null,
+        plans: suggestion.plans,
+      });
+      suggestion.thinking = this.thinkingLog.slice(thinkStart);
       this.emit('suggestion', suggestion);
       this.status('idle', `Muse sees: ${suggestion.subject || 'unknown object'}`);
       return suggestion;
@@ -673,6 +910,8 @@ export class ReskinPlugin {
     this.guard();
     if (!this.model || !this.layout) throw new Error('Post a model before posting a prompt');
     const theme = prompt.trim();
+    const thinkStart = (this.thinkingLog ??= []).length;
+    this.setUserRules(opts.userRules);
     if (!theme) throw new Error('Prompt is empty');
     // A new reskin starts its own cost tally, unless it follows its suggestion or is a review fix.
     if (!opts.fixes && !(this.usageAfterSuggest && opts.suggestion)) this.startReskinUsage();
@@ -693,7 +932,7 @@ export class ReskinPlugin {
       if (opts.imageReasoning !== undefined) this.provider.setImageReasoning?.(opts.imageReasoning);
       this.samOff = false;
       this.status('reskinning', `Reskinning with "${theme}" via ${this.provider.name}…`);
-      opts = { ...opts, assetClass: this.resolveAssetClass(opts) };
+      opts = { ...opts, assetClassGiven: opts.assetClass, assetClass: this.resolveAssetClass(opts) };
       // Start from the original look every time, so prompts don't compound. A retry of
       // some slots (opts.slotIds) only resets those; the others keep their paint.
       this.restoreSnapshots(
@@ -703,12 +942,36 @@ export class ReskinPlugin {
 
       this.areaClass = opts.assetClass;
       this.emit('assetClass', { id: opts.assetClass, label: getAssetClass(opts.assetClass)?.label });
+      {
+        const given = opts.assetClassGiven;
+        const source =
+          given && given !== 'auto'
+            ? 'set by the editor'
+            : normalizeAssetClass(opts.suggestion?.assetClass)
+              ? 'Muse identified it'
+              : 'guessed from names';
+        this.think(
+          'assetClass',
+          `Painting it as ${getAssetClass(opts.assetClass)?.label ?? opts.assetClass} (${source})`,
+          {
+            assetClass: opts.assetClass,
+            source,
+            rules: assetClassRules(opts.assetClass),
+            paintMode: opts.paintMode ?? 'auto',
+            detailPreserve: opts.detailPreserve ?? 0.35,
+            samZones: this.samZonesActive,
+          },
+        );
+      }
 
       // SAM zones: found once per model (the model shows its original look here).
       if (opts.samZones !== undefined) this.setSamZones(opts.samZones);
       if (this.samZonesActive && !opts.fixes && this.slotsWithoutSamZones().length) {
         await this.findZones(opts, signal);
       }
+      // What must never be painted (windows, lights, the user's "don't paint X"), found by SAM
+      // when the paint areas did not come from SAM. Once per model.
+      if (!opts.fixes) await this.findKeepZones(opts, signal);
 
       const wanted = (s) => !opts.slotIds || opts.slotIds.includes(s.id);
       // Small untextured parts (a button, an eye, an antenna ball) are tinted locally
@@ -731,7 +994,26 @@ export class ReskinPlugin {
         this.emit('warning', { message: 'Generated box-projected UVs for meshes without UVs.' });
       }
 
-      const remote = this.layout.slots.filter((s) => wanted(s) && !localIds.has(s.id));
+      // Never painted: a glass texture slot (the windows), and a vehicle texture that is all
+      // lights (an "Optics" atlas). They keep their original look and cost no Muse call.
+      const neverPainted = new Map();
+      for (const s of this.layout.slots) {
+        if (!wanted(s)) continue;
+        const why = this.slotNeverPainted(s, opts);
+        if (why) neverPainted.set(s.id, why);
+      }
+      for (const s of this.layout.slots.filter((x) => neverPainted.has(x.id))) {
+        localIds.delete(s.id);
+        const why = neverPainted.get(s.id);
+        this.think('kept', `"${s.name}" is ${why}: never painted, keeps its original look`, {
+          slotId: s.id,
+          slotName: s.name,
+          why,
+          share: 1,
+        });
+        this.emit('warning', { message: `"${s.name}" is ${why}, so it keeps its original look (never painted).` });
+      }
+      const remote = this.layout.slots.filter((s) => wanted(s) && !localIds.has(s.id) && !neverPainted.has(s.id));
       const local = this.layout.slots.filter((s) => localIds.has(s.id));
       const fractions = remote.map(() => 0);
       const progress = (i, frac, stage, message, slotId) => {
@@ -809,10 +1091,11 @@ export class ReskinPlugin {
         durationMs: performance.now() - started,
         variations: entries.map(({ id, variant, thumb }) => ({ id, variant, thumb })),
         usage: this.getUsage(),
+        thinking: this.thinkingLog.slice(thinkStart),
       };
       this.lastResult = result;
       this.lastPrompt = theme;
-      const { signal: _s, fixes: _f, ...runOpts } = opts;
+      const { signal: _s, fixes: _f, changeRequest: _c, editAtlas: _e, ...runOpts } = opts;
       this.lastRun = { theme, opts: runOpts };
       this.emit('progress', { stage: 'done', message: 'Done', progress: 1 });
       this.emit('reskinned', result);
@@ -901,9 +1184,22 @@ export class ReskinPlugin {
           const guide =
             rawParts.length > 1
               ? drawPartMap(slot, rawParts, original.width, original.height)
-              : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
+              : // Filled islands only: Muse copied drawn triangle edges into the paint (the van's
+                // wireframe lines).
+                drawUvGuide(slot, original.width, original.height, { wireframe: false });
           const uvGuide = transformCanvas(guide, orient);
-          const sendAtlas = transformCanvas(original, orient);
+          // A change request on a one-pass result: Muse edits the current paint, not the original.
+          const editFrom = opts.changeRequest ? opts.editAtlas?.get(slot.id) : null;
+          const sendAtlas = transformCanvas(
+            editFrom
+              ? resizeCanvas(
+                  textureToCanvas({ image: editFrom }, Math.max(original.width, original.height)),
+                  original.width,
+                  original.height,
+                )
+              : original,
+            orient,
+          );
           const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
           const suggested = opts.suggestion?.plans?.[slot.id];
           if (suggested) {
@@ -937,6 +1233,12 @@ export class ReskinPlugin {
               this.emit('warning', { message: `Layout planning skipped: ${toError(err).message}` });
             }
             this.emit('plan', { slotId: slot.id, plan });
+            this.think('plan', `"${slot.name}": one picture for the whole texture`, {
+              slotId: slot.id,
+              slotName: slot.name,
+              mode: 'atlas',
+              areas: (plan?.regions ?? []).map((r) => ({ name: r.name, action: 'paint', paint: r.description })),
+            });
           }
           report(0.2, 'generate', `Painting "${slot.name}" (${width}×${height})`);
           raw = await this.toCanvas(
@@ -953,6 +1255,9 @@ export class ReskinPlugin {
                 extraInstructions: plain
                   ? undefined
                   : [
+                      editFrom
+                        ? `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change to image 1 and keep everything else in it exactly the same.`
+                        : null,
                       opts.extraInstructions,
                       ...this.rulesFor(
                         opts.assetClass,
@@ -1055,6 +1360,44 @@ export class ReskinPlugin {
       await this.fillTopBottom(slot, baseColor, original, theme, opts, signal);
     }
     const islandMap = atlasMode ? islandIdMap(slot, width, height) : null;
+    // Artists' template outlines and labels that Muse copied (thin light lines on the toy's
+    // trousers): those pixels take the paint on both sides of the line.
+    const tplForLines =
+      atlasMode && opts.cleanTemplateLines !== false ? this.templateFor(slot, opts, width, height) : null;
+    if (tplForLines) {
+      const grow = Math.max(2, Math.round((3 * width) / 1024));
+      const lines = templateLineMask(tplForLines, 0);
+      // The original's own light seams inside the templated areas (the toy's knee and ankle
+      // seams), which Muse copies from the reference picture just like template lines.
+      if (original) {
+        const area = this.templateArea(slot, opts, width, height);
+        const seams = seamLineMask(resizeCanvas(original, width, height), area, {
+          reach: Math.max(2, Math.round((4 * width) / 1024)),
+          minRun: Math.max(8, Math.round((40 * width) / 1024)),
+        });
+        for (let p = 0; p < lines.length; p++) lines[p] |= seams.mask[p];
+      }
+      // Also the gutters between islands on a line (sampled at the seams through filtering).
+      let n = fillMasked(baseColor, growMask(lines, width, height, grow), null, 24, { onlyLighter: 15 });
+      // Muse sometimes paints a whole light band along a horizontal panel border (a white band
+      // across the knees): up and down a little further, only clearly lighter pixels go.
+      const horizontal = horizontalRuns(lines, width, height, Math.max(8, Math.round((40 * width) / 1024)));
+      const band = growMask(horizontal, width, height, Math.max(4, Math.round((10 * width) / 1024)), {
+        vertical: true,
+      });
+      n += fillMasked(baseColor, band, null, 32, { minStep: 30 });
+      // The same along vertical strip borders (pale streaks at the edges of trouser strips),
+      // only for paint much lighter than beside it, so stripes drawn on purpose mostly stay.
+      const vertical = verticalRuns(lines, width, height, Math.max(8, Math.round((40 * width) / 1024)));
+      const vband = growMask(vertical, width, height, Math.max(3, Math.round((8 * width) / 1024)), {
+        horizontal: true,
+      });
+      n += fillMasked(baseColor, vband, null, 24, { minStep: 45 });
+      if (n)
+        this.think('note', `"${slot.name}": removed the template's outlines and labels from the paint (${n} px)`, {
+          slotId: slot.id,
+        });
+    }
     if (islandMap && (opts.cleanTinyIslands ?? true)) {
       // Fingers, buttons and other tiny packed islands: one solid color each, no stray patterns.
       const n = flattenTinyIslands(baseColor, islandMap, opts.tinyIslandFraction ?? 0.002);
@@ -1081,7 +1424,12 @@ export class ReskinPlugin {
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
     // Areas that must never change (vehicle lights, tyre treads) get their original pixels back.
-    if (atlasMode && original) this.restoreKept(slot, baseColor, original, opts);
+    let keptAlpha = atlasMode && original ? this.restoreKept(slot, baseColor, original, opts) : null;
+    if (atlasMode && original)
+      keptAlpha = this.restoreKeepRects(slot, baseColor, original, opts, keptAlpha, faceJob?.mask, ctx.partJobs?.jobs);
+    // Check the final texture against the plan: areas meant to be painted that still show
+    // the original (Muse left them, or something put them back) are flagged for the review.
+    if (atlasMode && original) this.checkUnpainted(slot, baseColor, original, ctx.partJobs, keptAlpha, opts);
     if (islandMap && (opts.edgePadding ?? 12) > 0) {
       // Edge padding: grow island colors into the gaps so seams never sample dark pixels.
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
@@ -1540,6 +1888,23 @@ export class ReskinPlugin {
    * (slightly grown) UV area, on top of a copy of the original atlas. Returns that canvas,
    * in the atlas's own orientation.
    */
+  /** 0/1 map of the texture pixels a template covers (see templateFor), or null. */
+  templateArea(slot, opts, W, H) {
+    const list = [...(opts.templates ?? []), ...(this.profile?.templates ?? [])].filter(
+      (e) => e?.image && (!e.slot || e.slot === slot.id || e.slot === slot.name),
+    );
+    if (!list.length) return null;
+    const area = new Uint8Array(W * H);
+    for (const e of list) {
+      const [u0, v0, u1, v1] = e.rect ?? [0, 0, 1, 1];
+      const x1 = Math.min(W, Math.ceil(u1 * W)),
+        y1 = Math.min(H, Math.ceil(v1 * H));
+      for (let y = Math.max(0, Math.floor(v0 * H)); y < y1; y++)
+        for (let x = Math.max(0, Math.floor(u0 * W)); x < x1; x++) area[y * W + x] = 1;
+    }
+    return area;
+  }
+
   /**
    * Artists' templates for a slot, composed into one image at the atlas size (white where no
    * template covers it), or null. Entries come from opts.templates and the profile
@@ -1574,6 +1939,147 @@ export class ReskinPlugin {
       g.restore();
     }
     return c;
+  }
+
+  /**
+   * Never-painted rects for a slot: opts.keepRects and the profile's `keep`, each
+   * { rect: [u0, v0, u1, v1], slot?, name? } in texture fractions measured from the top of the
+   * image (the same as template rects). E.g. a game avatar's face and hands.
+   */
+  keepRectsFor(slot, opts = {}, { withFace = false } = {}) {
+    return [...(opts.keepRects ?? []), ...(this.profile?.keep ?? [])].filter(
+      (k) =>
+        Array.isArray(k?.rect) &&
+        (!k.slot || k.slot === slot.id || k.slot === slot.name) &&
+        // opts.paintFace: the face is painted with the theme (zombie, alien, face paint).
+        (withFace || !opts.paintFace || !/\bface\b/i.test(k.name ?? '')),
+    );
+  }
+
+  /**
+   * With opts.paintFace, how the face's skin color changed: per-channel factors (new / old) from
+   * the main color of the face before and after painting, or null when it hardly changed. The
+   * face is the face area that was painted (`faceMask`) or the profile's face keep rects.
+   */
+  faceSkinShift(slot, baseColor, src, opts, faceMask) {
+    const W = baseColor.width,
+      H = baseColor.height;
+    let inFace = null;
+    if (faceMask) {
+      const m = ctx2d(resizeCanvas(faceMask, W, H)).getImageData(0, 0, W, H).data;
+      inFace = (p) => m[p * 4 + 3] >= 128;
+    } else {
+      const rects = this.keepRectsFor(slot, opts, { withFace: true })
+        .filter((k) => /\bface\b/i.test(k.name ?? ''))
+        .map((k) => k.rect);
+      if (!rects.length) return null;
+      inFace = (p) => {
+        const u = ((p % W) + 0.5) / W,
+          v = (Math.floor(p / W) + 0.5) / H;
+        return rects.some(([u0, v0, u1, v1]) => u >= u0 && u < u1 && v >= v0 && v < v1);
+      };
+    }
+    const before = mainColor(ctx2d(src).getImageData(0, 0, W, H).data, inFace);
+    const after = mainColor(ctx2d(baseColor).getImageData(0, 0, W, H).data, inFace);
+    if (!before || !after) return null;
+    if (Math.max(...after.map((c, i) => Math.abs(c - before[i]))) < 12) return null;
+    return { before, after, factor: after.map((c, i) => c / Math.max(1, before[i])) };
+  }
+
+  /**
+   * Puts the original pixels back inside the keep rects (see keepRectsFor). Returns the kept
+   * alpha (rgba data, alpha 255 = kept) merged with `keptAlpha`, for the unpainted check.
+   */
+  restoreKeepRects(slot, baseColor, original, opts, keptAlpha, faceMask = null, jobs = null) {
+    const rects = this.keepRectsFor(slot, opts);
+    if (!rects.length) return keptAlpha;
+    const W = baseColor.width,
+      H = baseColor.height;
+    const g = ctx2d(baseColor);
+    const src = resizeCanvas(original, W, H);
+    // Kept skin only on the areas that are kept (hands): a piece of another area that the model
+    // maps onto the same skin swatch (the toy's waist band) keeps that area's paint.
+    let lazyOwners;
+    const owners = () => (lazyOwners ??= this.keepRectOwners(slot, opts, rects, W, H, jobs));
+    // A painted face that changed skin color (a green zombie): kept skin takes the same change,
+    // keeping its shape and shading, so the hands match the face.
+    const shift = opts.paintFace ? this.faceSkinShift(slot, baseColor, src, opts, faceMask) : null;
+    if (shift)
+      this.think(
+        'note',
+        `"${slot.name}": the painted face's skin changed from rgb(${shift.before.map(Math.round)}) to rgb(${shift.after.map(Math.round)}); the kept skin (hands) takes the same color`,
+        { slotId: slot.id },
+      );
+    const out = keptAlpha ?? new Uint8ClampedArray(W * H * 4);
+    for (const k of rects) {
+      const [u0, v0, u1, v1] = k.rect;
+      const x = Math.max(0, Math.floor(u0 * W)),
+        y = Math.max(0, Math.floor(v0 * H));
+      const w = Math.min(W, Math.ceil(u1 * W)) - x,
+        h = Math.min(H, Math.ceil(v1 * H)) - y;
+      if (w <= 0 || h <= 0) continue;
+      const only = (k.skinOnly ?? /\b(hands?|skin)\b/i.test(k.name ?? '')) ? skinPixels(src, x, y, w, h) : null;
+      if (!only) {
+        g.clearRect(x, y, w, h);
+        g.drawImage(src, x, y, w, h, x, y, w, h);
+        for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) out[(yy * W + xx) * 4 + 3] = 255;
+        continue;
+      }
+      // Only the skin-coloured pixels: a sleeve or cuff reaching into the rect keeps its paint.
+      const cur = g.getImageData(x, y, w, h);
+      const orig = ctx2d(src).getImageData(x, y, w, h).data;
+      const own = owners();
+      for (let q = 0; q < w * h; q++) {
+        if (!only[q]) continue;
+        const p = (y + Math.floor(q / w)) * W + x + (q % w);
+        if (own && own.painted[p] && !own.kept[p]) continue;
+        for (let c = 0; c < 4; c++)
+          cur.data[q * 4 + c] = shift && c < 3 ? orig[q * 4 + c] * shift.factor[c] : orig[q * 4 + c];
+        out[((y + Math.floor(q / w)) * W + x + (q % w)) * 4 + 3] = 255;
+      }
+      g.putImageData(cur, x, y);
+    }
+    const names = rects.map((k) => k.name).filter(Boolean);
+    this.think(
+      'kept',
+      `"${slot.name}": kept ${names.length ? names.join(', ') : `${rects.length} area(s)`} as the original (profile)`,
+      {
+        slotId: slot.id,
+        keepRects: rects.map((k) => ({ name: k.name, rect: k.rect })),
+      },
+    );
+    return out;
+  }
+
+  /**
+   * Which texture pixels belong to areas that are painted and which to areas that are kept
+   * (all inside the keep rects): { painted, kept } 0/1 maps at W×H, or null when the slot has no
+   * areas. Uses the part-by-part jobs when there are some, else the slot's paint areas.
+   */
+  keepRectOwners(slot, opts, rects, W, H, jobs) {
+    let list = jobs?.map((j) => ({ mask: j.mask, kept: !!j.keep && !j.locked })) ?? null;
+    if (!list) {
+      let regions = [];
+      try {
+        regions = this.idRegions(slot, opts);
+      } catch {
+        return null;
+      }
+      if (regions.length < 2) return null;
+      list = regions.map((part) => {
+        const mask = partMask(slot, part, W, H, 1);
+        return { mask, kept: rectShare(mask, rects) >= 0.95 };
+      });
+    }
+    if (!list.length) return null;
+    const painted = new Uint8Array(W * H),
+      kept = new Uint8Array(W * H);
+    for (const { mask, kept: k } of list) {
+      const d = ctx2d(resizeCanvas(mask, W, H)).getImageData(0, 0, W, H).data;
+      const into = k ? kept : painted;
+      for (let p = 0; p < W * H; p++) if (d[p * 4 + 3] >= 128) into[p] = 1;
+    }
+    return { painted, kept };
   }
 
   /**
@@ -1692,6 +2198,9 @@ export class ReskinPlugin {
       const names = new Set();
       for (const slot of slots) {
         const found = res.zones.get(slot.id) ?? [];
+        // Even when the usual areas are kept for painting, SAM's windows and lights still say
+        // what is never painted.
+        this.keepZones.set(slot.id, found);
         // Fewer zones than the usual split means SAM missed parts (the live run: hair, hands and
         // shoes not seen on the test avatar), so the usual areas are kept unless preferSam is set.
         const usual = this.paintRegions(slot, slotParts(slot), { ...opts, assetClass }).length;
@@ -1703,6 +2212,18 @@ export class ReskinPlugin {
             });
           continue;
         }
+        // Vehicles: a "wheels" zone with no round wheel in it is the body's wheel arches (SAM
+        // marks the arch around a wheel). Painted as a wheel, Muse drew rims there; painted as
+        // body it came out flat grey. The arches keep their original (dark) pixels instead.
+        if (assetClass === 'vehicle')
+          for (const z of found)
+            if (z.zone === 'wheels' && !zoneHasWheel(slot, z)) {
+              z.zone = 'wheel arches';
+              this.think(
+                'note',
+                `"${slot.name}": SAM's "wheels" zone has no round wheel in it, so it is the wheel arches: kept as the original.`,
+              );
+            }
         const parts = slotParts(slot);
         const base =
           parts.length === 1 ? parts[0] : { name: slot.name, meshes: slot.meshes, up: null, mirrored: false };
@@ -1724,12 +2245,157 @@ export class ReskinPlugin {
           : `SAM 3.1 found no usable zones (${images} SAM images ≈ ${formatDollars(cost)}); using the usual areas.`,
       });
       const summary = this.samZonesSummary();
+      this.think('zones', names.size ? `SAM found: ${[...names].join(', ')}` : 'SAM found no usable zones', {
+        zones: summary,
+        notSeen: missed,
+      });
       this.emit('zones', { slots: summary, sheet: res.sheet, found: res.found, images, cost });
       return summary;
     } catch (err) {
       if (signal?.aborted) throw err;
       this.emit('warning', { message: `SAM zone finding failed (${toError(err).message}); using the usual areas.` });
       return null;
+    }
+  }
+
+  /**
+   * SAM noun phrases for what is never painted: windows (any model Muse says has glass, every
+   * vehicle), vehicle lights, and each "don't paint X" from the user's rules.
+   */
+  keepConcepts(opts = {}) {
+    const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
+    const out = [];
+    const roles = Object.values(this.partRolesFor(opts) ?? {});
+    if (cls === 'vehicle')
+      out.push(
+        { zone: 'windows', concept: 'window' },
+        { zone: 'lights', concept: 'headlight' },
+        { zone: 'lights', concept: 'fog light' },
+        { zone: 'lights', concept: 'tail light' },
+      );
+    else if (roles.includes('glass')) out.push({ zone: 'windows', concept: 'window' });
+    for (const k of keepTargetsFromRules(this.userRules)) out.push({ zone: `keep: ${k.noun}`, concept: k.noun });
+    return out.slice(0, 8);
+  }
+
+  /**
+   * Finds the never-painted areas with SAM when the paint areas didn't come from SAM (SAM zones
+   * off, or SAM's zones were fewer than the usual areas). Never throws apart from a cancel.
+   * opts.keepSam: false skips it.
+   */
+  async findKeepZones(opts, signal) {
+    if (opts.keepSam === false || typeof this.provider.segment !== 'function' || !this.model || !this.layout) return;
+    const concepts = this.keepConcepts(opts);
+    if (!concepts.length) return;
+    const key = concepts.map((c) => c.zone + '=' + c.concept).join('|');
+    const slots = (this.layout.slots ?? []).filter(
+      (s) =>
+        s.texture &&
+        !s.tiled &&
+        !(this.samZonesActive && this.samZones.get(s.id)?.length) &&
+        this.keepZonesKey?.get(s.id) !== key,
+    );
+    if (!slots.length) return;
+    const shown = !!this.lastResult;
+    const idMap = this.idMapVisible;
+    try {
+      if (idMap) this.showIdMap(false);
+      if (shown) this.showOriginal(true);
+      this.status(
+        'analyzing',
+        `SAM 3.1 is finding what is never painted: ${concepts.map((c) => c.concept).join(', ')}…`,
+      );
+      // The same model again (ModStorm posts it for every reskin): reuse what SAM found, so
+      // the kept areas are the same every run.
+      const memoKey = `${modelSignature(this.layout)}#${key}`;
+      const memo = KEEP_MEMO.get(memoKey);
+      if (memo) {
+        for (const slot of slots) {
+          const i = this.layout.slots.indexOf(slot);
+          this.keepZones.set(
+            slot.id,
+            (memo[i] ?? []).map((z) => ({
+              ...z,
+              tris: new Map(z.tris.filter(([k]) => slot.meshes[k]).map(([k, bits]) => [slot.meshes[k], bits])),
+            })),
+          );
+          (this.keepZonesKey ??= new Map()).set(slot.id, key);
+        }
+        this.keepCache = null;
+        this.think('zones', 'Reused what SAM found never to paint on this model last time (same every run)', {
+          keep: true,
+          concepts,
+          reused: true,
+        });
+        return;
+      }
+      // SAM's masks change from one render to the next (a headlight seen in one run, missed in
+      // the next), so it looks at two renders at different sizes and the areas are joined.
+      const sizes = opts.keepSamRuns === 1 ? [opts.zoneViewSize ?? 384] : [opts.zoneViewSize ?? 384, 512];
+      const runs = await this.timed('sam keep areas', null, () =>
+        Promise.all(
+          sizes.map((size) => {
+            const { views } = renderAxisViews(this.model.scene, { size });
+            return findSamZones({
+              root: this.model.scene,
+              slots,
+              views,
+              concepts,
+              rest: 'paint',
+              segment: (o) => this.provider.segment(o),
+              signal,
+            });
+          }),
+        ),
+      );
+      const res = {
+        found: runs[0].found.map((f, k) => ({ ...f, masks: Math.max(...runs.map((r) => r.found[k]?.masks ?? 0)) })),
+      };
+      this.keepZonesKey ??= new Map();
+      const stored = [];
+      for (const slot of slots) {
+        const joined = new Map();
+        for (const r of runs)
+          for (const z of r.zones.get(slot.id) ?? []) {
+            if (z.zone === 'paint') continue;
+            const j = joined.get(z.zone);
+            if (!j) {
+              joined.set(z.zone, { ...z, tris: new Map([...z.tris].map(([m, b]) => [m, Uint8Array.from(b)])) });
+              continue;
+            }
+            for (const [m, b] of z.tris) {
+              const t = j.tris.get(m);
+              if (!t) j.tris.set(m, Uint8Array.from(b));
+              else for (let i = 0; i < t.length; i++) t[i] |= b[i];
+            }
+            j.share = Math.max(j.share, z.share);
+            j.area = Math.max(j.area, z.area);
+          }
+        const zones = [...joined.values()];
+        this.keepZones.set(slot.id, zones);
+        this.keepZonesKey.set(slot.id, key);
+        stored[this.layout.slots.indexOf(slot)] = zones.map((z) => ({
+          zone: z.zone,
+          share: z.share,
+          area: z.area,
+          tris: [...z.tris].map(([m, b]) => [slot.meshes.indexOf(m), b]),
+        }));
+      }
+      if (KEEP_MEMO.size > 20) KEEP_MEMO.delete(KEEP_MEMO.keys().next().value);
+      KEEP_MEMO.set(memoKey, stored);
+      this.keepCache = null;
+      const missed = res.found.filter((f) => !f.masks).map((f) => f.concept);
+      this.think(
+        'zones',
+        `SAM looked for what is never painted: ${concepts.map((c) => c.concept).join(', ')}${missed.length ? ` (not seen: ${missed.join(', ')})` : ''}`,
+        { keep: true, concepts, notSeen: missed },
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      this.emit('warning', { message: `SAM could not look for the never-painted areas (${toError(err).message}).` });
+    } finally {
+      if (shown) this.showOriginal(false);
+      if (idMap) this.showIdMap(true);
     }
   }
 
@@ -1744,16 +2410,45 @@ export class ReskinPlugin {
       }));
   }
 
+  /**
+   * Speed: while the user reads the suggestion, the per-area theme split for its prompt is
+   * already asked for, so painting that prompt starts with it ready (one Muse call less on
+   * the clock). Opt-in (opts.prefetchAreaThemes: true on postSuggest), for editors that paint
+   * the suggested prompt as is: if the prompt is edited, the call was wasted. Part mode only.
+   */
+  prefetchAreaThemes(suggestion, opts = {}) {
+    if (opts.prefetchAreaThemes !== true || opts.paintMode === 'atlas' || opts.areaThemes === false) return;
+    if (!this.provider.areaThemes || typeof this.provider.reskinPart !== 'function') return;
+    const theme = String(suggestion.prompt ?? '').trim();
+    if (!theme) return;
+    const o = { ...opts, assetClass: this.resolveAssetClass({ ...opts, suggestion }), suggestion };
+    for (const slot of this.layout?.slots ?? []) {
+      if (!slot.texture || slot.tiled) continue;
+      let names;
+      try {
+        names = this.idRegions(slot, o).map((r) => r.name);
+      } catch {
+        continue;
+      }
+      if (names.length < 2) continue;
+      this.areaThemesFor(theme, names, suggestion.plans?.[slot.id] ?? { subject: suggestion.subject }, null).catch(
+        () => {},
+      );
+    }
+  }
+
   /** Per-area theme descriptions (cached per theme + area list; failures fall back to the theme). */
   async areaThemesFor(theme, names, plan, signal) {
     if (!this.provider.areaThemes) return new Map();
     this.areaThemeCache ??= new Map();
-    const key = `${theme}|${names.join(',')}`;
+    const key = `${theme}|${[...names].sort().join(',')}`;
     if (!this.areaThemeCache.has(key)) {
       const p = this.timed('split theme per area', null, () =>
         this.provider.areaThemes({ theme, areas: names, subject: plan?.subject, signal }),
       ).then(
         (m) => {
+          this.areaThemeResolved ??= new Map();
+          for (const [n, d] of m) this.areaThemeResolved.set(`${theme}|${n}`, d);
           if (m.size)
             this.emit('warning', { message: `Area themes: ${[...m].map(([n, d]) => `${n}: ${d}`).join(' | ')}` });
           return m;
@@ -1788,6 +2483,8 @@ export class ReskinPlugin {
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
     const keepTris = this.keepTriangles(slot, opts);
+    // The profile's (or caller's) never-painted rects: an area all inside them costs no Muse call.
+    const keepRects = this.keepRectsFor(slot, opts);
     // Strip layouts are only read for limbs (sleeves, trouser legs); torso, hands and shoes
     // are not laid out as clean wrap-around strips.
     const STRIP_ZONES = new Set(['arms', 'legs']);
@@ -1803,7 +2500,10 @@ export class ReskinPlugin {
       if (anatForStrips && STRIP_ZONES.has(part.zone))
         job.sides = drawFacingMap(slot, part, W, H, { grow, limbCenterX: anatForStrips.cx }).canvas;
       // Vehicle lights (and areas that are all tyre tread) are never repainted.
-      if (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) {
+      if (
+        (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) ||
+        (keepRects.length && rectShare(mask, keepRects) >= 0.95)
+      ) {
         job.keep = true;
         job.protected = true;
       } else if (locked.has(part.name)) {
@@ -1814,7 +2514,11 @@ export class ReskinPlugin {
       } else if (opts.fixes) {
         const fix = opts.fixes[part.name];
         const old = prevByName.get(part.name);
-        if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
+        if (fix && opts.changeRequest) {
+          // A change request edits the area as it is now (fast, and everything else stays).
+          job.note = `Change requested by the user: ${fix} Apply only this change to the image and keep everything else in it exactly the same.`;
+          if (old?.painted) job.editFrom = old.painted;
+        } else if (fix) job.note = `Correction from a review of the last attempt: ${fix}`;
         else if (old) job.reuse = old.painted;
       }
       jobs.push(job);
@@ -1826,6 +2530,29 @@ export class ReskinPlugin {
       this.emit('warning', {
         message: `"${slot.name}": ${turned.join(', ')} ${turned.length > 1 ? 'are' : 'is'} stored rotated or mirrored; painting upright and turning back.`,
       });
+    }
+    {
+      const zoneOf = (j) => j.part.zone ?? null;
+      const areas = jobs.map((j) => ({
+        name: j.part.name,
+        zone: zoneOf(j),
+        action: j.keep ? 'keep' : j.reuse ? 'reuse' : 'paint',
+        why: j.protected
+          ? 'vehicle rule: lights, glass and tyre treads are never repainted'
+          : j.locked
+            ? 'locked by the user'
+            : j.reuse
+              ? 'not flagged by the review, so the last paint is reused'
+              : j.note
+                ? j.note
+                : undefined,
+        mergedFrom: j.part.mergedFrom,
+      }));
+      this.think(
+        'plan',
+        `"${slot.name}": ${areas.length} area(s): ${areas.map((a) => `${a.name}${a.action === 'paint' ? '' : ` (${a.action})`}`).join(', ')}`,
+        { slotId: slot.id, slotName: slot.name, mode: 'parts', areas },
+      );
     }
     this.emit('regions', {
       slotId: slot.id,
@@ -1892,7 +2619,11 @@ export class ReskinPlugin {
         done++;
         return job.reuse;
       }
-      let crop = transformCanvas(greyedCrop(original, mask, rect), orient);
+      const fresh = transformCanvas(greyedCrop(original, mask, rect), orient);
+      let crop =
+        job.editFrom && job.editFrom.width === fresh.width && job.editFrom.height === fresh.height
+          ? job.editFrom
+          : fresh;
       let guide = transformCanvas(cropCanvas(facing.canvas, rect), orient);
       // Artists' template (editor-supplied, same layout as the texture): cut like the area.
       let tpl = template ? transformCanvas(cropCanvas(template, rect), orient) : null;
@@ -2293,17 +3024,34 @@ export class ReskinPlugin {
     const rest = jobs.slice();
     const reused = jobs.find((j) => j.reuse && !j.note);
     if (reused) styleRef = reused.reuse;
-    const styleFirst = !reused && (opts.styleReference ?? true) && jobs.length > 2;
+    // Only areas that are really painted count (kept lights / arches and reused areas don't).
+    const toPaintJobs = jobs.filter((j) => !j.keep && !j.reuse);
+    const styleFirst = !reused && (opts.styleReference ?? true) && toPaintJobs.length > 2;
+    let ordered = jobs;
     if (styleFirst) {
       // Paint the biggest area first so every other call can match its palette and style.
-      const first = rest.shift();
-      const [r] = await mapLimit([first], 1, paintOne);
-      results.push(r);
-      if (r.status === 'fulfilled') styleRef = r.value;
+      // Speed: glass (windows) needs no style match, and kept areas need no call, so they run
+      // alongside it instead of waiting.
+      const first = rest.find((j) => !j.keep && !j.reuse);
+      const noStyle = (j) =>
+        j !== first &&
+        (j.keep || /\b(windows?|glass|windshield|windscreen)\b/i.test(`${j.part.zone ?? ''} ${j.part.name}`));
+      const now = [first, ...rest.filter(noStyle)];
+      const later = rest.filter((j) => !now.includes(j));
+      const firstRun = mapLimit([first], 1, paintOne).then(([r]) => {
+        if (r.status === 'fulfilled') styleRef = r.value;
+        return r;
+      });
+      const side = mapLimit(now.slice(1), opts.partConcurrency ?? 4, paintOne);
+      const [r1, sideResults] = await Promise.all([firstRun, side]);
+      results.push(r1, ...sideResults);
+      results.push(...(await mapLimit(later, opts.partConcurrency ?? 4, paintOne)));
+      ordered = [...now, ...later];
+    } else {
+      results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
+      ordered = rest;
     }
-    results.push(...(await mapLimit(rest, opts.partConcurrency ?? 4, paintOne)));
     signal.throwIfAborted();
-    const ordered = styleFirst ? jobs : rest;
     const failed = results.map((r, i) => [r, ordered[i]]).filter(([r]) => r.status === 'rejected');
     if (failed.length === jobs.length && failed.length) throw failed[0][0].reason;
     for (const [r, job] of failed) {
@@ -2368,7 +3116,28 @@ export class ReskinPlugin {
   }
 
   lessonsFor(assetClass) {
-    return [...(this.lessons.all ?? []), ...(this.lessons[assetClass] ?? [])];
+    return [...this.userRuleLines(), ...(this.lessons.all ?? []), ...(this.lessons[assetClass] ?? [])];
+  }
+
+  /**
+   * The user's own hard rules (opts.userRules on postSuggest / postPrompt, e.g. the editor's
+   * Context field: "don't paint the windows"). Passed through unchanged, never rewritten by
+   * Muse, and sent first in every Muse call of the run: the suggestion, every paint prompt
+   * and the review. They stay until a call passes other userRules (null or [] clears them).
+   */
+  setUserRules(rules) {
+    if (rules === undefined) return;
+    const list = (Array.isArray(rules) ? rules : [rules])
+      .flatMap((r) => String(r ?? '').split(/\n+/))
+      .map((r) => r.trim())
+      .filter(Boolean);
+    this.userRules = list;
+    if (list.length)
+      this.think('rules', `Your rules, sent first in every Muse call: ${list.join(' | ')}`, { userRules: list });
+  }
+
+  userRuleLines() {
+    return (this.userRules ?? []).map((r) => `MOST IMPORTANT RULE (from the user): ${r}`);
   }
 
   getLessons() {
@@ -2469,6 +3238,7 @@ export class ReskinPlugin {
         partJobs,
         thumb,
         fixes: !!opts.fixes,
+        change: opts.changeRequest ?? null,
       };
       this.history.push(entry);
       entries.push(entry);
@@ -2491,13 +3261,14 @@ export class ReskinPlugin {
     return {
       index: this.historyIndex,
       originalThumb: this.originalThumb ?? null,
-      entries: this.history.map(({ id, prompt, variant, of, thumb, fixes }) => ({
+      entries: this.history.map(({ id, prompt, variant, of, thumb, fixes, change }) => ({
         id,
         prompt,
         variant,
         of,
         thumb,
         fixes,
+        change: change ?? null,
       })),
     };
   }
@@ -2680,19 +3451,141 @@ export class ReskinPlugin {
     if (!this.canReview) throw new Error(`${this.provider.name} cannot review results`);
     const passes = Math.max(1, Math.min(opts.passes ?? 1, 3));
     const out = [];
+    const thinkStart = (this.thinkingLog ??= []).length;
     for (let i = 0; i < passes; i++) {
       const review = await this.reviewOnce(opts);
-      const fixable = review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
+      const onePass = !this.areaNames().length;
+      const fixable = onePass
+        ? review.issues.filter((x) => x.fix || x.problem)
+        : review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
       const pass = { notes: review, sheet: review.sheet, repainted: [] };
       out.push(pass);
       if (opts.fix === false || !fixable.length) break;
+      if (onePass) {
+        // Painted in one pass: one edit of the whole texture with every correction.
+        const text = fixable.map((x) => `${x.area ? `${x.area}: ` : ''}${x.fix || x.problem}`).join(' ');
+        pass.repainted = ['whole texture'];
+        this.status('reskinning', 'Fixing the whole texture');
+        await this.onePassEdit(`Correction from a review: ${text}`, opts.signal);
+        continue;
+      }
       const fixes = {};
       for (const x of fixable) fixes[x.area] = [fixes[x.area], x.fix || x.problem].filter(Boolean).join(' ');
       pass.repainted = Object.keys(fixes);
       this.status('reskinning', `Repainting ${pass.repainted.join(', ')}`);
       await this.postPrompt(this.lastRun.theme, { ...this.lastRun.opts, variants: 1, fixes, signal: opts.signal });
     }
-    return { passes: out };
+    return { passes: out, thinking: this.thinkingLog.slice(thinkStart) };
+  }
+
+  /**
+   * Change request on a finished reskin ("make the stripes blue", "less neon on the hood").
+   * Reuses everything from that run: identification, SAM zones, part roles, the paint plan,
+   * area themes and every painted area. Muse Spark picks the areas the request touches
+   * (one short text call), and only those are repainted, each starting from its current paint.
+   * The result is a new History entry.
+   * @param {string} text the user's change request
+   * @param {{ historyIndex?: number, areas?: string[] | Record<string, string>, signal?: AbortSignal }} [opts]
+   *   historyIndex: the History entry to change (default: the one shown). areas: skip Muse's
+   *   choice: area names (each gets the request) or { area: instruction }.
+   * @returns {Promise<import('./types.js').ReskinResult & { change: { request: string, areas: Record<string, string>, summary: string } }>}
+   */
+  async postChange(text, opts = {}) {
+    this.guard();
+    const request = String(text ?? '').trim();
+    if (!request) throw new Error('The change request is empty');
+    const thinkStart = (this.thinkingLog ??= []).length;
+    if (!this.lastRun) throw new Error('Paint the model before asking for a change');
+    if (opts.historyIndex != null && opts.historyIndex !== this.historyIndex) {
+      if (opts.historyIndex < 0) throw new Error('Pick a painted result, not the original');
+      this.goToHistory(opts.historyIndex, { silent: true });
+    }
+    const names = this.areaNames();
+    // Painted in one pass (no separate areas): the whole texture is edited from its current paint.
+    if (!names.length) {
+      this.think('change', `Change "${request}": editing the whole texture (painted in one pass)`, { request });
+      const res = await this.onePassEdit(request, opts.signal);
+      res.change = { request, areas: {}, summary: 'whole texture' };
+      res.thinking = this.thinkingLog.slice(thinkStart);
+      return res;
+    }
+    // What each area looks like now (area themes / plan), so Muse can match "the stripes" etc.
+    const jobsBy = new Map();
+    for (const rec of this.lastPartJobs.values()) for (const j of rec.jobs) jobsBy.set(j.part.name, j);
+    const areas = names
+      .filter((n) => !jobsBy.get(n)?.keep)
+      .map((n) => ({ name: n, zone: jobsBy.get(n)?.part.zone, now: this.areaDescription(n) }));
+    let chosen = new Map();
+    let summary = '';
+    if (opts.areas) {
+      const given = Array.isArray(opts.areas) ? opts.areas.map((n) => [n, request]) : Object.entries(opts.areas);
+      chosen = new Map(given.filter(([n]) => names.includes(n)));
+    } else if (this.provider.changePlan) {
+      const plan = await this.timed('plan change', null, () =>
+        this.provider.changePlan({
+          request,
+          theme: this.lastRun.theme,
+          areas,
+          subject: this.lastRun.opts?.suggestion?.subject,
+          signal: opts.signal,
+        }),
+      );
+      chosen = plan.areas;
+      summary = plan.summary;
+    }
+    if (!chosen.size) {
+      // No plan: areas named in the request, else every painted area.
+      const words = new Set(splitWords(request).toLowerCase().split(/\s+/));
+      const hit = areas.filter((a) =>
+        splitWords(a.name)
+          .toLowerCase()
+          .split(/\s+/)
+          .some((w) => w.length > 2 && words.has(w)),
+      );
+      chosen = new Map((hit.length ? hit : areas).map((a) => [a.name, request]));
+    }
+    const fixes = Object.fromEntries(chosen);
+    this.think('change', `Change "${request}": repainting ${[...chosen.keys()].join(', ')}`, {
+      request,
+      areas: fixes,
+      summary,
+      reused: names.filter((n) => !chosen.has(n)),
+    });
+    const res = await this.postPrompt(this.lastRun.theme, {
+      ...this.lastRun.opts,
+      variants: 1,
+      fixes,
+      changeRequest: request,
+      signal: opts.signal,
+    });
+    res.change = { request, areas: fixes, summary };
+    res.thinking = this.thinkingLog.slice(thinkStart);
+    return res;
+  }
+
+  /**
+   * Edits every texture of a one-pass result from its current paint: `request` is applied and
+   * everything else is kept (one Muse image per texture). Kept areas (lights, glass, treads)
+   * are put back as in any run.
+   */
+  async onePassEdit(request, signal) {
+    const editAtlas = new Map();
+    for (const slot of this.layout?.slots ?? []) {
+      const img = slot.materials[0]?.map?.image;
+      if (slot.texture && !slot.tiled && img?.width) editAtlas.set(slot.id, img);
+    }
+    return this.postPrompt(this.lastRun.theme, {
+      ...this.lastRun.opts,
+      variants: 1,
+      changeRequest: request,
+      editAtlas,
+      signal,
+    });
+  }
+
+  /** What an area was painted as (its area theme or plan description), if known. */
+  areaDescription(name) {
+    return this.areaThemeResolved?.get(`${this.lastRun?.theme}|${name}`);
   }
 
   /** Region options matching the last run's asset class (so names and colors agree). */
@@ -2739,6 +3632,7 @@ export class ReskinPlugin {
   }
 
   async reviewOnce(opts = {}) {
+    const thinkStart = (this.thinkingLog ??= []).length;
     this.busy = true;
     this.abort = new AbortController();
     const signal = opts.signal ? anySignal([opts.signal, this.abort.signal]) : this.abort.signal;
@@ -2777,6 +3671,19 @@ export class ReskinPlugin {
           signal,
         }),
       );
+      // The plugin's own check: planned areas that still show the original texture.
+      for (const slot of this.layout.slots) {
+        for (const f of this.unpaintedBySlot?.get(slot.id) ?? []) {
+          if (notes.issues.some((x) => x.area === f.area)) continue;
+          const isArea = this.areaNames().includes(f.area);
+          notes.issues.push({
+            area: isArea ? f.area : undefined,
+            problem: `${Math.round(f.share * 100)}% of this area still shows the original texture`,
+            fix: 'Repaint the whole area in the theme; leave none of the old colors or patterns.',
+            source: 'plugin check',
+          });
+        }
+      }
       for (const x of notes.issues) {
         x.problem = x.problem && sanitizePrompt(x.problem);
         x.fix = x.fix && sanitizePrompt(x.fix);
@@ -2785,7 +3692,17 @@ export class ReskinPlugin {
         const added = this.addLessons(this.lastRun.opts.assetClass ?? 'generic', notes.lessons);
         if (added.length) notes.learned = added;
       }
-      const review = { ...notes, sheet };
+      const review = { ...notes, sheet, thinking: null };
+      this.think(
+        'review',
+        notes.issues.length ? `Muse found ${notes.issues.length} issue(s)` : 'Muse says it looks good',
+        {
+          issues: notes.issues,
+          lessons: notes.lessons,
+          learned: notes.learned,
+        },
+      );
+      review.thinking = this.thinkingLog.slice(thinkStart);
       this.emit('review', review);
       this.status('idle', notes.issues.length ? `Review: ${notes.issues.length} issue(s)` : 'Review: looks good');
       return review;
@@ -2810,18 +3727,109 @@ export class ReskinPlugin {
   keepTriangles(slot, opts = {}) {
     if (opts.keepVehicleParts === false) return null;
     const cls = opts.assetClass && opts.assetClass !== 'auto' ? opts.assetClass : this.resolveAssetClass(opts);
-    if (cls !== 'vehicle') return null;
-    const zones = this.samZonesActive ? (this.samZones.get(slot.id) ?? []) : [];
+    // Vehicles keep lights, glass and tyre treads; every other model keeps its glass. Both keep
+    // what the user's rules say not to paint.
+    const glassOnly = cls !== 'vehicle';
+    const userKeep = keepTargetsFromRules(this.userRules);
+    const zones =
+      this.samZonesActive && this.samZones.get(slot.id)?.length
+        ? this.samZones.get(slot.id)
+        : (this.keepZones.get(slot.id) ?? []);
+    // What each part is: Muse's own reading of the renders first (partRoles), names only
+    // for parts Muse did not cover.
+    const roleByName = this.partRolesFor(opts);
+    const roles = new Map();
+    if (roleByName)
+      for (const part of slotParts(slot)) {
+        const role = roleByName[roleKey(part.name)];
+        if (role) for (const m of part.meshes) roles.set(m, role);
+      }
     this.keepCache ??= new Map();
-    const key = `${slot.id}|${zones.length}`;
-    if (!this.keepCache.has(key)) this.keepCache.set(key, vehicleKeepTriangles(slot, { zones }));
+    const key = `${slot.id}|${cls}|${zones.length}|${roles.size}|${userKeep.map((k) => k.noun).join(',')}`;
+    if (!this.keepCache.has(key)) {
+      // Muse sees SAM zones as parts named "<part> (<zone>)": its roles are matched per zone.
+      let zoneRoles = null;
+      if (roleByName)
+        for (const z of zones) {
+          const role = roleByName[roleKey(z.name)] ?? roleByName[roleKey(z.zone)];
+          if (role) (zoneRoles ??= {})[z.zone] = role;
+        }
+      const keep = vehicleKeepTriangles(slot, { zones, roles, zoneRoles, glassOnly, userKeep });
+      this.think(
+        'parts',
+        roleByName
+          ? `"${slot.name}": Muse says ${Object.entries(this.partRolesFor(opts) ?? {})
+              .map(([k, v]) => `${k} = ${v}`)
+              .join(', ')}`
+          : `"${slot.name}": no Muse part roles yet`,
+        { slotId: slot.id, slotName: slot.name, museRoles: roleByName, zoneRoles },
+      );
+      if (!roleByName)
+        this.think(
+          'note',
+          `"${slot.name}": Muse gave no part roles (no suggestion yet), so SAM zones and names decide.`,
+        );
+      this.keepCache.set(key, keep?.none ? null : keep);
+      const why = keep?.decisions ?? [];
+      if (why.length || keep?.rejected?.length)
+        this.think(
+          'parts',
+          `"${slot.name}": ${why.map((d) => `${d.name} = ${d.role} (${d.source})`).join(', ') || 'no lights or wheels'}`,
+          { slotId: slot.id, slotName: slot.name, decisions: why, rejected: keep?.rejected ?? [] },
+        );
+      for (const r of keep?.rejected ?? []) this.think('note', `"${slot.name}": ${r.name}: ${r.reason}.`);
+    }
     return this.keepCache.get(key);
   }
 
-  /** Puts the original pixels back inside the kept triangles. Changes `baseColor` in place. */
+  /**
+   * Why `slot` is never painted ('glass', 'all lights', 'kept by your rules'), or null.
+   * Glass on any model; a texture that is all kept area (vehicle lights, the user's rules).
+   */
+  slotNeverPainted(slot, opts = {}) {
+    if (opts.keepVehicleParts === false) return null;
+    const roleByName = this.partRolesFor(opts);
+    const roles = new Map();
+    if (roleByName)
+      for (const part of slotParts(slot)) {
+        const role = roleByName[roleKey(part.name)];
+        if (role) for (const m of part.meshes) roles.set(m, role);
+      }
+    if (slotIsGlass(slot, roles)) return 'glass';
+    if (!slot.texture) return null;
+    const keep = this.keepTriangles(slot, opts);
+    if (!keep) return null;
+    if (keptShare(slot, { meshes: slot.meshes }, keep.tris) < 0.98) return null;
+    return keep.user && !keep.headlights
+      ? 'kept by your rules'
+      : keep.glass && !keep.headlights
+        ? 'glass'
+        : 'all lights';
+  }
+
+  /**
+   * Muse's part roles ({ roleKey(part name): role }) from the suggestion or the stored
+   * model analysis, or null when Muse has not looked at the model.
+   */
+  partRolesFor(opts = {}) {
+    const src = opts.suggestion?.partRoles ?? this.modelAnalysis?.partRoles;
+    if (!src) return null;
+    const out = {};
+    for (const [k, v] of Object.entries(src)) out[roleKey(k)] = v;
+    return out;
+  }
+
+  /**
+   * Puts the original pixels back inside the kept triangles (light lenses, tyre treads).
+   * Kept pixels whose original color is a colored old body paint (the painted ring or housing
+   * around a lens, a mirror the light finder took for a light) get the new paint found next to
+   * that light, and Muse's splashes right around each light are cleaned the same way
+   * (cleanAroundLights).
+   * Changes `baseColor` in place.
+   */
   restoreKept(slot, baseColor, original, opts) {
     const keep = this.keepTriangles(slot, opts);
-    if (!keep) return;
+    if (!keep) return null;
     const W = baseColor.width,
       H = baseColor.height;
     const layer = drawUvGuide(slot, W, H, {
@@ -2829,29 +3837,290 @@ export class ReskinPlugin {
       tris: keep.tris,
       wireframe: true,
       lineColor: '#ffffff',
-      lineWidth: 2,
+      lineWidth: 1,
       fillColor: '#ffffff',
       background: null,
     });
     const ld = ctx2d(layer).getImageData(0, 0, W, H).data;
+    // Only light areas can hold old body paint (a lens ring, a mirror taken for a light);
+    // tyre treads are always kept whole (their rubber is the main color of a wheel texture).
+    const lightLayer = keep.lights?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.lights.keys()],
+            tris: keep.lights,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
+    // SAM-found kept areas: any shade of the old body paint there is body (a mirror SAM took
+    // for a headlight), not only the exact color.
+    // SAM's windows zone: old body paint in it (a side mirror SAM took for a window) is body.
+    const glassLayer = keep.samGlass?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.samGlass.keys()],
+            tris: keep.samGlass,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
+    const softLayer = keep.soft?.size
+      ? ctx2d(
+          drawUvGuide(slot, W, H, {
+            meshes: [...keep.soft.keys()],
+            tris: keep.soft,
+            wireframe: true,
+            lineColor: '#ffffff',
+            lineWidth: 1,
+            fillColor: '#ffffff',
+            background: null,
+          }),
+        ).getImageData(0, 0, W, H).data
+      : null;
     const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
     const g = ctx2d(baseColor);
     const bd = g.getImageData(0, 0, W, H);
+    // The old body paint: the most common original color outside the kept areas.
+    const cover = ctx2d(
+      drawUvGuide(slot, W, H, { wireframe: false, fillColor: '#ffffff', background: null }),
+    ).getImageData(0, 0, W, H).data;
+    const body =
+      opts.keepBodyColor === false || (!lightLayer && !glassLayer)
+        ? null
+        : dominantColor(od, (p) => cover[p * 4 + 3] >= 128 && ld[p * 4 + 3] < 128);
+    const tol = opts.keepBodyTolerance ?? 64;
+    // A white, silver, grey or black body can't be told from a lens (white, clear, chrome), so
+    // with such a body every pixel inside a light keeps its original. A colored body (the red
+    // Porsche) can: its old paint inside a light area (lens ring, mirror) gets the new paint.
+    const colorful = isColorful(body);
+    const lum = body ? 0.299 * body[0] + 0.587 * body[1] + 0.114 * body[2] : 0;
+    const isBody = (i) => {
+      if (!body) return false;
+      const r = od[i],
+        gg = od[i + 1],
+        b = od[i + 2];
+      if (lightLayer?.[i + 3] >= 128)
+        return (
+          colorful && (softLayer?.[i + 3] >= 128 ? sameShade(r, gg, b, body, tol) : nearColor(r, gg, b, body, tol))
+        );
+      if (glassLayer?.[i + 3] >= 128)
+        // SAM's windows zone keeps only what looks like glass (dark, grey, blue-grey). Strong
+        // color (an orange van panel, a red mirror) or the old body paint is body.
+        return (
+          !looksLikeGlass(r, gg, b) ||
+          (colorful && sameStrongShade(r, gg, b, body, tol)) ||
+          (!colorful && lum > 140 && nearColor(r, gg, b, body, 40))
+        );
+      return false;
+    };
+    const before = new Uint8ClampedArray(bd.data);
     let n = 0;
     for (let i = 0; i < ld.length; i += 4) {
       if (ld[i + 3] < 128) continue;
+      n++;
       bd.data[i] = od[i];
       bd.data[i + 1] = od[i + 1];
       bd.data[i + 2] = od[i + 2];
-      n++;
+    }
+    // Around and inside each light: Muse's splashes and rings, and old body paint, get the new
+    // paint found right next to that light.
+    let repainted = 0,
+      cleaned = 0;
+    if (body && (lightLayer || glassLayer) && opts.cleanAroundLights !== false) {
+      const N = W * H;
+      const ringFrom = new Uint8Array(N);
+      const light = new Uint8Array(N),
+        kept = new Uint8Array(N),
+        inUv = new Uint8Array(N);
+      for (let p = 0; p < N; p++) {
+        ringFrom[p] = lightLayer?.[p * 4 + 3] >= 128 ? 1 : 0;
+        light[p] = ringFrom[p] || glassLayer?.[p * 4 + 3] >= 128 ? 1 : 0;
+        kept[p] = ld[p * 4 + 3] >= 128 ? 1 : 0;
+        inUv[p] = cover[p * 4 + 3] >= 128 ? 1 : 0;
+      }
+      // For a light that is its own UV island (nothing painted next to it in the texture),
+      // its old body paint gets a swatch of the new body paint instead.
+      let fallback = null;
+      // Old body paint Muse left untouched (a side mirror kept red on a black car): when the new
+      // body paint is not a shade of the old one, it gets the new body paint too.
+      let leftover = null;
+      if (colorful && opts.cleanOldBodyPaint !== false && !this.locked.size) {
+        const newBody = dominantColor(before, (p) => inUv[p] && !kept[p]);
+        if (newBody && !sameShade(newBody[0], newBody[1], newBody[2], body, tol)) {
+          leftover = new Uint8Array(N);
+          let any = 0;
+          for (let p = 0; p < N; p++) {
+            if (!inUv[p] || kept[p]) continue;
+            const i = p * 4;
+            if (!sameShade(od[i], od[i + 1], od[i + 2], body, tol)) continue;
+            const d =
+              Math.abs(before[i] - od[i]) + Math.abs(before[i + 1] - od[i + 1]) + Math.abs(before[i + 2] - od[i + 2]);
+            if (d <= 30) leftover[p] = any = 1;
+          }
+          if (!any) leftover = null;
+        }
+      }
+      if (colorful || glassLayer) {
+        const on = new Uint8Array(N);
+        const old = colorful ? sameShade : nearColor;
+        for (let p = 0; p < N; p++)
+          on[p] = inUv[p] && !kept[p] && old(od[p * 4], od[p * 4 + 1], od[p * 4 + 2], body, tol) ? 1 : 0;
+        const sq = bestSquare(on, W, H, Math.round(Math.min(W, H) / 10));
+        if (sq.share > 0.5) {
+          const swatch = cropCanvas(baseColor, { x: sq.x, y: sq.y, width: sq.size, height: sq.size });
+          const mask = createCanvas(W, H);
+          const mctx = ctx2d(mask);
+          const md = mctx.createImageData(W, H);
+          for (let i = 0; i < ld.length; i += 4)
+            if ((ld[i + 3] >= 128 && isBody(i)) || leftover?.[i / 4])
+              md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
+          mctx.putImageData(md, 0, 0);
+          fallback = ctx2d(materialFill(resizeCanvas(original, W, H), mask, swatch, { tile: sq.size })).getImageData(
+            0,
+            0,
+            W,
+            H,
+          ).data;
+        }
+      }
+      const r = cleanAroundLights({
+        fallback,
+        W,
+        H,
+        painted: bd.data,
+        before,
+        orig: od,
+        light,
+        ringFrom,
+        kept,
+        cover: inUv,
+        body,
+        bodyInside: isBody,
+        bodyAround: (i) =>
+          colorful
+            ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
+            : nearColor(od[i], od[i + 1], od[i + 2], body, tol),
+        ring: opts.lightRing,
+        oldBody: colorful ? (r, gg, b) => sameShade(r, gg, b, body, tol) : null,
+      });
+      repainted = r.inside;
+      cleaned = r.around;
+      n -= r.inside;
+      if (leftover && fallback) {
+        let left = 0;
+        for (let p = 0; p < N; p++) {
+          if (!leftover[p]) continue;
+          const i = p * 4;
+          bd.data[i] = fallback[i];
+          bd.data[i + 1] = fallback[i + 1];
+          bd.data[i + 2] = fallback[i + 2];
+          left++;
+        }
+        this.think('kept', `"${slot.name}": ${left} pixel(s) of old body paint left by Muse got the new body paint`, {
+          slotId: slot.id,
+          leftOldBodyPaint: left,
+        });
+      }
     }
     g.putImageData(bd, 0, 0);
+    let covered = 0;
+    for (let i = 3; i < cover.length; i += 4) if (cover[i] >= 128) covered++;
+    const keptShareOfTexture = covered ? n / covered : 0;
+    const isWheel = slot.meshes.some((m) => WHEEL_NAME.test(namesOf(m)));
+    if (keptShareOfTexture > 0.4 && !isWheel && !this.keepNoted?.has(`${slot.id}|big`)) {
+      (this.keepNoted ??= new Set()).add(`${slot.id}|big`);
+      this.emit('warning', {
+        message: `"${slot.name}": ${Math.round(keptShareOfTexture * 100)}% of this texture is kept as lights or tyre treads. If this is not a wheel, check the part names (or pass keepVehicleParts: false).`,
+      });
+    }
+    this.think('kept', `"${slot.name}": kept ${n} original pixel(s) of lights and tyre treads`, {
+      slotId: slot.id,
+      slotName: slot.name,
+      lightTriangles: keep.headlights,
+      treadTriangles: keep.treads,
+      keptPixels: n,
+      bodyColorRepaintedPixels: repainted,
+      cleanedAroundLights: cleaned,
+      oldBodyColor: body ? body.map(Math.round) : null,
+      share: keptShareOfTexture,
+    });
     this.keepNoted ??= new Set();
     if (n && !this.keepNoted.has(slot.id)) {
       this.keepNoted.add(slot.id);
-      const what = [keep.headlights ? 'lights' : '', keep.treads ? 'tyre treads' : ''].filter(Boolean).join(' and ');
-      this.emit('warning', { message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).` });
+      const what = [keep.headlights ? 'lights' : '', keep.glass ? 'glass' : '', keep.treads ? 'tyre treads' : '']
+        .filter(Boolean)
+        .join(', ');
+      const extra = repainted ? ' Old body color around them was painted like the body.' : '';
+      this.emit('warning', {
+        message: `"${slot.name}": kept the original ${what} (vehicle rule: never repainted).${extra}`,
+      });
     }
+    return ld;
+  }
+
+  /**
+   * Share of each painted area (or the whole texture in one-pass mode) whose final pixels
+   * still match the original, leaving out kept pixels. Over `opts.unpaintedLimit` (0.3) the
+   * area is flagged: a warning, a 'check' thinking entry, and `job.unpainted` for the review.
+   */
+  checkUnpainted(slot, baseColor, original, partJobs, keptAlpha, opts = {}) {
+    const W = baseColor.width,
+      H = baseColor.height;
+    const limit = opts.unpaintedLimit ?? 0.3;
+    const od = ctx2d(resizeCanvas(original, W, H)).getImageData(0, 0, W, H).data;
+    const bd = ctx2d(baseColor).getImageData(0, 0, W, H).data;
+    const areas = partJobs
+      ? partJobs.jobs
+          .filter((j) => !j.keep && !j.reuse && j.mask)
+          .map((j) => ({ name: j.part.name, job: j, mask: j.mask }))
+      : [
+          {
+            name: slot.name,
+            mask: drawUvGuide(slot, W, H, { wireframe: false, fillColor: '#ffffff', background: null }),
+          },
+        ];
+    const flagged = [];
+    for (const a of areas) {
+      const m = a.mask.width === W && a.mask.height === H ? a.mask : resizeCanvas(a.mask, W, H);
+      const md = ctx2d(m).getImageData(0, 0, W, H).data;
+      let all = 0,
+        same = 0;
+      for (let i = 0; i < md.length; i += 4) {
+        if (md[i + 3] < 128 || keptAlpha?.[i + 3] >= 128) continue;
+        all++;
+        if (Math.abs(bd[i] - od[i]) + Math.abs(bd[i + 1] - od[i + 1]) + Math.abs(bd[i + 2] - od[i + 2]) < 30) same++;
+      }
+      if (all < 64) continue;
+      const share = same / all;
+      if (a.job) a.job.unpainted = share;
+      // Glass stays glass and tyres stay rubber by the class rules, so they may look unchanged.
+      const mayStay = /\b(windows?|glass|windshield|windscreen|tyres?|tires?|wheels?)\b/i.test(
+        `${a.job?.part.zone ?? ''} ${a.name.replace(/[_\-.\d]+/g, ' ')}`,
+      );
+      if (share > limit && !mayStay) flagged.push({ area: a.name, share });
+    }
+    (this.unpaintedBySlot ??= new Map()).set(slot.id, flagged);
+    for (const f of flagged) {
+      const pct = Math.round(f.share * 100);
+      this.emit('warning', { message: `"${slot.name}": ${pct}% of "${f.area}" still shows the original texture.` });
+    }
+    this.think(
+      'check',
+      flagged.length
+        ? `"${slot.name}": ${flagged.map((f) => `${f.area} ${Math.round(f.share * 100)}% unpainted`).join(', ')}`
+        : `"${slot.name}": every planned area is painted`,
+      { slotId: slot.id, slotName: slot.name, unpainted: flagged, limit },
+    );
+    return flagged;
   }
 
   /**
@@ -2999,7 +4268,7 @@ export class ReskinPlugin {
     // Vehicles: every body panel (doors, fenders, hood, bumpers…) is painted as one area, so
     // stripes and lines carry across the doors instead of each panel getting its own design.
     if (opts.assetClass === 'vehicle' && opts.mergeBodyPanels !== false) {
-      const merged = mergeBodyPanels(parts);
+      const merged = mergeBodyPanels(parts, this.partRolesFor(opts));
       if (merged) {
         const [body, ...rest] = merged;
         return [body, ...this.paintRegions(slot, rest, { ...opts, mergeBodyPanels: false })];
@@ -3292,8 +4561,22 @@ const isBodyPanel = (name) =>
       .replace(/[_\-.\d]+/g, ' '),
   );
 
-export function mergeBodyPanels(parts) {
-  const panels = parts.filter((p) => isBodyPanel(p.name));
+/** Key for matching a part name to Muse's partRoles: lowercase, separators as spaces. */
+export function roleKey(name) {
+  return String(name ?? '')
+    .toLowerCase()
+    .replace(/[_.\-\s]+/g, ' ')
+    .trim();
+}
+
+export function mergeBodyPanels(parts, roles = null) {
+  // Muse's role for a part wins; the name is the fallback.
+  const BODY_ROLES = new Set(['body', 'trim']);
+  const isPanel = (p) => {
+    const role = roles?.[roleKey(p.name)];
+    return role ? BODY_ROLES.has(role) : isBodyPanel(p.name);
+  };
+  const panels = parts.filter(isPanel);
   if (panels.length < 2) return null;
   const others = parts.filter((p) => !panels.includes(p));
   const box = [Infinity, Infinity, -Infinity, -Infinity];

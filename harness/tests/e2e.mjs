@@ -26,7 +26,15 @@ const server = await createServer({
 });
 await server.listen();
 const url = 'http://localhost:5199/';
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+const browser = await chromium.launch({
+  args: [
+    '--use-gl=swiftshader',
+    '--enable-unsafe-swiftshader',
+    // A fake microphone (a beep) for the voice theme test.
+    '--use-fake-ui-for-media-stream',
+    '--use-fake-device-for-media-stream',
+  ],
+});
 let failures = 0;
 
 async function step(name, fn) {
@@ -489,6 +497,75 @@ try {
     await page.context().close();
   });
 
+  await step('voice theme: mic records, Muse Voice Transcribe fills the theme, Muse reviews it', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    await page.context().grantPermissions(['microphone']);
+    const calls = [];
+    const suggestion = {
+      subject: 'toy robot',
+      parts: [],
+      prompt: 'Rusty pirate robot with brass rivets.',
+      atlases: [],
+    };
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      const path = req.url().split('/v1/')[1];
+      if (path === 'asr/transcribe') {
+        const raw = req.postDataBuffer().toString('latin1');
+        calls.push({ path, contentType: req.headers()['content-type'], auth: req.headers().authorization, raw });
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({
+            sessionId: 's1',
+            transcript: 'make it a rusty pirate robot',
+            audioDurationMs: 1800,
+            turns: [],
+          }),
+        });
+      }
+      calls.push({ path });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(suggestion) } }] }),
+      });
+    });
+    await ui(page, 'btn-sample');
+    await page.waitForSelector('#prompt-dialog[open]');
+    assert.ok(await page.isVisible('#mic-btn'), 'mic shows next to the theme');
+    await page.click('#mic-btn');
+    await page.waitForSelector('#mic-btn.recording');
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: `${outDir}05b-voice-recording.png` });
+    await page.click('#mic-btn');
+    await page.waitForSelector('#suggestion:not([hidden])', { timeout: 30_000 });
+    assert.equal(await page.inputValue('#prompt-text'), 'make it a rusty pirate robot');
+    assert.deepEqual(
+      calls.map((c) => c.path),
+      ['asr/transcribe', 'chat/completions'],
+      'transcribe, then the usual Muse review (no painting)',
+    );
+    const t = calls[0];
+    assert.match(t.contentType, /^multipart\/form-data; boundary=/);
+    assert.equal(t.auth, 'Bearer k');
+    assert.match(t.raw, /"model":"muse-voice-transcribe-1.0"/);
+    assert.match(t.raw, /"audioEncoding":"WAV"/);
+    // The audio part is a 16 kHz mono 16-bit WAV.
+    const wav = Buffer.from(t.raw.slice(t.raw.indexOf('RIFF')), 'latin1');
+    assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(wav.readUInt16LE(22), 1);
+    assert.equal(wav.readUInt32LE(24), 16000);
+    assert.equal(wav.readUInt16LE(34), 16);
+    assert.match(await page.textContent('#prompt-go'), /Paint/);
+    await page.screenshot({ path: `${outDir}05c-voice-reviewed.png` });
+    const usage = await page.evaluate(() => window.reskin.plugin.getUsage().session.audioSeconds);
+    assert.equal(usage, 1);
+    await page.context().close();
+  });
+
   await step('shows the Muse error message when the API rejects a request', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'bad', useProxy: false });
     await page.route('https://api.meta.ai/v1/**', (route) =>
@@ -625,6 +702,8 @@ try {
       let failWheels = true;
       const edits = [];
       await page.route('https://api.meta.ai/v1/**', (route) => {
+        // SAM (looking for the car's windows and lights) finds nothing here.
+        if (route.request().url().endsWith('/responses')) return route.fulfill(samNone());
         const isChat = route.request().url().endsWith('/chat/completions');
         const body = route.request().postDataJSON();
         if (!isChat) edits.push(body.prompt);
@@ -1559,6 +1638,613 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'speed + glass: windows are never painted (no Muse call); other areas wait for the body style reference',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const png = makePng().toString('base64');
+      const t0 = Date.now();
+      const calls = [];
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const body = req.postDataJSON();
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions'))
+          return ok({ choices: [{ message: { content: '{"areas": {}}' } }] });
+        const area = /"([^"]+)" area/.exec(body.prompt ?? '')?.[1] ?? '?';
+        const start = Date.now() - t0;
+        await new Promise((r) => setTimeout(r, 600));
+        calls.push({ area, start, end: Date.now() - t0 });
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const glb = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        return Array.from(new Uint8Array(await mod.buildVehicleTestGlb({ windowPart: true })));
+      });
+      await page.evaluate(async (bytes) => {
+        const p = window.reskin.plugin;
+        await p.postModel(new Uint8Array(bytes).buffer, { name: 'speed' });
+        await p.postPrompt('neon', { assetClass: 'vehicle', normalMaps: false, roughnessMaps: false, samCheck: false });
+      }, glb);
+      const body = calls.find((c) => /^Body/.test(c.area));
+      // Glass is a hard vehicle rule: the window is never sent to Muse (kept as the original).
+      assert.ok(body && !calls.some((c) => /Window/.test(c.area)), `areas painted: ${JSON.stringify(calls)}`);
+      const wheel = calls.find((c) => /Wheel/.test(c.area));
+      assert.ok(wheel && wheel.start >= body.end - 50, 'other areas still get the body as style reference');
+      await page.context().close();
+    },
+  );
+
+  await step('a side mirror SAM takes for a window gets the new body paint; real glass stays', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    // Also with the user's "Do not paint the windows" (the zone then matches a user rule).
+    // 'auto' (part by part): the mirror's area is all inside the windows zone, so Muse never paints it.
+    for (const [rules, mode] of [
+      [null, 'atlas'],
+      ['Do not paint the windows', 'atlas'],
+      [null, 'auto'],
+      ['Do not paint the windows', 'auto'],
+    ]) {
+      const out = await page.evaluate(
+        async ([userRules, mode]) => {
+          const p = window.reskin.plugin;
+          const mod = await import('/src/sampleModel.js');
+          await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L', windowPart: true }), {
+            name: 'mirror',
+          });
+          const slot = p.layout.slots.find((s) => s.texture);
+          const byName = (n) => slot.meshes.find((m) => m.name === n);
+          const all = (m) =>
+            new Uint8Array((m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3).fill(1);
+          // SAM's windows zone covers the mirror and the window (as on the real Porsche).
+          const tris = new Map([
+            [byName('Mirror_L'), all(byName('Mirror_L'))],
+            [byName('Window_Glass'), all(byName('Window_Glass'))],
+            // A solid body panel SAM also took for a window (the orange van's rear side panels).
+            [byName('Door_L'), all(byName('Door_L'))],
+          ]);
+          p.keepZones.set(slot.id, [{ zone: 'windows', tris, share: 0.05, area: 1 }]);
+          const r = await p.postPrompt('neon pink candy', {
+            assetClass: 'vehicle',
+            paintMode: mode,
+            keepSam: false,
+            userRules,
+          });
+          const c = r.slots[0].canvas;
+          const mean = (x, y, w, h) => {
+            const k = c.width / 512;
+            const d = c.getContext('2d').getImageData(x * k, y * k, w * k, h * k).data;
+            const m = [0, 0, 0];
+            for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+            return m.map((v) => Math.round(v / (d.length / 4)));
+          };
+          return {
+            mirror: mean(290, 290, 60, 60),
+            door: mean(280, 20, 80, 80),
+            window: mean(400, 270, 100, 100),
+            meshes: slot.meshes.map((m) => m.name),
+          };
+        },
+        [rules, mode],
+      );
+      const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+      assert.ok(
+        !near(out.mirror, [32, 80, 192], 30),
+        `${rules} ${mode}: mirror kept its old body paint ${out.mirror} (${out.meshes})`,
+      );
+      assert.ok(
+        !near(out.door, [32, 80, 192], 30),
+        `${rules} ${mode}: body panel in the windows zone kept ${out.door}`,
+      );
+      assert.ok(near(out.window, [51, 68, 85], 12), `${rules} ${mode}: window changed ${out.window}`);
+    }
+    await page.context().close();
+  });
+
+  await step(
+    'SAM keep pass: two renders joined once per model, reused when the same model is posted again',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const out = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const mod = await import('/src/sampleModel.js');
+        const prompts = [];
+        p.provider.segment = async ({ prompt }) => (prompts.push(prompt), { records: [] });
+        const think = [];
+        p.on('thinking', (t) => think.push(t.text));
+        const bytes = await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L' });
+        const counts = [];
+        for (let run = 0; run < 3; run++) {
+          await p.postModel(bytes.slice(0), { name: 'keep-memo' });
+          await p.postPrompt('neon', { assetClass: 'vehicle', paintMode: 'atlas', samCheck: false });
+          counts.push(prompts.length);
+        }
+        return { counts, prompts, reused: think.filter((t) => /Reused what SAM found/.test(t)).length };
+      });
+      assert.equal(out.counts[0], 8, `first run: 4 phrases x 2 renders ${JSON.stringify(out.prompts)}`);
+      assert.deepEqual(out.counts, [8, 8, 8], 'later runs reuse the first SAM result');
+      assert.equal(out.reused, 2);
+      await page.context().close();
+    },
+  );
+
+  await step('old body paint Muse leaves untouched (a side mirror) gets the new body paint', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L' }), { name: 'leftover' });
+      // "Muse" paints everything but leaves the mirror's square as the original blue.
+      const paint = p.provider.reskinAtlas.bind(p.provider);
+      p.provider.reskinAtlas = async (req) => {
+        const img = await p.toCanvas(await paint(req));
+        const k = img.width / 512;
+        img
+          .getContext('2d')
+          .drawImage(req.atlas, 256 * k, 256 * k, 128 * k, 128 * k, 256 * k, 256 * k, 128 * k, 128 * k);
+        return img;
+      };
+      const r = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas', keepSam: false });
+      const c = r.slots[0].canvas;
+      const k = c.width / 512;
+      const d = c.getContext('2d').getImageData(290 * k, 290 * k, 60 * k, 60 * k).data;
+      const m = [0, 0, 0];
+      for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+      return m.map((v) => Math.round(v / (d.length / 4)));
+    });
+    const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+    assert.ok(!near(out, [32, 80, 192], 30), `mirror kept its old body paint ${out}`);
+    await page.context().close();
+  });
+
+  await step('never painted: a Glass mesh, an Optics texture and what the user rules say (any class)', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      const res = {};
+      for (const cls of ['vehicle', 'prop']) {
+        await p.postModel(await mod.buildGlassOpticsTestGlb(), { name: 'glass-optics' });
+        const notes = [];
+        const off = p.on('warning', (w) => notes.push(w.message));
+        const r = await p.postPrompt('police cruiser', {
+          assetClass: cls,
+          paintMode: 'atlas',
+          userRules: "police style, don't paint the badge",
+        });
+        off();
+        const body = r.slots.find(
+          (s) => s.canvas && /body/i.test(p.layout.slots.find((x) => x.id === s.slotId)?.materials[0]?.name ?? ''),
+        );
+        const d = body.canvas.getContext('2d').getImageData(0, Math.round(body.canvas.height * 0.9), 4, 4).data;
+        res[cls] = {
+          painted: r.slots.map((s) => p.layout.slots.find((x) => x.id === s.slotId)?.materials[0]?.name),
+          badge: [d[0], d[1], d[2]],
+          notes,
+        };
+      }
+      return res;
+    });
+    for (const cls of ['vehicle', 'prop']) {
+      const o = out[cls];
+      assert.ok(!o.painted.includes('Glass'), `${cls}: glass painted ${o.painted}`);
+      assert.ok(
+        o.notes.some((n) => /"Glass" is glass/.test(n)),
+        `${cls}: ${o.notes.join(' | ')}`,
+      );
+      assert.ok(
+        Math.abs(o.badge[0] - 255) < 20 && Math.abs(o.badge[1] - 238) < 20 && o.badge[2] < 40,
+        `${cls}: badge ${o.badge}`,
+      );
+    }
+    assert.ok(!out.vehicle.painted.includes('Optics'), `vehicle: Optics painted ${out.vehicle.painted}`);
+    await page.context().close();
+  });
+
+  await step('change request: Muse picks the areas, only those are repainted from their current paint', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    const plans = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const body = req.postDataJSON();
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) {
+        const text = body.messages[0].content[0].text;
+        if (/asks for a change/.test(text)) {
+          plans.push(text);
+          return ok({
+            choices: [
+              { message: { content: '{"areas": {"Body": "make the body blue"}, "summary": "Body turns blue"}' } },
+            ],
+          });
+        }
+        return ok({ choices: [{ message: { content: '{"areas": {}}' } }] });
+      }
+      edits.push(body);
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'change-test' });
+      await p.postPrompt('steampunk', { useVisionPlanning: false, normalMaps: false, roughnessMaps: false });
+      const before = p.historySummary().entries.length;
+      const r = await p.postChange('make the body blue');
+      const h = p.historySummary();
+      return {
+        change: r.change,
+        entries: h.entries.length - before,
+        label: h.entries.at(-1).change,
+        thinking: r.thinking.filter((t) => t.step === 'change').map((t) => t.reused),
+      };
+    }, glb);
+    assert.equal(plans.length, 1, 'one short Muse call picks the areas');
+    assert.match(plans[0], /- Body/);
+    assert.match(plans[0], /make the body blue/);
+    assert.equal(edits.length, 3, 'first paint: 2 areas; the change: only Body');
+    assert.match(edits[2].prompt, /Change requested by the user: make the body blue/);
+    assert.deepEqual(res.change.areas, { Body: 'make the body blue' });
+    assert.equal(res.entries, 1);
+    assert.equal(res.label, 'make the body blue');
+    assert.deepEqual(res.thinking, [['Head']], 'Head reused');
+    await page.context().close();
+  });
+
+  await step('change request on a one-pass result: the whole texture is edited from its current paint', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      edits.push(req.postData() ?? '');
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'change-one-pass' });
+      await p.postPrompt('steampunk', {
+        paintMode: 'atlas',
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const before = p.historySummary().entries.length;
+      const r = await p.postChange('make the body blue');
+      const h = p.historySummary();
+      return { change: r.change, entries: h.entries.length - before, label: h.entries.at(-1).change };
+    }, glb);
+    assert.equal(edits.length, 2, 'one paint, one edit');
+    assert.match(edits[1], /change requested by the user: make the body blue/i);
+    assert.doesNotMatch(edits[0], /change requested/i);
+    assert.equal(res.change.summary, 'whole texture');
+    assert.equal(res.entries, 1);
+    assert.equal(res.label, 'make the body blue');
+    await page.context().close();
+  });
+
+  await step("profile keep rects: a game avatar's face area is never sent to Muse and keeps its pixels", async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng(64, 64, () => [200, 30, 30]).toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      edits.push(req.postData() ?? '');
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const out = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'keep-rects' });
+      p.setProfile({ name: 'test', keep: [{ name: 'face', rect: [0, 0, 1, 0.5] }] });
+      const r = await p.postPrompt('pirates', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+        edgePadding: 0,
+      });
+      p.setProfile(null);
+      const c = r.slots[0].canvas;
+      const px = (x, y) => [...c.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3)];
+      return { top: px(c.width / 2, c.height / 4), bottom: px(c.width / 2, (3 * c.height) / 4) };
+    }, glb);
+    assert.equal(edits.length, 1, 'only Body is painted');
+    assert.deepEqual(out.top, [136, 136, 136], `face area kept ${out.top}`);
+    assert.ok(out.bottom[0] > 150 && out.bottom[1] < 80, `body painted ${out.bottom}`);
+    await page.context().close();
+  });
+
+  await step(
+    'profile keep rects: hands keep only their skin pixels (not a sleeve, not another area); paintFace recolors them',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const png = makePng(64, 64, () => [200, 30, 30]).toString('base64');
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const out = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        // Skin everywhere; in the Head area (the "hands", top half) shaded skin and a grey sleeve.
+        const glb = await mod.buildOrientationTestGlb({
+          paint: (g) => {
+            g.fillStyle = 'rgb(235,186,155)';
+            g.fillRect(0, 0, 256, 256);
+            g.fillStyle = 'rgb(174,138,115)';
+            g.fillRect(192, 64, 64, 64);
+            g.fillStyle = 'rgb(119,119,118)';
+            g.fillRect(0, 64, 64, 64);
+          },
+        });
+        const p = window.reskin.plugin;
+        await p.postModel(glb, { name: 'keep-skin' });
+        const opts = {
+          paintMode: 'atlas',
+          useVisionPlanning: false,
+          normalMaps: false,
+          roughnessMaps: false,
+          samCheck: false,
+          edgePadding: 0,
+        };
+        const run = async (keep, extra = {}) => {
+          p.setProfile({ name: 'test', keep });
+          const r = await p.postPrompt('pirates', { ...opts, ...extra });
+          const c = r.slots[0].canvas;
+          const k = c.width / 256;
+          const px = (x, y) => [
+            ...c
+              .getContext('2d')
+              .getImageData(x * k, y * k, 1, 1)
+              .data.slice(0, 3),
+          ];
+          return {
+            face: px(64, 20),
+            skin: px(128, 90),
+            shaded: px(224, 100),
+            sleeve: px(32, 100),
+            otherArea: px(128, 135),
+            outside: px(128, 200),
+          };
+        };
+        // The rect holds all of Head and a strip of Body (the toy's waist band on the skin swatch).
+        const hands = await run([{ name: 'hands and arm skin', rect: [0, 0, 1, 0.55] }]);
+        const face = await run([{ name: 'face', rect: [0, 0, 1, 0.55] }]);
+        const both = [
+          { name: 'face', rect: [0, 0, 0.5, 0.2] },
+          { name: 'hands', rect: [0, 0, 1, 0.55] },
+        ];
+        const off = await run(both);
+        const on = await run(both, { paintFace: true });
+        p.setProfile(null);
+        return { hands, face, off, on };
+      });
+      const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+      const red = (c) => c[0] > 150 && c[1] < 80;
+      assert.ok(near(out.hands.skin, [235, 186, 155]), `skin kept ${out.hands.skin}`);
+      assert.ok(near(out.hands.shaded, [174, 138, 115]), `shaded skin kept ${out.hands.shaded}`);
+      assert.ok(red(out.hands.sleeve), `sleeve in the rect painted ${out.hands.sleeve}`);
+      assert.ok(
+        red(out.hands.otherArea),
+        `another area's skin-colored piece in the rect painted ${out.hands.otherArea}`,
+      );
+      assert.ok(red(out.hands.outside), `outside painted ${out.hands.outside}`);
+      assert.ok(near(out.face.sleeve, [119, 119, 118]), `a face rect keeps everything ${out.face.sleeve}`);
+      assert.ok(
+        near(out.off.face, [235, 186, 155]) && near(out.off.skin, [235, 186, 155]),
+        `face kept ${out.off.face}`,
+      );
+      assert.ok(out.on.face[0] - out.on.face[1] > 100, `paintFace: face painted ${out.on.face}`);
+      assert.ok(out.on.skin[0] - out.on.skin[1] > 100, `paintFace: hands take the face's new color ${out.on.skin}`);
+      assert.ok(out.on.shaded[0] < out.on.skin[0] - 20, `hand shading kept ${out.on.shaded} vs ${out.on.skin}`);
+      await page.context().close();
+    },
+  );
+
+  await step('template outlines and labels Muse copied are painted over with the paint beside them', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    await page.evaluate((r) => (window.__pluginRoot = r), fileURLToPath(new URL('../../plugin/src/', import.meta.url)));
+    const out = await page.evaluate(async () => {
+      const lc = await import('/@fs' + window.__pluginRoot + 'texture/lineCleanup.js');
+      const mk = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        return c;
+      };
+      // Template: white with one red panel border at x = 32.
+      const tpl = mk();
+      const tg = tpl.getContext('2d');
+      tg.fillStyle = '#fff';
+      tg.fillRect(0, 0, 64, 64);
+      tg.fillStyle = '#e00';
+      tg.fillRect(32, 0, 1, 64);
+      // "Muse" painted navy trousers but copied the border as a light line.
+      const paint = mk();
+      const pg = paint.getContext('2d');
+      pg.fillStyle = '#102040';
+      pg.fillRect(0, 0, 64, 64);
+      pg.fillStyle = '#e0e0e0';
+      pg.fillRect(31, 0, 3, 64);
+      const n = lc.fillMasked(paint, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 25 });
+      // A dark collar drawn along a guide line stays.
+      const col = mk();
+      const cg = col.getContext('2d');
+      cg.fillStyle = '#e0e0e0';
+      cg.fillRect(0, 0, 64, 64);
+      cg.fillStyle = '#202020';
+      cg.fillRect(31, 0, 3, 64);
+      lc.fillMasked(col, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 25 });
+      const collar = [...cg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
+      // A faint line on a pale shirt (only a little lighter) goes too.
+      const pale = mk();
+      const sg = pale.getContext('2d');
+      sg.fillStyle = '#b4d2d2';
+      sg.fillRect(0, 0, 64, 64);
+      sg.fillStyle = '#c4e0e0';
+      sg.fillRect(31, 0, 3, 64);
+      lc.fillMasked(pale, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 15 });
+      const shirt = [...sg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
+      // Light seams already in the original (grey lines between darker panels) are found.
+      const orig = mk();
+      const og = orig.getContext('2d');
+      og.fillStyle = '#7e7e7e';
+      og.fillRect(0, 0, 64, 64);
+      og.fillStyle = '#d2d2d2';
+      og.fillRect(0, 20, 64, 2);
+      og.fillRect(40, 0, 2, 64);
+      const seams = lc.seamLineMask(orig, null, { reach: 3, minRun: 16 });
+      const seam = {
+        h: seams.horizontal[21 * 64 + 10],
+        v: seams.mask[30 * 64 + 40],
+        vIsH: seams.horizontal[30 * 64 + 40],
+        none: seams.mask[30 * 64 + 10],
+      };
+      return {
+        seam,
+        n,
+        collar,
+        shirt,
+        px: [...pg.getImageData(32, 30, 1, 1).data.slice(0, 3)],
+        away: [...pg.getImageData(10, 30, 1, 1).data.slice(0, 3)],
+      };
+    });
+    assert.ok(out.n > 0);
+    assert.deepEqual(out.px, [16, 32, 64], `line still there ${out.px}`);
+    assert.deepEqual(out.away, [16, 32, 64]);
+    assert.deepEqual(out.collar, [32, 32, 32], 'a dark line drawn on purpose stays');
+    assert.deepEqual(out.shirt, [180, 210, 210], `faint line on a pale shirt ${out.shirt}`);
+    assert.deepEqual(out.seam, { h: 1, v: 1, vIsH: 0, none: 0 }, `seams in the original ${JSON.stringify(out.seam)}`);
+    await page.context().close();
+  });
+
+  await step('template line cleanup runs in a real paint: the light line Muse copied is gone', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // "Muse" paints dark navy with a light vertical line in the middle (a copied outline).
+    // ...and a light band along a horizontal panel border (the border at texture y 191).
+    const png = makePng(256, 256, (x, y) =>
+      (x >= 127 && x <= 131) || (y >= 60 && y <= 68) ? [225, 225, 225] : [16, 32, 64],
+    ).toString('base64');
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const out = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'tpl-lines' });
+      const t = document.createElement('canvas');
+      t.width = t.height = 256;
+      const g = t.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, 256, 256);
+      g.fillStyle = '#e00';
+      g.fillRect(128, 0, 1, 256);
+      g.fillRect(0, 191, 256, 1); // the model stores this atlas upside down: Muse's y 60-68
+      const run = async (cleanTemplateLines) => {
+        const r = await p.postPrompt('jeans', {
+          paintMode: 'atlas',
+          useVisionPlanning: false,
+          normalMaps: false,
+          roughnessMaps: false,
+          samCheck: false,
+          templates: [{ image: t }],
+          cleanTemplateLines,
+        });
+        const c = r.slots[0].canvas;
+        const k = c.width / 256;
+        const px = (x, y) => [
+          ...c
+            .getContext('2d')
+            .getImageData(x * k, y * k, 1, 1)
+            .data.slice(0, 3),
+        ];
+        return {
+          line: px(128, 200),
+          streak: px(131, 200),
+          band: px(40, 191),
+          bandEdge: px(40, 188),
+          below: px(40, 150),
+        };
+      };
+      return { off: await run(false), on: await run(true) };
+    }, glb);
+    assert.ok(out.off.line[0] > 150, `the mock line should be there without the cleanup ${out.off.line}`);
+    assert.ok(out.on.line[0] < 60, `line still there ${out.on.line}`);
+    assert.ok(
+      out.off.streak[0] > 150 && out.on.streak[0] < 60,
+      `streak beside the border ${out.off.streak} ${out.on.streak}`,
+    );
+    assert.ok(out.off.band[0] > 150, `the mock band should be there without the cleanup ${out.off.band}`);
+    assert.ok(out.on.band[0] < 60 && out.on.bandEdge[0] < 60, `band still there ${out.on.band} ${out.on.bandEdge}`);
+    assert.deepEqual(out.on.below, [16, 32, 64]);
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
@@ -1607,9 +2293,23 @@ try {
     const res = await page.evaluate(async (bytes) => {
       const p = window.reskin.plugin;
       await p.postModel(new Uint8Array(bytes).buffer, { name: 'review-test' });
-      await p.postPrompt('steampunk', { useVisionPlanning: false, normalMaps: false, roughnessMaps: false });
+      const seen = [];
+      p.on('thinking', (t) => seen.push(t.step));
+      const painted = await p.postPrompt('steampunk', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        userRules: 'Do not paint the windows',
+      });
       const r = await p.postReview({ passes: 1 });
-      return { repainted: r.passes[0].repainted, sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height] };
+      const brief = (list) => list.map((t) => ({ step: t.step, prompt: t.prompt, areas: t.areas, issues: t.issues }));
+      return {
+        repainted: r.passes[0].repainted,
+        sheet: [r.passes[0].sheet.width, r.passes[0].sheet.height],
+        thinking: brief(painted.thinking),
+        reviewThinking: brief(r.thinking),
+        seen,
+      };
     }, glb);
     assert.equal(chats.length, 1);
     assert.equal(areaSplits.length, 1, 'theme split per area once');
@@ -1623,6 +2323,27 @@ try {
     assert.match(chats[0].messages[0].content[0].text, /- Body = \w+/);
     assert.deepEqual(res.repainted, ['Body']);
     assert.equal(res.sheet[0], 1024); // 4 columns x 256
+    // The user's rules reach every paint prompt (first) and the review, unchanged.
+    const rule = 'MOST IMPORTANT RULE (from the user): Do not paint the windows';
+    assert.ok(
+      edits.every((e) => e.prompt.includes(rule)),
+      'user rule in every paint prompt',
+    );
+    assert.ok(JSON.stringify(chats[0]).includes(rule), 'user rule in the review');
+    // "What Muse is thinking": the class, the paint plan and the exact prompts, then the review.
+    const steps = res.thinking.map((t) => t.step);
+    for (const s of ['assetClass', 'plan', 'ask', 'paint']) assert.ok(steps.includes(s), `thinking has ${s}: ${steps}`);
+    assert.ok(
+      res.thinking.find((t) => t.step === 'plan').areas.some((a) => a.name === 'Body' && a.action === 'paint'),
+      'plan lists the areas',
+    );
+    assert.ok(
+      res.thinking.some((t) => t.step === 'paint' && t.prompt === edits[0].prompt),
+      'paint entry carries the exact prompt sent',
+    );
+    const rv = res.reviewThinking.find((t) => t.step === 'review');
+    assert.equal(rv?.issues?.[0]?.area, 'Body');
+    assert.ok(res.seen.includes('review'), 'thinking events are emitted');
     assert.equal(edits.length, 3); // Head + Body, then Body again
     assert.match(edits[2].prompt, /"Body" area/);
     assert.match(edits[2].prompt, /Correction from a review of the last attempt: cover the whole body area/);
@@ -1959,9 +2680,13 @@ try {
   });
 
   await step(
-    'vehicle: lights and tyre treads keep their original pixels, sidewalls are painted (both modes)',
+    'vehicle: light lenses and tyre treads keep their original pixels; sidewalls, lens rings and mirrors are painted (both modes)',
     async () => {
       const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      await page.evaluate(
+        (r) => (window.__pluginRoot = r),
+        fileURLToPath(new URL('../../plugin/src/', import.meta.url)),
+      );
       const out = await page.evaluate(async () => {
         const p = window.reskin.plugin;
         const mod = await import('/src/sampleModel.js');
@@ -1982,21 +2707,133 @@ try {
           off();
           const c = r.slots[0].canvas;
           res[mode] = {
-            head: mean(c, 30, 280, 60, 60),
+            head: mean(c, 40, 296, 48, 48),
+            ring: mean(c, 12, 300, 12, 40),
+            mirror: mean(c, 290, 290, 60, 60),
             tail: mean(c, 160, 280, 60, 60),
             tread: mean(c, 40, 410, 180, 80),
             side: mean(c, 290, 410, 60, 80),
             body: mean(c, 100, 60, 300, 120),
-            note: notes.some((n) => /kept the original lights and tyre treads/.test(n)),
+            note: notes.some((n) => /kept the original lights.*tyre treads/.test(n)),
           };
         }
+        // The car grouped under "Body + Wheel_FL" (as ModStorm does): the body is not a wheel.
+        await p.postModel(await mod.buildVehicleTestGlb({ groupName: 'Body + Wheel_FL' }), { name: 'grouped' });
+        const g = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+        res.grouped = {
+          body: mean(g.slots[0].canvas, 100, 60, 300, 120),
+          kept: g.thinking.filter((t) => t.step === 'kept').map((t) => t.treadTriangles),
+        };
+        // Muse's reading wins over names: Muse says the "Wheel FL" part is body paint.
+        await p.postModel(glb.slice(0), { name: 'roles' });
+        const m = await p.postPrompt('neon pink candy', {
+          assetClass: 'vehicle',
+          paintMode: 'atlas',
+          suggestion: { subject: 'toy car', partRoles: { 'Wheel FL': 'body', 'Headlight L': 'light' } },
+        });
+        res.roles = {
+          tread: mean(m.slots[0].canvas, 40, 410, 180, 80),
+          head: mean(m.slots[0].canvas, 40, 296, 48, 48),
+          parts: m.thinking.filter((t) => t.step === 'parts').flatMap((t) => t.decisions ?? []),
+          checks: m.thinking.filter((t) => t.step === 'check').length,
+        };
+        // Glass is never painted, in both modes (named window; and a see-through material).
+        res.glass = [];
+        for (const [mode, unnamed] of [
+          ['auto', false],
+          ['atlas', false],
+          ['atlas', true],
+        ]) {
+          await p.postModel(await mod.buildVehicleTestGlb({ windowPart: true }), { name: 'glass' });
+          if (unnamed) {
+            const w = p.model.scene.getObjectByName('Window_Glass');
+            w.name = 'Part_7';
+            w.material = w.material.clone();
+            w.material.name = 'mat7';
+            w.material.transparent = true;
+            w.material.opacity = 0.5;
+          }
+          const gr = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: mode });
+          res.glass.push(mean(gr.slots[0].canvas, 410, 280, 80, 80));
+        }
+        // A wide tyre (more tread than sidewall): its tread is still found and kept.
+        await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true }), { name: 'wide' });
+        const wide = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+        res.wideTread = mean(wide.slots[0].canvas, 40, 410, 180, 80);
+        // Whatever way the wheel was imported (axle along X, Y, Z or tilted), the tread is kept.
+        res.turned = [];
+        for (const rot of [
+          [0, 0, 0],
+          [0, Math.PI / 2, 0],
+          [0.6, 0.9, 0.3],
+          [2.2, -0.5, 1.4],
+        ]) {
+          await p.postModel(await mod.buildVehicleTestGlb({ tyreWidth: 0.45, openTyre: true, wheelRotation: rot }), {
+            name: 'turned',
+          });
+          const t = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas' });
+          res.turned.push(mean(t.slots[0].canvas, 40, 410, 180, 80));
+        }
+        // A texture left as the original is flagged by the check.
+        await p.postModel(glb.slice(0), { name: 'unpainted' });
+        const slot = p.layout.slots[0];
+        const c = document.createElement('canvas');
+        c.width = c.height = 512;
+        c.getContext('2d').drawImage(slot.texture.image, 0, 0, 512, 512);
+        res.flagged = p.checkUnpainted(slot, c, c, null, null).map((f) => Math.round(f.share * 100));
+        // A SAM "wheels" zone must hold a round piece to be a wheel (else it is wheel arches).
+        const ka = await import('/@fs' + window.__pluginRoot + 'analysis/keepAreas.js').catch(() => null);
+        const zone = (name) => {
+          const m = slot.meshes.find((x) => x.name === name);
+          const idx = m.geometry.index;
+          const n = (idx ? idx.count : m.geometry.getAttribute('position').count) / 3;
+          return { tris: new Map([[m, new Uint8Array(n).fill(1)]]) };
+        };
+        // Half a wheel (like a wheel arch around it) is not a wheel.
+        const half = zone('Wheel_FL');
+        for (const [m, use] of half.tris) {
+          const pos = m.geometry.getAttribute('position');
+          const idx = m.geometry.index;
+          m.updateWorldMatrix(true, false);
+          const v = new m.position.constructor();
+          for (let t = 0; t < use.length; t++) {
+            let y = 0;
+            for (let k = 0; k < 3; k++)
+              y += v.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k).applyMatrix4(m.matrixWorld).y;
+            if (y / 3 < m.getWorldPosition(v.clone()).y) use[t] = 0;
+          }
+        }
+        res.zoneWheel = ka
+          ? [ka.zoneHasWheel(slot, zone('Body')), ka.zoneHasWheel(slot, zone('Wheel_FL')), ka.zoneHasWheel(slot, half)]
+          : null;
         return res;
       });
       const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+      assert.ok(!near(out.roles.tread, [91, 91, 91], 12), `Muse says body: tread still kept ${out.roles.tread}`);
+      assert.ok(near(out.roles.head, [255, 224, 64]), `Muse says light: lens changed ${out.roles.head}`);
+      assert.ok(
+        out.roles.parts.some((d) => d.source === 'Muse (over its name)' && d.role === 'body'),
+        `parts decision logged: ${JSON.stringify(out.roles.parts)}`,
+      );
+      assert.ok(out.roles.parts.some((d) => d.role === 'light' && d.source === 'Muse'));
+      assert.ok(out.roles.checks > 0, 'final texture is checked against the plan');
+      assert.deepEqual(out.flagged, [100], 'an unpainted texture is flagged');
+      assert.ok(near(out.wideTread, [91, 91, 91], 12), `wide tyre: tread painted ${out.wideTread}`);
+      out.glass.forEach((c, i) => assert.ok(near(c, [51, 68, 85], 6), `glass ${i}: window painted ${c}`));
+      out.turned.forEach((c, i) => assert.ok(near(c, [91, 91, 91], 12), `turned wheel ${i}: tread painted ${c}`));
+      assert.deepEqual(
+        out.zoneWheel,
+        [false, true, false],
+        'box body and half a wheel are not wheels, the cylinder is',
+      );
+      assert.ok(!near(out.grouped.body, [32, 80, 192], 10), `grouped car: body kept as tyre ${out.grouped.body}`);
       for (const mode of ['auto', 'atlas']) {
         const o = out[mode];
         assert.ok(near(o.head, [255, 224, 64]), `${mode}: headlight changed ${o.head}`);
         assert.ok(near(o.tail, [224, 32, 32]), `${mode}: taillight changed ${o.tail}`);
+        // Old body paint around a lens, and a mirror taken for a light, are painted like the body.
+        assert.ok(!near(o.ring, [32, 80, 192], 30), `${mode}: body-colored ring around the lens kept ${o.ring}`);
+        assert.ok(!near(o.mirror, [32, 80, 192], 30), `${mode}: body-colored mirror kept ${o.mirror}`);
         // Original tread: stripes of #303030 and #b0b0b0 (1/3 light).
         assert.ok(near(o.tread, [91, 91, 91], 12), `${mode}: tread changed ${o.tread}`);
         assert.ok(!near(o.side, [128, 128, 128], 10), `${mode}: sidewall not painted ${o.side}`);

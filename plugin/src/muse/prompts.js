@@ -56,7 +56,7 @@ export function reskinAtlasPrompt(theme, plan, extra, parts) {
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
     multi
       ? '- Image 2 is only a guide: do not copy its flat colors. Paint each part only inside its own colored area, and repaint every part.'
-      : '- Do not draw the UV outlines from image 2; they are only a guide.',
+      : '- Image 2 is only a mask (white = used by the model): do not copy it, and do not draw any outlines, edges or wireframe lines.',
     "- Respect each part's orientation below: facial features, lettering and patterns must point the way the part's top points.",
     '- Fill empty space between islands with colors that match the neighbouring island to avoid seams. Never leave black or dark gaps next to an island.',
     '- Small parts made of many tiny islands (hands, fingers, buttons) should be one clean solid color each, without patterns.',
@@ -298,10 +298,12 @@ export function suggestPrompt(theme, atlases, hasSheet = true, hasIdSheet = fals
     '{"subject": "what the object is, one line",',
     ` "assetClass": "one of: ${assetClassIds().join(', ')}",`,
     ' "parts": [{"name": "visible part", "description": "what it looks like now"}],',
+    ` "partRoles": {"exact part name": "one of: ${PART_ROLES.join(', ')}"},`,
     ' "prompt": "2-4 sentences: the improved theme prompt, naming concrete colors, materials and motifs for each part, flat unlit albedo, no text",',
     ' "atlases": [{"index": 1, "regions": [{"name": "part name", "bbox": [x0, y0, x1, y1], "paint": "what to paint there in the new theme"}]}],',
     ' "tips": "optional one-line note for the user"}',
     'Keep the recommended prompt family friendly: no blood, gore, injuries, weapons, real people or brands, because the image model has a strict safety filter. Express dark or scary themes through color, pattern and costume (for example "spooky", "eerie", "Halloween"), not violence.',
+    'partRoles: for EVERY part listed for the atlases (exact names), say what that part really is, judged from the renders and the part map, not from its name (names can be wrong or shared by a whole group).',
     'Region names must use the exact part names listed for each atlas where they apply, and a face or other detail must go only inside the part it belongs to (for example the face goes in the head part, never in the hair).',
     'Atlas "index" counts the atlas images from 1. bbox is on a 0-1000 grid of that atlas image, origin top-left. At most 12 regions per atlas.',
   ]
@@ -337,6 +339,39 @@ export function suggestFromAnalysisPrompt(theme, analysis, lessons = []) {
     .join('\n');
 }
 
+/** What a part of a model is, as Muse names it in a suggestion (partRoles). */
+export const PART_ROLES = ['body', 'wheel', 'tyre', 'light', 'glass', 'trim', 'interior', 'other'];
+
+/** { "part name": role } with known roles only (synonyms mapped), or undefined. */
+export function parsePartRoles(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined;
+  const alias = {
+    tire: 'tyre',
+    tires: 'tyre',
+    tyres: 'tyre',
+    wheels: 'wheel',
+    rim: 'wheel',
+    lights: 'light',
+    lamp: 'light',
+    headlight: 'light',
+    taillight: 'light',
+    window: 'glass',
+    windows: 'glass',
+    windshield: 'glass',
+    paint: 'body',
+    panel: 'body',
+  };
+  const out = {};
+  for (const [name, v] of Object.entries(o)) {
+    const r = String(v ?? '')
+      .toLowerCase()
+      .trim();
+    const role = PART_ROLES.includes(r) ? r : alias[r];
+    if (role) out[name] = role;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Parses the art-director reply. Returns null if it is not usable JSON. */
 export function parseSuggestion(text) {
   const o = looseJson(text);
@@ -351,6 +386,7 @@ export function parseSuggestion(text) {
       assetClass: o.assetClass ? String(o.assetClass) : undefined,
       prompt: String(o.prompt ?? '').trim(),
       tips: o.tips ? String(o.tips) : undefined,
+      partRoles: parsePartRoles(o.partRoles),
       parts: (Array.isArray(o.parts) ? o.parts : [])
         .filter((p) => p && p.name)
         .map((p) => ({ name: String(p.name), description: p.description ? String(p.description) : undefined })),
@@ -542,4 +578,30 @@ export function parseReview(text) {
   } catch {
     return { ok: true, summary: '', issues: [], lessons: [], raw: text };
   }
+}
+
+/**
+ * Change request on a finished reskin: Muse Spark decides which painted areas the user's
+ * request touches and what to change in each, so only those are repainted.
+ */
+export function changePlanPrompt(request, theme, areas, subject) {
+  return [
+    'A 3D game asset was retextured. The user looked at the result and asks for a change.',
+    subject ? `The model is: ${subject}.` : '',
+    `The current theme is: "${theme}".`,
+    'Its texture areas (exact names), with what each looks like now when known:',
+    ...areas.map((a) => `- ${a.name}${a.zone ? ` (${a.zone})` : ''}${a.now ? `: ${a.now}` : ''}`),
+    `The user's change request: "${request}".`,
+    'Decide which areas this request changes, and for each one write a short, concrete instruction for the image model that edits that area (what to change, and that everything else stays exactly the same). Leave out every area the request does not touch. If the request changes the look of the whole model, list every area.',
+    'Reply with JSON only: {"areas": {"exact area name": "instruction"}, "summary": "one line for the user"}',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Parses the change plan: { areas: Map name → instruction, summary }. */
+export function parseChangePlan(text, names) {
+  const o = looseJson(text) ?? {};
+  const areas = parseAreaThemes(JSON.stringify(o.areas ?? {}), names);
+  return { areas, summary: typeof o.summary === 'string' ? o.summary.slice(0, 300) : '' };
 }
