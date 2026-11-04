@@ -68,7 +68,7 @@ export const ASSET_CLASSES = [
         rules: [
           'Arms: long sleeves that cover the whole arm area from shoulder to wrist, all the way round, in the outfit fabric. No bare skin, no short sleeves, no cuffs halfway; the hands are a separate area.',
           'The arm area is one arm unwrapped: side-by-side vertical strips (front, outer side, back, inner side) that wrap around the arm, shoulder at the top and wrist at the bottom, and the leftmost strip joins the rightmost one. Paint every strip as the same sleeve so they match where they meet; stripes go across all strips at the same heights.',
-          'Both arms often share this one piece of texture (mirrored), so keep it symmetric: no detail that belongs on only one arm, and no lettering.',
+          'Both arms often share this one piece of texture (mirrored), so keep it symmetric: no detail that belongs on only one arm, and no lettering. When the area shows two separate arm pieces side by side, they are the left and right arm: paint both exactly the same sleeve, same color and fabric.',
         ],
       },
       {

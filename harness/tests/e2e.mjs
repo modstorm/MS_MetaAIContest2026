@@ -1999,6 +1999,77 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'profile keep rects for hands keep only skin-coloured pixels; a sleeve inside the rect is painted',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const png = makePng(64, 64, () => [200, 30, 30]).toString('base64');
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const out = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        // Skin everywhere, with a grey sleeve at the left of the lower half (shaded skin too).
+        const glb = await mod.buildOrientationTestGlb({
+          paint: (g) => {
+            g.fillStyle = 'rgb(235,186,155)';
+            g.fillRect(0, 0, 256, 256);
+            g.fillStyle = 'rgb(174,138,115)';
+            g.fillRect(192, 128, 64, 128);
+            g.fillStyle = 'rgb(119,119,118)';
+            g.fillRect(0, 128, 64, 128);
+          },
+        });
+        const p = window.reskin.plugin;
+        await p.postModel(glb, { name: 'keep-skin' });
+        const opts = {
+          useVisionPlanning: false,
+          normalMaps: false,
+          roughnessMaps: false,
+          samCheck: false,
+          edgePadding: 0,
+        };
+        const run = async (keep) => {
+          p.setProfile({ name: 'test', keep: [keep] });
+          const r = await p.postPrompt('pirates', opts);
+          const c = r.slots[0].canvas;
+          const k = c.width / 256;
+          const px = (x, y) => [
+            ...c
+              .getContext('2d')
+              .getImageData(x * k, y * k, 1, 1)
+              .data.slice(0, 3),
+          ];
+          return { skin: px(128, 90), shaded: px(224, 160), sleeve: px(32, 160), outside: px(128, 20) };
+        };
+        const hands = await run({ name: 'hands and arm skin', rect: [0, 0.25, 1, 0.75] });
+        const face = await run({ name: 'face', rect: [0, 0.25, 1, 0.75] });
+        p.setProfile(null);
+        return { hands, face };
+      });
+      const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+      assert.ok(near(out.hands.skin, [235, 186, 155]), `skin kept ${out.hands.skin}`);
+      assert.ok(near(out.hands.shaded, [174, 138, 115]), `shaded skin kept ${out.hands.shaded}`);
+      assert.ok(
+        out.hands.sleeve[0] > 150 && out.hands.sleeve[1] < 80,
+        `sleeve in the rect painted ${out.hands.sleeve}`,
+      );
+      assert.ok(out.hands.outside[0] > 150 && out.hands.outside[1] < 80, `outside painted ${out.hands.outside}`);
+      assert.ok(near(out.face.sleeve, [119, 119, 118]), `a face rect keeps everything ${out.face.sleeve}`);
+      await page.context().close();
+    },
+  );
+
   await step('template outlines and labels Muse copied are painted over with the paint beside them', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
     await page.evaluate((r) => (window.__pluginRoot = r), fileURLToPath(new URL('../../plugin/src/', import.meta.url)));
@@ -2042,7 +2113,23 @@ try {
       sg.fillRect(31, 0, 3, 64);
       lc.fillMasked(pale, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 15 });
       const shirt = [...sg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
+      // Light seams already in the original (grey lines between darker panels) are found.
+      const orig = mk();
+      const og = orig.getContext('2d');
+      og.fillStyle = '#7e7e7e';
+      og.fillRect(0, 0, 64, 64);
+      og.fillStyle = '#d2d2d2';
+      og.fillRect(0, 20, 64, 2);
+      og.fillRect(40, 0, 2, 64);
+      const seams = lc.seamLineMask(orig, null, { reach: 3, minRun: 16 });
+      const seam = {
+        h: seams.horizontal[21 * 64 + 10],
+        v: seams.mask[30 * 64 + 40],
+        vIsH: seams.horizontal[30 * 64 + 40],
+        none: seams.mask[30 * 64 + 10],
+      };
       return {
+        seam,
         n,
         collar,
         shirt,
@@ -2055,13 +2142,17 @@ try {
     assert.deepEqual(out.away, [16, 32, 64]);
     assert.deepEqual(out.collar, [32, 32, 32], 'a dark line drawn on purpose stays');
     assert.deepEqual(out.shirt, [180, 210, 210], `faint line on a pale shirt ${out.shirt}`);
+    assert.deepEqual(out.seam, { h: 1, v: 1, vIsH: 0, none: 0 }, `seams in the original ${JSON.stringify(out.seam)}`);
     await page.context().close();
   });
 
   await step('template line cleanup runs in a real paint: the light line Muse copied is gone', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     // "Muse" paints dark navy with a light vertical line in the middle (a copied outline).
-    const png = makePng(256, 256, (x) => (x >= 127 && x <= 129 ? [225, 225, 225] : [16, 32, 64])).toString('base64');
+    // ...and a light band along a horizontal panel border (the border at texture y 191).
+    const png = makePng(256, 256, (x, y) =>
+      (x >= 127 && x <= 129) || (y >= 60 && y <= 68) ? [225, 225, 225] : [16, 32, 64],
+    ).toString('base64');
     await page.route('https://api.meta.ai/v1/**', async (route) => {
       const req = route.request();
       if (req.url().endsWith('/responses')) return route.fulfill(samNone());
@@ -2089,6 +2180,7 @@ try {
       g.fillRect(0, 0, 256, 256);
       g.fillStyle = '#e00';
       g.fillRect(128, 0, 1, 256);
+      g.fillRect(0, 191, 256, 1); // the model stores this atlas upside down: Muse's y 60-68
       const run = async (cleanTemplateLines) => {
         const r = await p.postPrompt('jeans', {
           paintMode: 'atlas',
@@ -2101,17 +2193,21 @@ try {
         });
         const c = r.slots[0].canvas;
         const k = c.width / 256;
-        return [
+        const px = (x, y) => [
           ...c
             .getContext('2d')
-            .getImageData(128 * k, 200 * k, 1, 1)
+            .getImageData(x * k, y * k, 1, 1)
             .data.slice(0, 3),
         ];
+        return { line: px(128, 200), band: px(40, 191), bandEdge: px(40, 188), below: px(40, 150) };
       };
       return { off: await run(false), on: await run(true) };
     }, glb);
-    assert.ok(out.off[0] > 150, `the mock line should be there without the cleanup ${out.off}`);
-    assert.ok(out.on[0] < 60, `line still there ${out.on}`);
+    assert.ok(out.off.line[0] > 150, `the mock line should be there without the cleanup ${out.off.line}`);
+    assert.ok(out.on.line[0] < 60, `line still there ${out.on.line}`);
+    assert.ok(out.off.band[0] > 150, `the mock band should be there without the cleanup ${out.off.band}`);
+    assert.ok(out.on.band[0] < 60 && out.on.bandEdge[0] < 60, `band still there ${out.on.band} ${out.on.bandEdge}`);
+    assert.deepEqual(out.on.below, [16, 32, 64]);
     await page.context().close();
   });
 

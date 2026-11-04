@@ -64,7 +64,7 @@ import {
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
-import { fillMasked, templateLineMask } from './texture/lineCleanup.js';
+import { fillMasked, growMask, horizontalRuns, seamLineMask, templateLineMask } from './texture/lineCleanup.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
@@ -170,6 +170,56 @@ function rectShare(mask, rects) {
       if (rects.some(({ rect: [u0, v0, u1, v1] }) => u >= u0 && u < u1 && v >= v0 && v < v1)) inside++;
     }
   return all ? inside / all : 0;
+}
+
+/**
+ * Which pixels of a rect of `canvas` have the rect's main skin tone (any shade of it: same
+ * hue mix, lighter or darker): a 0/1 array over the rect, or null when the rect's main color is
+ * not a skin-like color (then the whole rect is kept).
+ */
+function skinPixels(canvas, x, y, w, h) {
+  const d = ctx2d(canvas).getImageData(x, y, w, h).data;
+  const bins = new Map();
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    if (d[i + 3] < 128) continue;
+    const key = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+    bins.set(key, (bins.get(key) ?? 0) + 1);
+  }
+  if (!bins.size) return null;
+  const top = [...bins].sort((a, b) => b[1] - a[1])[0][0];
+  let r = 0,
+    gr = 0,
+    b = 0,
+    n = 0;
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    if (d[i + 3] < 128 || (((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4)) !== top) continue;
+    r += d[i];
+    gr += d[i + 1];
+    b += d[i + 2];
+    n++;
+  }
+  r /= n;
+  gr /= n;
+  b /= n;
+  const sum = r + gr + b;
+  // A grey or black main color is no skin tone to match: keep the whole rect.
+  if (!sum || (Math.max(r, gr, b) - Math.min(r, gr, b)) / Math.max(r, gr, b) < 0.15) return null;
+  const tr = r / sum,
+    tg = gr / sum,
+    tb = b / sum;
+  const out = new Uint8Array(w * h);
+  for (let q = 0; q < w * h; q++) {
+    const i = q * 4;
+    const s = d[i] + d[i + 1] + d[i + 2];
+    if (d[i + 3] < 128 || !s) continue;
+    const shade = s / sum;
+    if (shade < 0.35 || shade > 1.3) continue;
+    const dc = Math.max(Math.abs(d[i] / s - tr), Math.abs(d[i + 1] / s - tg), Math.abs(d[i + 2] / s - tb));
+    if (dc <= 0.035) out[q] = 1;
+  }
+  return out;
 }
 
 /** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
@@ -1287,9 +1337,27 @@ export class ReskinPlugin {
     const tplForLines =
       atlasMode && opts.cleanTemplateLines !== false ? this.templateFor(slot, opts, width, height) : null;
     if (tplForLines) {
-      const mask = templateLineMask(tplForLines, Math.max(2, Math.round((3 * width) / 1024)));
+      const grow = Math.max(2, Math.round((3 * width) / 1024));
+      const lines = templateLineMask(tplForLines, 0);
+      // The original's own light seams inside the templated areas (the toy's knee and ankle
+      // seams), which Muse copies from the reference picture just like template lines.
+      if (original) {
+        const area = this.templateArea(slot, opts, width, height);
+        const seams = seamLineMask(resizeCanvas(original, width, height), area, {
+          reach: Math.max(2, Math.round((4 * width) / 1024)),
+          minRun: Math.max(8, Math.round((40 * width) / 1024)),
+        });
+        for (let p = 0; p < lines.length; p++) lines[p] |= seams.mask[p];
+      }
       // Also the gutters between islands on a line (sampled at the seams through filtering).
-      const n = fillMasked(baseColor, mask, null, 24, { onlyLighter: 15 });
+      let n = fillMasked(baseColor, growMask(lines, width, height, grow), null, 24, { onlyLighter: 15 });
+      // Muse sometimes paints a whole light band along a horizontal panel border (a white band
+      // across the knees): up and down a little further, only clearly lighter pixels go.
+      const horizontal = horizontalRuns(lines, width, height, Math.max(8, Math.round((40 * width) / 1024)));
+      const band = growMask(horizontal, width, height, Math.max(4, Math.round((10 * width) / 1024)), {
+        vertical: true,
+      });
+      n += fillMasked(baseColor, band, null, 32, { minStep: 30 });
       if (n)
         this.think('note', `"${slot.name}": removed the template's outlines and labels from the paint (${n} px)`, {
           slotId: slot.id,
@@ -1784,6 +1852,23 @@ export class ReskinPlugin {
    * (slightly grown) UV area, on top of a copy of the original atlas. Returns that canvas,
    * in the atlas's own orientation.
    */
+  /** 0/1 map of the texture pixels a template covers (see templateFor), or null. */
+  templateArea(slot, opts, W, H) {
+    const list = [...(opts.templates ?? []), ...(this.profile?.templates ?? [])].filter(
+      (e) => e?.image && (!e.slot || e.slot === slot.id || e.slot === slot.name),
+    );
+    if (!list.length) return null;
+    const area = new Uint8Array(W * H);
+    for (const e of list) {
+      const [u0, v0, u1, v1] = e.rect ?? [0, 0, 1, 1];
+      const x1 = Math.min(W, Math.ceil(u1 * W)),
+        y1 = Math.min(H, Math.ceil(v1 * H));
+      for (let y = Math.max(0, Math.floor(v0 * H)); y < y1; y++)
+        for (let x = Math.max(0, Math.floor(u0 * W)); x < x1; x++) area[y * W + x] = 1;
+    }
+    return area;
+  }
+
   /**
    * Artists' templates for a slot, composed into one image at the atlas size (white where no
    * template covers it), or null. Entries come from opts.templates and the profile
@@ -1850,9 +1935,22 @@ export class ReskinPlugin {
       const w = Math.min(W, Math.ceil(u1 * W)) - x,
         h = Math.min(H, Math.ceil(v1 * H)) - y;
       if (w <= 0 || h <= 0) continue;
-      g.clearRect(x, y, w, h);
-      g.drawImage(src, x, y, w, h, x, y, w, h);
-      for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) out[(yy * W + xx) * 4 + 3] = 255;
+      const only = (k.skinOnly ?? /\b(hands?|skin)\b/i.test(k.name ?? '')) ? skinPixels(src, x, y, w, h) : null;
+      if (!only) {
+        g.clearRect(x, y, w, h);
+        g.drawImage(src, x, y, w, h, x, y, w, h);
+        for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) out[(yy * W + xx) * 4 + 3] = 255;
+        continue;
+      }
+      // Only the skin-coloured pixels: a sleeve or cuff reaching into the rect keeps its paint.
+      const cur = g.getImageData(x, y, w, h);
+      const orig = ctx2d(src).getImageData(x, y, w, h).data;
+      for (let q = 0; q < w * h; q++) {
+        if (!only[q]) continue;
+        for (let c = 0; c < 4; c++) cur.data[q * 4 + c] = orig[q * 4 + c];
+        out[((y + Math.floor(q / w)) * W + x + (q % w)) * 4 + 3] = 255;
+      }
+      g.putImageData(cur, x, y);
     }
     const names = rects.map((k) => k.name).filter(Boolean);
     this.think(

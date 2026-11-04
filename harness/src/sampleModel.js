@@ -121,12 +121,13 @@ function paintAtlas() {
  * Test asset for UV orientation: two planes sharing one atlas. "Head" (top half of the
  * atlas) is stored upside down, "Body" (bottom half) is stored upright.
  */
-export async function buildOrientationTestGlb() {
+export async function buildOrientationTestGlb({ paint } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const g = c.getContext('2d');
   g.fillStyle = '#888';
   g.fillRect(0, 0, 256, 256);
+  paint?.(g); // optional: draw the texture (256², glTF order: top row is v = 0)
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
