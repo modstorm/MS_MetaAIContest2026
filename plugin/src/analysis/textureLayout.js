@@ -451,6 +451,10 @@ export function ringLayerBands(slot, width, height) {
           wa = src.uvs[a * 2 + 1],
           ub = src.uvs[b * 2],
           wb = src.uvs[b * 2 + 1];
+        // The world angle at each end of the island (where its strip meets the next one).
+        const angA = Math.atan2(pos.getZ(a) - cz, pos.getX(a) - cx);
+        if (ua < isl.u0) isl.angStart = angA;
+        if (ua > isl.u1) isl.angEnd = angA;
         isl.u0 = Math.min(isl.u0, ua);
         isl.u1 = Math.max(isl.u1, ua);
         isl.v0 = Math.min(isl.v0, wa);
@@ -496,6 +500,8 @@ export function ringLayerBands(slot, width, height) {
       bands.push({ ...s, sectors: Uint8Array.from(s.sectors) });
       continue;
     }
+    if (s.x0 < b.x0) b.angStart = s.angStart;
+    if (s.x1 > b.x1) b.angEnd = s.angEnd;
     b.x0 = Math.min(b.x0, s.x0);
     b.x1 = Math.max(b.x1, s.x1);
     b.y0 = Math.min(b.y0, s.y0);
@@ -517,6 +523,9 @@ export function ringLayerBands(slot, width, height) {
     return {
       y0: b.y0,
       y1: b.y1,
+      // World angles (radians) at the strip's left (x0) and right (x1) ends.
+      angStart: b.angStart,
+      angEnd: b.angEnd,
       aspect,
       pieceAspect: aspect / n,
       arc: arcOf(b.sectors),

@@ -319,6 +319,61 @@ function softenJoins(canvas, band) {
   g.putImageData(img, 0, y0);
 }
 
+/**
+ * Cross-fades where two strips of a ring cut into sections meet on the model (in place): each
+ * strip end is paired with the other strip end at the same world angle, rows are matched
+ * from the ground up, and solid pixels within ~5% of the end fade towards the mean of the two
+ * end colours, in rows where both ends are solid. Alpha is not changed.
+ */
+function softenSectionJoins(canvas, layers) {
+  const ends = [];
+  layers.bands.forEach((b) => {
+    if (!b.pieces.length || b.angStart == null || b.angEnd == null) return;
+    ends.push({ b, x: b.pieces[0].x0, dir: 1, ang: b.angStart });
+    ends.push({ b, x: b.pieces[b.pieces.length - 1].x1 - 1, dir: -1, ang: b.angEnd });
+  });
+  const near = (a, c) => Math.abs(Math.atan2(Math.sin(a - c), Math.cos(a - c))) < (10 * Math.PI) / 180;
+  const used = new Set();
+  const W = canvas.width,
+    H = canvas.height;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, 0, W, H);
+  const d = img.data;
+  for (const e of ends) {
+    if (used.has(e)) continue;
+    const f = ends.find((o) => o !== e && o.b !== e.b && !used.has(o) && near(o.ang, e.ang));
+    if (!f) continue;
+    used.add(e).add(f);
+    const rows = Math.min(e.b.y1 - e.b.y0, f.b.y1 - f.b.y0);
+    // Row k counted from the ground (the model's bottom) in each strip.
+    const rowOf = (b, k) => (layers.flip ? b.y0 + k : b.y1 - 1 - k);
+    const wOf = (o) => Math.max(2, Math.round((o.b.pieces[0].x1 - o.b.pieces[0].x0) * 0.05));
+    for (let k = 0; k < rows; k++) {
+      const ye = rowOf(e.b, k),
+        yf = rowOf(f.b, k);
+      const ie = (ye * W + e.x) * 4,
+        jf = (yf * W + f.x) * 4;
+      if (d[ie + 3] < 255 || d[jf + 3] < 255) continue;
+      const mean = [0, 1, 2].map((c) => (d[ie + c] + d[jf + c]) / 2);
+      for (const [o, y] of [
+        [e, ye],
+        [f, yf],
+      ]) {
+        const w = wOf(o);
+        for (let s = 0; s < w; s++) {
+          const x = o.x + o.dir * s;
+          if (x < 0 || x >= W) break;
+          const i = (y * W + x) * 4;
+          if (d[i + 3] < 255) continue;
+          const t = 1 - (s + 0.5) / w;
+          for (let c = 0; c < 3; c++) d[i + c] = Math.round(d[i + c] + (mean[c] - d[i + c]) * t);
+        }
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+
 const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
 
 const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
@@ -4815,6 +4870,8 @@ export class ReskinPlugin {
     // Soft joins: across each join inside a strip, the solid part (base and lower slopes,
     // where both sides are solid) fades towards the two sides' mean colour. Alpha is kept.
     for (const band of layers.bands) softenJoins(out, band);
+    // Sections of one ring: the end of one strip meets the start of another on the model.
+    if (layers.bands.length > 1 && layers.bands.every((b) => b.arc < 330)) softenSectionJoins(out, layers);
     return out;
   }
 

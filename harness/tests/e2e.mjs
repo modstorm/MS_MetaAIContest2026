@@ -3282,7 +3282,8 @@ try {
       const png = makePng(256, 128, (x, y) =>
         x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255],
       ).toString('base64');
-      // Even pieces get a green forest instead of slate (the joins between them are softened).
+      // Alternate pieces get a green forest instead of slate, flipped in even sections (so the
+      // joins inside a strip and between strips both change colour; both are softened).
       const green = makePng(256, 128, (x, y) =>
         x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [30, 110, 40] : [255, 0, 255],
       ).toString('base64');
@@ -3299,7 +3300,8 @@ try {
         if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
         const prompt = req.postDataJSON()?.prompt ?? '';
         prompts.push(prompt);
-        const even = /piece (\d+) of 3 of section/.exec(prompt)?.[1] % 2 === 0;
+        const m = /piece (\d+) of 3 of section (\d+)/.exec(prompt);
+        const even = !!m && (m[1] % 2 === 0) !== (m[2] % 2 === 0);
         return ok({ data: [{ b64_json: even ? green : png }] });
       });
       const out = await page.evaluate(async () => {
@@ -3360,7 +3362,14 @@ try {
           joinStep: (() => {
             const px = (x) => c.getContext('2d').getImageData(x * k, 70 * k, 1, 1).data;
             const diff = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
-            return { join: diff(px(170), px(171)), across: diff(px(150), px(190)) };
+            // The end of quarter 1 (x 511, row 70) meets the start of quarter 2 (x 0, row 155).
+            const at = (x, y) => c.getContext('2d').getImageData(x * k, y * k, 1, 1).data;
+            return {
+              join: diff(px(170), px(171)),
+              across: diff(px(150), px(190)),
+              sectionJoin: diff(at(511, 70), at(0, 155)),
+              sectionAcross: diff(at(490, 70), at(20, 155)),
+            };
           })(),
           purple: (() => {
             const d = c.getContext('2d').getImageData(0, 0, c.width, 340 * k).data;
@@ -3394,6 +3403,10 @@ try {
       assert.ok(
         sec.joinStep.across > 60 && sec.joinStep.join < 25,
         'the base fades across joins: ' + JSON.stringify(sec.joinStep),
+      );
+      assert.ok(
+        sec.joinStep.sectionAcross > 60 && sec.joinStep.sectionJoin < 25,
+        'the base fades where one quarter meets the next: ' + JSON.stringify(sec.joinStep),
       );
       assert.equal(sec.log.length, 4, 'one stretch/join line per strip in thinking: ' + sec.log.join(' | '));
       assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
