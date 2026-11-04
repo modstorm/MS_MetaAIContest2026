@@ -247,6 +247,21 @@ try {
     await page.screenshot({ path: `${outDir}01-loaded.png` });
     await reskinViaPopup(page, 'molten lava rock with glowing magma veins');
     assert.ok(!(await page.isVisible('#compare-handle')), 'the reskin is shown, Compare stays off until clicked');
+    // A change after the reskin shows the same run panel and paint crew as a reskin.
+    await page.evaluate(() => {
+      window.__crewShown = false;
+      const crew = document.querySelector('#wait-crew');
+      new MutationObserver(() => (window.__crewShown ||= !crew.hidden)).observe(crew, { attributes: true });
+    });
+    const entries = await page.locator('#history button.entry').count();
+    await page.fill('#change-text', 'make the stripes blue');
+    await page.click('#btn-change');
+    await page.waitForFunction((n) => document.querySelectorAll('#history button.entry').length > n, entries, {
+      timeout: 60_000,
+    });
+    await page.waitForSelector('#run-dialog:not([open])', { state: 'attached' });
+    assert.ok(await page.evaluate(() => window.__crewShown), 'paint crew shown during the change');
+    assert.ok(await page.$eval('#wait-crew', (e) => e.hidden), 'paint crew hidden after the change');
     const kinds = await page.$$eval('#generated figure', (f) => f.map((x) => x.dataset.kind));
     assert.deepEqual(kinds, ['baseColor'], `maps: ${kinds}`); // no normal/roughness in the sample to regenerate
     await page.waitForTimeout(300);

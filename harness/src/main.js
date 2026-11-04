@@ -730,7 +730,8 @@ function setRunButtons({ busy = false, done = false } = {}) {
 }
 
 $('run-cancel').onclick = () => {
-  if (plugin.isBusy) plugin.cancel();
+  if (changeAbort) changeAbort.abort(new DOMException('Cancelled', 'AbortError'));
+  else if (plugin.isBusy) plugin.cancel();
   else {
     runDialog.close();
   }
@@ -1192,23 +1193,39 @@ const redo = () => {
   if (compareOn) setCompare(true);
 };
 // Change request on the shown result: Muse picks the areas, only those are repainted.
-$('change-form').onsubmit = async (e) => {
+$('change-form').onsubmit = (e) => {
   e.preventDefault();
   const text = $('change-text').value.trim();
   if (!text || plugin.isBusy) return;
+  runChange(text);
+};
+/** A change runs like a reskin: run panel, progress bar and the paint crew over the view. */
+let changeAbort = null;
+async function runChange(text) {
   $('btn-change').disabled = true;
+  changeAbort = new AbortController();
+  openRun(text);
+  $('run-title').textContent = 'Changing';
+  setRunButtons({ busy: true });
   try {
-    const r = await plugin.postChange(text);
+    const r = await plugin.postChange(text, { signal: changeAbort.signal });
     log(
       `Change "${text}": repainted ${Object.keys(r.change.areas).join(', ')}${r.change.summary ? ` (${r.change.summary})` : ''}`,
     );
     $('change-text').value = '';
+    runDialog.close();
   } catch (err) {
+    setRunButtons({});
     log(`Change failed: ${err.message}`, 'error');
+    if (err.name === 'AbortError') {
+      $('prompt-stage').textContent = 'Cancelled';
+      setBusy(false);
+    } else showError(err, () => runChange(text));
   } finally {
+    changeAbort = null;
     $('btn-change').disabled = false;
   }
-};
+}
 $('btn-undo').onclick = undo;
 $('btn-redo').onclick = redo;
 window.addEventListener('keydown', (e) => {
