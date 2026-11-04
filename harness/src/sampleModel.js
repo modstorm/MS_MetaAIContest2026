@@ -732,3 +732,70 @@ export async function buildGridBoxTestGlb() {
   root.add(mesh);
   return exportGLB(root);
 }
+
+/**
+ * A barrel: its side unwrapped as two half islands side by side at the top of the texture, the
+ * lid and base as two discs below (as many asset-pack barrels are laid out).
+ */
+export async function buildBarrelTestGlb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#5a3d22';
+  g.fillRect(0, 0, 512, 512);
+  g.fillStyle = '#2b2b2b';
+  for (const y of [30, 260]) g.fillRect(0, y, 512, 18);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const pos = [],
+    uv = [],
+    idx = [];
+  const SEG = 16,
+    R = 0.6,
+    Hh = 1.8;
+  // Side: one quad per segment (own vertices), outward winding; halves at u 0-0.48 and 0.52-1.
+  for (let i = 0; i < SEG; i++) {
+    const a0 = (i / SEG) * Math.PI * 2,
+      a1 = ((i + 1) / SEG) * Math.PI * 2;
+    const half = i < SEG / 2 ? 0 : 1,
+      j = i % (SEG / 2);
+    const u0 = half * 0.52 + (j / (SEG / 2)) * 0.48,
+      u1 = half * 0.52 + ((j + 1) / (SEG / 2)) * 0.48;
+    const b = pos.length / 3;
+    pos.push(Math.cos(a0) * R, Hh, -Math.sin(a0) * R, Math.cos(a1) * R, Hh, -Math.sin(a1) * R);
+    pos.push(Math.cos(a0) * R, 0, -Math.sin(a0) * R, Math.cos(a1) * R, 0, -Math.sin(a1) * R);
+    uv.push(u0, 0, u1, 0, u0, 0.58, u1, 0.58);
+    idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+  }
+  // Lid (y = Hh, faces up) and base (y = 0, faces down) as fans, discs at (0.25, 0.8) / (0.75, 0.8).
+  for (const [y, cu, up] of [
+    [Hh, 0.25, true],
+    [0, 0.75, false],
+  ]) {
+    const centre = pos.length / 3;
+    pos.push(0, y, 0);
+    uv.push(cu, 0.8);
+    for (let i = 0; i <= SEG; i++) {
+      const a = (i / SEG) * Math.PI * 2;
+      pos.push(Math.cos(a) * R, y, -Math.sin(a) * R);
+      uv.push(cu + Math.cos(a) * 0.18, 0.8 + Math.sin(a) * 0.18);
+    }
+    for (let i = 0; i < SEG; i++) {
+      const a = centre + 1 + i,
+        b = centre + 2 + i;
+      if (up) idx.push(centre, a, b);
+      else idx.push(centre, b, a);
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geom.setIndex(idx);
+  geom.computeVertexNormals();
+  const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ map: tex, name: 'Barrel' }));
+  mesh.name = 'Barrel';
+  const root = new THREE.Group();
+  root.add(mesh);
+  return exportGLB(root);
+}

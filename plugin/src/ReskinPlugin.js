@@ -29,6 +29,7 @@ import {
   facingSummary,
   splitPartRegions,
   splitTopBottom,
+  wrapsAround,
   whiteMask,
 } from './analysis/facing.js';
 import { avatarAnatomy, makeRegion, splitAvatarZones } from './analysis/anatomy.js';
@@ -3168,7 +3169,8 @@ export class ReskinPlugin {
             classRules: plain ? undefined : rules,
             extra: plain
               ? undefined
-              : [frontLine, opts.extraInstructions, job.note, retryNote].filter(Boolean).join('\n') || undefined,
+              : [frontLine, part.shapeNote, opts.extraInstructions, job.note, retryNote].filter(Boolean).join('\n') ||
+                undefined,
             plain,
             signal,
           }),
@@ -4618,11 +4620,11 @@ export class ReskinPlugin {
    * Roof / underside pieces of a part (see splitTopBottom). A piece that shares its texture
    * space with the walls (overlapping UVs) can't be painted on its own and stays with them.
    */
-  topBottomPieces(slot, part, names) {
+  topBottomPieces(slot, part, names, { quiet = false } = {}) {
     const tb = splitTopBottom(slot, part, { names });
     if (!tb) return null;
     this.topBottomNoted ??= new Set();
-    if (!this.topBottomNoted.has(slot.id)) {
+    if (!quiet && !this.topBottomNoted.has(slot.id)) {
       this.topBottomNoted.add(slot.id);
       this.emit('warning', {
         message: `"${slot.name}": treated as a building, so its top is painted as a simple roof and its underside flat black. If it is not a building, pick another asset type in the options.`,
@@ -4690,9 +4692,42 @@ export class ReskinPlugin {
           const tb = getAssetClass(opts.assetClass)?.topBottom
             ? this.topBottomPieces(slot, p, getAssetClass(opts.assetClass).topBottom)
             : null;
-          split = tb
-            ? [...splitPartRegions(slot, tb.rest), ...[tb.top, tb.bottom].filter(Boolean)]
-            : splitPartRegions(slot, p);
+          if (tb) split = [...splitPartRegions(slot, tb.rest), ...[tb.top, tb.bottom].filter(Boolean)];
+          else if (wrapsAround(slot, p)) {
+            // Round things (a barrel, can, drum): the side is one area painted as one wrap
+            // (not one design per UV island, which put a seam and rims in the middle), and
+            // the lid and base are their own areas (no side art on the lid).
+            const caps = this.topBottomPieces(
+              slot,
+              p,
+              {
+                rest: 'side, all the way round',
+                restZone: 'side',
+                top: 'lid',
+                topZone: 'lid',
+                bottom: 'base',
+                bottomZone: 'base',
+              },
+              { quiet: true },
+            );
+            // Each of them is then split by where its islands lie in the texture (an atlas shared
+            // with other props puts a rim or a handle far from the side strip).
+            const notes = {
+              side: 'This area is the side of a round object (like a barrel or a can) unrolled into a strip: paint one continuous side surface whose left and right edges join all the way round. Do not draw a lid, a top or bottom seen from above, or a whole object in it.',
+              lid: 'This area is the flat round top seen straight from above: paint it as a lid surface. No side art and nothing running down.',
+              base: 'This area is the flat round bottom seen straight from below: a plain base surface.',
+            };
+            split = caps
+              ? [caps.rest, caps.top, caps.bottom]
+                  .filter(Boolean)
+                  .flatMap((q) =>
+                    splitPartRegions(slot, q, { minShare: 0.01, gap: q.zone === 'side' ? 0.08 : 0.02 }).map((r) => ({
+                      ...r,
+                      shapeNote: notes[q.zone],
+                    })),
+                  )
+              : [p];
+          } else split = splitPartRegions(slot, p);
         }
       }
       const take = split.length <= left - remainingParts ? split : [p];

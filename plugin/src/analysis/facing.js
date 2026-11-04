@@ -300,6 +300,45 @@ export function splitPartRegions(slot, part, { gap = 0.02, minShare = 0.08, maxR
 }
 
 /**
+ * True when the sides of `part` go all the way round (a barrel, can, drum or pillar): the
+ * horizontal directions its side faces look in fill at least `need` of `bins` sectors.
+ * Its side is then painted as one wrap instead of one design per UV island.
+ */
+export function wrapsAround(slot, part, { bins = 12, need = 9 } = {}) {
+  const sector = new Float64Array(bins);
+  let total = 0;
+  for (const mesh of part.meshes) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+    const pos = mesh.geometry.getAttribute('position');
+    if (!src || !pos) continue;
+    const keepIsl = part.islands?.get(mesh);
+    const keepTri = part.tris?.get(mesh);
+    if ((part.islands && !keepIsl) || (part.tris && !keepTri)) continue;
+    const islandOf = keepIsl ? islandIdPerTriangle(src) : null;
+    mesh.updateWorldMatrix(true, false);
+    const m = mesh.matrixWorld;
+    const n = triangleCount(src);
+    for (let t = 0; t < n; t++) {
+      if (keepIsl && !keepIsl.has(islandOf[t])) continue;
+      if (keepTri && !keepTri[t]) continue;
+      _a.fromBufferAttribute(pos, vertexIndex(src, t, 0)).applyMatrix4(m);
+      _b.fromBufferAttribute(pos, vertexIndex(src, t, 1)).applyMatrix4(m);
+      _c.fromBufferAttribute(pos, vertexIndex(src, t, 2)).applyMatrix4(m);
+      _b.sub(_a);
+      _c.sub(_a);
+      _b.cross(_c);
+      const len = _b.length();
+      if (!len || Math.abs(_b.y / len) > 0.7) continue; // tops and bottoms
+      const k = Math.min(bins - 1, Math.floor(((Math.atan2(_b.z, _b.x) + Math.PI) / (2 * Math.PI)) * bins));
+      sector[k] += len;
+      total += len;
+    }
+  }
+  if (!total) return false;
+  return sector.filter((v) => v / total > 0.02).length >= need;
+}
+
+/**
  * Splits a part by which way its surfaces face up or down: triangles facing up become the
  * `top` piece (a building's roof), triangles facing down the `bottom` piece (its underside),
  * the rest stays as `rest`. Pieces are triangle masks (`tris`: Map mesh → Uint8Array), so

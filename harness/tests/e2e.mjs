@@ -3085,6 +3085,31 @@ try {
     },
   );
 
+  await step('barrel: the side is one wrap area, the lid and base their own areas', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      const p = window.reskin.plugin;
+      await p.postModel(await mod.buildBarrelTestGlb(), { name: 'barrel' });
+      const slot = p.layout.slots[0];
+      const regions = p.idRegions(slot, { assetClass: 'prop' }).map((r) => r.name);
+      const r = await p.postPrompt('toxic green slime', {
+        assetClass: 'prop',
+        useVisionPlanning: false,
+        samCheck: false,
+      });
+      return { regions, painted: !!r.slots[0]?.canvas };
+    });
+    assert.equal(out.regions.length, 3, JSON.stringify(out.regions));
+    assert.ok(!out.regions.some((n) => /center 2/.test(n)), 'the two side halves are one area');
+    assert.ok(
+      /side/.test(out.regions[0]) && out.regions.some((n) => /lid/.test(n)) && out.regions.some((n) => /base/.test(n)),
+      JSON.stringify(out.regions),
+    );
+    assert.ok(out.painted);
+    await page.context().close();
+  });
+
   await step('transparency: a see-through background image and a cut-out model texture keep their alpha', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const prompts = [];
