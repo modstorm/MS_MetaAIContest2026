@@ -90,7 +90,7 @@ export function plainSeamlessTexturePrompt(theme) {
 
 export function seamlessTexturePrompt(theme, materialName, extra) {
   return [
-    `A seamless, tileable surface texture for the material "${materialName}" of a 3D model, theme: "${theme}".`,
+    `A seamless, tileable surface texture${materialName && !isPlaceholderName(materialName) ? ` for the material "${materialName}"` : ''} of a 3D model, theme: "${theme}".`,
     'Orthographic top-down view of the surface, flat even lighting, no shadows, no perspective, no objects, no text.',
     'The left/right and top/bottom edges must tile without visible seams.',
     extra ?? '',
@@ -100,13 +100,28 @@ export function seamlessTexturePrompt(theme, materialName, extra) {
 }
 
 /**
+ * True for names that say nothing about the look and would pull Muse towards a grid or a
+ * checker ("Grid", "Checker", "proto_mat", "Material.001", "default", "uv_test", "texture3").
+ */
+export function isPlaceholderName(name) {
+  return (
+    /^(?:[\W_]*(?:grid|checker\w*|proto\w*|prototype|placeholder|default|material|mat|texture|tex|image|img|untitled|uv\w*|test|dev|blockout|greybox|graybox|none|new)[\W_]*\d*)+$/i.test(
+      String(name).trim(),
+    ) ||
+    /\b(grid|checker\w*|proto\w*|placeholder|blockout|gr[ae]ybox|uv[ _-]?test)\b/i.test(
+      String(name).replace(/[_.-]/g, ' '),
+    )
+  );
+}
+
+/**
  * A new image with transparency: the subject alone on a flat key color (stripped afterwards).
  * @param {string} theme
  * @param {{ name?: string, context?: string, classRules?: string[], keyNote: string }} o
  */
 export function cutoutPrompt(theme, { name, context, classRules = [], keyNote }) {
   return [
-    `A game image${name ? ` ("${name}")` : ''}: ${theme}.`,
+    `A game image${name && !isPlaceholderName(name) ? ` ("${name}")` : ''}: ${theme}.`,
     context ? `What it is used for: ${context}.` : '',
     ...classRules,
     keyNote,

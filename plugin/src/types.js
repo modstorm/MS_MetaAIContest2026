@@ -90,6 +90,9 @@
  *   the suggested prompt right away, so painting that prompt starts sooner. For editors that
  *   paint suggestion.prompt unchanged. Default false.
  * @property {'gltf' | 'image'} [imageOrder] Row order of the canvases handed out (slot results, their maps, textureUpdated).
+ * @property {boolean} [ignoreSource] true: the model's existing textures (e.g. a prototyping grid) are never sent to
+ *   Muse; each texture is painted from the prompt alone at its size (seamless, keeping UVs, tiling and transparency).
+ *   Default: the value given to postModel (false).
  *   'gltf' (default): as stored on the model (glTF, top row = v 0). 'image': flipped into ordinary image order (top row = v 1),
  *   ready to save as image files. Defaults to what postModel was given. The model's own textures never change.
  * @property {boolean | 'always'} [normalMaps] Regenerate normal maps the model already has (default true); 'always' also adds them where missing.
@@ -160,6 +163,8 @@
  * @property {string} theme What to paint, e.g. "lava cracks", "sunset over the sea".
  * @property {string} [id] Your own id for this job (e.g. the editor's image id); echoed on every event and the result.
  * @property {string} [name] Name used in prompts and messages (default: the input's name or the id).
+ * @property {boolean} [ignoreSource] true: the input image (e.g. a prototyping grid) is never sent to Muse; it only
+ *   gives the output size and how it wraps. Muse paints from the theme alone (opts.width/size override the size).
  * @property {string} [assetClass] 'sky', 'material' (tiling material / track), 'terrain', 'decal', 'icon', 'sprite', 'particle', … or any registered class.
  *   Guessed from context, theme and name if left out.
  * @property {string} [context] What it is for, sent to Muse ("race track asphalt seen from above").

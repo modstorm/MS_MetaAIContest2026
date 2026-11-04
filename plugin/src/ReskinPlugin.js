@@ -6,6 +6,7 @@ import {
   ringLayerBands,
   summarizeLayout,
   uvAspect,
+  uvSourceOf,
 } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { REVIEW_VIEWS, THUMB_VIEW, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
@@ -82,7 +83,16 @@ import {
   templateLineMask,
   verticalRuns,
 } from './texture/lineCleanup.js';
-import { hardenAlpha, keyColorInstruction, keyOut, pickKeyColor, trimTransparent } from './texture/chromaKey.js';
+import {
+  hardenAlpha,
+  keyColorInstruction,
+  keyOut,
+  pickKeyColor,
+  keySkyFromTop,
+  solidifyScenery,
+  topSolidShare,
+  trimTransparent,
+} from './texture/chromaKey.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
@@ -263,6 +273,146 @@ function skinPixels(canvas, x, y, w, h) {
 
 /** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
 /** A prompt that asks for see-through areas. */
+/**
+ * How many times over the UV triangles of `slot` cover the area they cover (1: laid out side by
+ * side; 6: every face of a box over the same whole square).
+ */
+function uvStacking(slot) {
+  let area = 0;
+  for (const mesh of slot.meshes) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+    if (!src) continue;
+    const n = Math.floor((src.index ? src.index.length : src.uvs.length / 2) / 3);
+    for (let t = 0; t < n; t++) {
+      const v = [0, 1, 2].map((k) => (src.index ? src.index[t * 3 + k] : t * 3 + k));
+      const [ax, ay, bx, by, cx, cy] = v.flatMap((i) => [src.uvs[i * 2], src.uvs[i * 2 + 1]]);
+      area += Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2;
+    }
+  }
+  return area / Math.max(1e-6, slot.coverage?.coverage ?? 1);
+}
+
+/** A flat mid-grey canvas the size of `canvas` (a stand-in for a texture Muse must not see). */
+function flatLike(canvas) {
+  const c = createCanvas(canvas.width, canvas.height);
+  const g = ctx2d(c);
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+
+/** The share of `canvas` pixels that are solid (alpha over 128). */
+function opaqueShare(canvas) {
+  const d = ctx2d(canvas).getImageData(0, 0, canvas.width, canvas.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 128) n++;
+  return n / (canvas.width * canvas.height);
+}
+
+/** The first row (from the top) where a column has a mostly solid pixel, over all columns. */
+function silhouetteTop(canvas) {
+  const W = canvas.width,
+    H = canvas.height;
+  // The outer 3% of columns are left out (Muse's side borders; solidifyScenery replaces them).
+  const B = Math.min(Math.floor(W / 4), Math.max(1, Math.round(W * 0.03)));
+  const d = ctx2d(canvas).getImageData(0, 0, W, H).data;
+  for (let y = 0; y < H; y++) {
+    let n = 0;
+    for (let x = B; x < W - B; x++) if (d[(y * W + x) * 4 + 3] > 128) n++;
+    // A few stray pixels are not a peak.
+    if (n > Math.max(2, W * 0.004)) return y;
+  }
+  return H;
+}
+
+/**
+ * Cross-fades the joins between the pieces of one ring strip on `canvas` (in place): within
+ * about 5% of a piece's width on each side, solid pixels in rows where both edge columns are
+ * solid move towards the mean of the two edge colours, most at the join. Alpha is not changed.
+ */
+function softenJoins(canvas, band) {
+  const W = canvas.width,
+    y0 = band.y0,
+    h = band.y1 - band.y0;
+  if (band.pieces.length < 2 || h < 2) return;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, y0, W, h);
+  const d = img.data;
+  for (let j = 1; j < band.pieces.length; j++) {
+    const x = band.pieces[j].x0;
+    const w = Math.max(2, Math.round((band.pieces[j].x1 - band.pieces[j].x0) * 0.05));
+    if (x - w < 0 || x + w > W) continue;
+    for (let y = 0; y < h; y++) {
+      const L = (y * W + x - 1) * 4,
+        R = (y * W + x) * 4;
+      if (d[L + 3] < 255 || d[R + 3] < 255) continue;
+      const mean = [0, 1, 2].map((c) => (d[L + c] + d[R + c]) / 2);
+      for (let dx = -w; dx < w; dx++) {
+        const i = (y * W + x + dx) * 4;
+        if (d[i + 3] < 255) continue;
+        const t = 1 - Math.abs(dx + 0.5) / w;
+        for (let c = 0; c < 3; c++) d[i + c] = Math.round(d[i + c] + (mean[c] - d[i + c]) * t);
+      }
+    }
+  }
+  g.putImageData(img, 0, y0);
+}
+
+/**
+ * Cross-fades where two strips of a ring cut into sections meet on the model (in place): each
+ * strip end is paired with the other strip end at the same world angle, rows are matched
+ * from the ground up, and solid pixels within ~5% of the end fade towards the mean of the two
+ * end colours, in rows where both ends are solid. Alpha is not changed.
+ */
+function softenSectionJoins(canvas, layers) {
+  const ends = [];
+  layers.bands.forEach((b) => {
+    if (!b.pieces.length || b.angStart == null || b.angEnd == null) return;
+    ends.push({ b, x: b.pieces[0].x0, dir: 1, ang: b.angStart });
+    ends.push({ b, x: b.pieces[b.pieces.length - 1].x1 - 1, dir: -1, ang: b.angEnd });
+  });
+  const near = (a, c) => Math.abs(Math.atan2(Math.sin(a - c), Math.cos(a - c))) < (10 * Math.PI) / 180;
+  const used = new Set();
+  const W = canvas.width,
+    H = canvas.height;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, 0, W, H);
+  const d = img.data;
+  for (const e of ends) {
+    if (used.has(e)) continue;
+    const f = ends.find((o) => o !== e && o.b !== e.b && !used.has(o) && near(o.ang, e.ang));
+    if (!f) continue;
+    used.add(e).add(f);
+    const rows = Math.min(e.b.y1 - e.b.y0, f.b.y1 - f.b.y0);
+    // Row k counted from the ground (the model's bottom) in each strip.
+    const rowOf = (b, k) => (layers.flip ? b.y0 + k : b.y1 - 1 - k);
+    const wOf = (o) => Math.max(2, Math.round((o.b.pieces[0].x1 - o.b.pieces[0].x0) * 0.05));
+    for (let k = 0; k < rows; k++) {
+      const ye = rowOf(e.b, k),
+        yf = rowOf(f.b, k);
+      const ie = (ye * W + e.x) * 4,
+        jf = (yf * W + f.x) * 4;
+      if (d[ie + 3] < 255 || d[jf + 3] < 255) continue;
+      const mean = [0, 1, 2].map((c) => (d[ie + c] + d[jf + c]) / 2);
+      for (const [o, y] of [
+        [e, ye],
+        [f, yf],
+      ]) {
+        const w = wOf(o);
+        for (let s = 0; s < w; s++) {
+          const x = o.x + o.dir * s;
+          if (x < 0 || x >= W) break;
+          const i = (y * W + x) * 4;
+          if (d[i + 3] < 255) continue;
+          const t = 1 - (s + 0.5) / w;
+          for (let c = 0; c < 3; c++) d[i + c] = Math.round(d[i + c] + (mean[c] - d[i + c]) * t);
+        }
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+
 const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
 
 const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
@@ -557,6 +707,8 @@ export class ReskinPlugin {
    * @param {import('./io/modelIO.js').LoadOptions} [opts]
    *   Also opts.imageOrder: 'gltf' (default) | 'image', the row order of the canvases this
    *   model's reskin results and textureUpdated events hand out (see PostPromptOptions).
+   *   Also opts.ignoreSource: true, the default for this model's reskins: Muse Image never sees
+   *   the existing textures and paints from the prompt alone (see PostPromptOptions).
    * @returns {Promise<{ model: LoadedModel, layout: TextureLayout }>}
    */
   async postModel(input, opts = {}) {
@@ -568,6 +720,9 @@ export class ReskinPlugin {
       this.model = model;
       // Order of the canvases this model's results hand out: 'gltf' (default) or 'image'.
       this.imageOrder = opts.imageOrder === 'image' ? 'image' : 'gltf';
+      // ignoreSource: the model's own textures (a prototyping grid) are never shown to Muse
+      // Image; it paints from the prompt alone at each texture's size (see PostPromptOptions).
+      this.ignoreSource = opts.ignoreSource === true;
       this.snapshots.clear();
       this.geometrySnapshots = null;
       this.planCache.clear();
@@ -825,7 +980,11 @@ export class ReskinPlugin {
         idSheet = this.renderIdSheet({ size: Math.round((opts.viewSize ?? 384) * 0.75) });
         this.emit('views', { views, sheet, idSheet });
 
-        atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
+        // ignoreSource: the textures (a prototyping grid) are not shown to Muse at all.
+        atlasSlots =
+          (opts.ignoreSource ?? this.ignoreSource)
+            ? []
+            : this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
         const atlases = atlasSlots.map((slot) => {
           const original = textureToCanvas(slot.texture, 1024);
           const rawParts = this.idRegions(slot);
@@ -1168,6 +1327,15 @@ export class ReskinPlugin {
       return null;
     }
 
+    // ignoreSource: the existing texture (a prototyping grid) is not shown to Muse. An atlas is
+    // still painted area by area on its UV layout, from a flat grey stand-in at the same size; a
+    // tiled texture is painted from the prompt alone. UVs, tiling and transparency are kept.
+    const ignoreSource = (opts.ignoreSource ?? this.ignoreSource) === true;
+    const source = ignoreSource ? null : slot.texture;
+    if (ignoreSource && slot.texture)
+      this.think('plan', `"${slot.name}": the existing texture is ignored; Muse paints from the prompt only`, {
+        slotId: slot.id,
+      });
     // A backdrop ring around the scene (one or several layered bands, all the way round).
     const ringish = slot.meshes.some((m) => ringBand(m, { loose: true }));
     // Transparency asked for (opts.transparent, or the prompt says so): Muse paints on a flat key
@@ -1177,7 +1345,7 @@ export class ReskinPlugin {
     const wantAlpha =
       opts.transparent ??
       (WANTS_TRANSPARENCY.test(`${theme} ${opts.extraInstructions ?? ''}`) &&
-        (!slot.texture || ringish || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
+        (!source || ringish || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
     const key = wantAlpha ? pickKeyColor(opts.keyColor, theme) : null;
     if (opts.replaceShape === true) this.replaceRingShapes(slot);
     // Layered silhouettes: a ring whose texture holds horizontal strips (a skyline in layers).
@@ -1185,12 +1353,15 @@ export class ReskinPlugin {
     // the key color, keeping the model's UVs and layering. opts.layers: false turns it off.
     const layerSize = slot.texture ? fitSize(slot.width, slot.height, maxSize) : { width: 2048, height: 2048 };
     let layers =
-      key && ringish && opts.layers !== false && opts.replaceShape !== true
+      key && ringish && !ignoreSource && opts.layers !== false && opts.replaceShape !== true
         ? ringLayerBands(slot, Math.min(layerSize.width, maxSize), Math.min(layerSize.height, maxSize))
         : null;
     // A plain untextured ring (one band over the whole texture) is painted as one panorama instead.
     if (layers && !slot.texture && layers.bands.length < 2) layers = null;
-    const atlasMode = !layers && !!slot.texture && !slot.tiled;
+    // ignoreSource on stacked UVs (every face of a box over the whole square): there is no
+    // layout to keep, so one seamless picture from the prompt covers every face continuously.
+    const stacked = ignoreSource && slot.coverage?.coverage > 0.6 && uvStacking(slot) > 2.5;
+    const atlasMode = !layers && !!slot.texture && !slot.tiled && !stacked;
     // An untextured wide band (a background ring or a cylinder around the scene): one panorama
     // strip whose left and right edges join, repeated around when it is very wide.
     let strip = null;
@@ -1221,7 +1392,9 @@ export class ReskinPlugin {
       if (layers) {
         raw = await this.paintRingLayers(slot, theme, layers, key, opts, signal, report);
       } else if (atlasMode) {
-        original = textureToCanvas(slot.texture, maxSize);
+        original = ignoreSource
+          ? flatLike(textureToCanvas(slot.texture, maxSize))
+          : textureToCanvas(slot.texture, maxSize);
         // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
         const rawParts = slotParts(slot);
         // Part by part when the atlas has several areas: several named meshes, or one mesh
@@ -1401,7 +1574,8 @@ export class ReskinPlugin {
           await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
             this.provider.generateTexture({
               theme: t,
-              materialName: slot.name,
+              // A prototype's material name ("Grid") pulls Muse back to what it names.
+              materialName: ignoreSource ? undefined : slot.name,
               width,
               height,
               extraInstructions: plain
@@ -1437,7 +1611,8 @@ export class ReskinPlugin {
       width,
       height,
       atlasMode,
-      original,
+      // A flat stand-in (ignoreSource) has no pixels worth keeping or comparing with.
+      original: ignoreSource ? null : original,
       theme,
       maxSize,
       signal,
@@ -1786,13 +1961,18 @@ export class ReskinPlugin {
         ? (normalizeAssetClass(opts.assetClass) ?? String(opts.assetClass))
         : detectAssetClass({ subject: `${opts.context ?? ''} ${theme}`, modelName: name });
       report(0.02, 'load', `Reading "${name}"`);
-      const source = input == null ? null : await this.toInputCanvas(input);
+      const input_ = input == null ? null : await this.toInputCanvas(input);
       signal.throwIfAborted();
+      // ignoreSource: the input (a prototyping grid) only gives the size and how it wraps;
+      // Muse paints from the prompt alone and never sees it.
+      const ignoreSource = opts.ignoreSource === true;
+      const source = ignoreSource ? null : input_;
       const maxSize = Math.min(opts.maxTextureSize ?? 2048, 4096);
       const transparent = !!opts.transparent;
-      const wrap = resolveWrap(opts.wrap ?? (transparent ? 'none' : undefined), assetClass, source);
+      const wrap = resolveWrap(opts.wrap ?? (transparent ? 'none' : undefined), assetClass, input_);
       let width, height;
-      if (source) ({ width, height } = fitSize(source.width, source.height, maxSize));
+      if (input_ && !(ignoreSource && (opts.width || opts.size)))
+        ({ width, height } = fitSize(input_.width, input_.height, maxSize));
       else {
         width = Math.min(opts.width ?? opts.size ?? 1024, maxSize);
         height = Math.min(opts.height ?? opts.size ?? (wrap === 'equirect' ? Math.round(width / 2) : width), maxSize);
@@ -1854,7 +2034,8 @@ export class ReskinPlugin {
         raw = await this.withFilterRetry('generate texture', job, theme, (plain, t) =>
           this.provider.generateTexture({
             theme: t,
-            materialName: name,
+            // useName: false (or ignoreSource) leaves the name out of the prompt.
+            materialName: opts.useName === false || ignoreSource ? undefined : name,
             width,
             height,
             plain,
@@ -4658,8 +4839,14 @@ export class ReskinPlugin {
         layers: layers.bands.map((b) => ({ rows: [b.y0, b.y1], pieces: b.pieces.length, arc: b.arc })),
       },
     );
-    let done = 0;
-    const paintOne = async ({ band, piece, li, pi }) => {
+    let done = 0,
+      failedPieces = 0;
+    const painted = [];
+    // Height words: "low hills", "dunes" keep a low ridge; everything else is a tall range.
+    const low =
+      /\b(low|small|gentle|rolling|flat|hills?|dunes?|plains?|short)\b/i.test(theme) &&
+      !/\b(tall|high|huge|giant|towering|alps|peaks?)\b/i.test(theme);
+    const paintOne = async ({ band, piece, li, pi }, retry = false, strongKey = false) => {
       const w = piece.x1 - piece.x0,
         h = band.y1 - band.y0;
       // A strip is a whole ring (a depth layer) or a section of it (sections join end to end).
@@ -4668,12 +4855,15 @@ export class ReskinPlugin {
         sections
           ? `This is piece ${pi + 1} of ${band.pieces.length} of section ${li + 1} of ${L} of a panorama backdrop that goes all the way around a game scene (a wide strip, flat colors, no perspective). The sections join end to end around the ring: keep one style, one palette and one horizon height in every section.`
           : `This is piece ${pi + 1} of ${band.pieces.length} of layer ${li + 1} of ${L} of a layered panorama backdrop around a game scene (a wide strip, flat colors, no perspective).`,
-        'The scenery stands on the bottom edge of the image and fills the bottom part all the way across; its top outline is the silhouette against the sky. At the far left and right edges it comes down to the same medium height, so the pieces join side by side.',
+        `The scenery stands on the bottom edge of the image: a solid base fills the bottom ${low ? '10%' : '15-20%'} all the way across, and its top outline is the silhouette against the sky. ${low ? 'The ridge stays low, between about 25% and 50% of the image height.' : 'The ridge is tall: peaks and ridges vary between about 50% and 95% of the image height, and the highest peak nearly touches the top edge.'} At the far left and right edges it comes down to the same height (about ${low ? '30%' : '55%'} of the image), so the pieces join side by side.`,
         L > 1 && !sections
           ? 'Each layer is a different range: vary the shapes, and keep the colors of one layer even.'
           : '',
-        keyColorInstruction(key),
-        'The sky is NOT painted: everything above the silhouette is the flat key color.',
+        keyColorInstruction(key, { scenery: true }),
+        'The sky is NOT painted: everything above the silhouette is the flat key color. Below the silhouette there is no key color at all: the base is solid down to the bottom edge, from the left edge to the right edge.',
+        strongKey
+          ? `IMPORTANT: the background above the scenery must be pure flat ${key.hex} (${key.name}) right up to the top edge and into both top corners. Never white, pale, grey, blue or any sky color there.`
+          : '',
         opts.extraInstructions,
         ...this.lessonsFor(opts.assetClass),
       ].filter(Boolean);
@@ -4696,12 +4886,33 @@ export class ReskinPlugin {
       );
       let piece_ = resizeCanvas(raw, w, h);
       const k = keyOut(piece_, key);
+      // Muse sometimes paints a white or pale sky instead of the key: the top rows stay solid.
+      // That sky colour is keyed from the top edge down (only where it connects to the top).
+      if (topSolidShare(piece_) > 0.5) {
+        const sky = keySkyFromTop(piece_);
+        const still = topSolidShare(piece_) > 0.5;
+        this.think(
+          'check',
+          `"${slot.name}" strip ${li + 1} piece ${pi + 1}: Muse painted a sky (${sky?.skyColor ?? 'mixed colours'}) instead of the key colour; ${still ? (retry ? 'it could not be keyed and the piece was kept as it is' : 'it could not be keyed, painted again') : `keyed it from the top (${Math.round((sky?.keyed ?? 0) * 100)}% see-through)`}`,
+          { slotId: slot.id },
+        );
+        if (still && !retry) return paintOne({ band, piece, li, pi }, true, true);
+        if (!still) k.share = 1 - opaqueShare(piece_);
+      }
       if (k.share < 0.02)
         this.emit('warning', {
           message: `"${slot.name}" layer ${li + 1} piece ${pi + 1}: almost nothing was see-through (Muse painted a sky).`,
         });
-      if (layers.flip) piece_ = flipVertical(piece_);
-      g.drawImage(piece_, piece.x0, band.y0);
+      // A piece with almost no scenery (one small peak) is painted again, once.
+      if (1 - k.share < (low ? 0.12 : 0.25) && !retry) {
+        this.think(
+          'check',
+          `"${slot.name}" strip ${li + 1} piece ${pi + 1}: only ${Math.round((1 - k.share) * 100)}% scenery, painted again`,
+          { slotId: slot.id },
+        );
+        return paintOne({ band, piece, li, pi }, true);
+      }
+      painted.push({ band, piece, canvas: piece_, top: silhouetteTop(piece_) });
       done++;
       report(
         0.2 + (0.5 * done) / jobs.length,
@@ -4713,9 +4924,61 @@ export class ReskinPlugin {
     const queue = [...jobs];
     await Promise.all(
       Array.from({ length: Math.min(6, queue.length) }, async () => {
-        while (queue.length) await paintOne(queue.shift());
+        while (queue.length) {
+          const job = queue.shift();
+          try {
+            await paintOne(job);
+          } catch (err) {
+            // One piece that Muse would not paint (it timed out twice, or failed) leaves that
+            // piece see-through; the rest of the ring is still painted.
+            if (signal?.aborted || err?.name === 'AbortError') throw err;
+            const message = `"${slot.name}" strip ${job.li + 1} piece ${job.pi + 1} could not be painted: ${err?.message ?? err}. That piece is left see-through; run the reskin again to retry it.`;
+            this.think('check', message, { slotId: slot.id, strip: job.li + 1, piece: job.pi + 1 });
+            this.emit('warning', { message, slotId: slot.id, pieceFailed: { strip: job.li + 1, piece: job.pi + 1 } });
+            failedPieces++;
+            done++;
+            report(
+              0.2 + (0.5 * done) / jobs.length,
+              'generate',
+              `Layer ${job.li + 1}, piece ${job.pi + 1} failed (${done}/${jobs.length})`,
+            );
+          }
+        }
       }),
     );
+    // Muse often paints the range lower than asked: each strip is stretched up from its base
+    // (one factor for all its pieces, so the joins stay level) until its highest peak reaches
+    // the target height.
+    const target = low ? 0.5 : 0.92;
+    for (const band of layers.bands) {
+      const mine = painted.filter((p) => p.band === band);
+      const h = band.y1 - band.y0;
+      const highest = Math.max(0, ...mine.map((p) => 1 - p.top / h));
+      const scale = highest > 0.05 ? Math.min(3, Math.max(1, target / highest)) : 1;
+      this.think(
+        'plan',
+        `"${slot.name}" strip ${layers.bands.indexOf(band) + 1}: highest peak at ${Math.round(highest * 100)}% of the strip; ${scale > 1.02 ? `silhouettes stretched ×${scale.toFixed(2)} to ${Math.round(target * 100)}%` : 'no stretch needed'}; base made solid and piece ends brought to ${low ? 30 : 55}% so they join`,
+        { slotId: slot.id, highest, scale },
+      );
+      for (const p of mine) {
+        let c = p.canvas;
+        if (scale > 1.02) {
+          const t = createCanvas(c.width, h);
+          ctx2d(t).drawImage(c, 0, 0, c.width, h, 0, h - h * scale, c.width, h * scale);
+          c = t;
+        }
+        // A solid base in every column, and both ends at the same join height.
+        solidifyScenery(c, { base: low ? 0.12 : 0.18, join: low ? 0.3 : 0.55, key });
+        if (layers.flip) c = flipVertical(c);
+        g.drawImage(c, p.piece.x0, band.y0);
+      }
+    }
+    if (failedPieces === jobs.length) throw new Error(`"${slot.name}": Muse painted none of the ring's pieces`);
+    // Soft joins: across each join inside a strip, the solid part (base and lower slopes,
+    // where both sides are solid) fades towards the two sides' mean colour. Alpha is kept.
+    for (const band of layers.bands) softenJoins(out, band);
+    // Sections of one ring: the end of one strip meets the start of another on the model.
+    if (layers.bands.length > 1 && layers.bands.every((b) => b.arc < 330)) softenSectionJoins(out, layers);
     return out;
   }
 

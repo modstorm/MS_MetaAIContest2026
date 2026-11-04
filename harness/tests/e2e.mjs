@@ -146,6 +146,18 @@ async function setPaintMode(page, mode) {
   await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
 }
 
+/** Sets the Variations select (hidden until Muse has reviewed the theme). */
+async function setVariations(page, n) {
+  await page.$eval(
+    '#opt-variations',
+    (el, v) => {
+      el.value = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    String(n),
+  );
+}
+
 /** Turns the automatic review & fix pass on or off (it adds Muse calls). */
 async function setReview(page, on) {
   await page.$eval('#opt-review', (el, v) => (el.checked = v), on);
@@ -154,7 +166,7 @@ async function setReview(page, on) {
 async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review = false, variations = 1 } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
   await setReview(page, review);
-  await page.selectOption('#opt-variations', String(variations));
+  await setVariations(page, variations);
   if (paintMode) await setPaintMode(page, paintMode);
   await page.$eval('#theme-box', (d) => (d.open = true));
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
@@ -449,9 +461,10 @@ try {
     await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
+    assert.ok(!(await page.isVisible('#opt-paint-mode')), 'paint options wait for the review');
     await setPaintMode(page, 'atlas');
     await setReview(page, false);
-    await page.selectOption('#opt-variations', '1');
+    await setVariations(page, 1);
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
@@ -468,6 +481,7 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
+    assert.ok(await page.isVisible('#opt-paint-mode'), 'paint options shown after the review');
     assert.deepEqual(
       await page.$eval('#sugg-prompt', (t) => [t.selectionStart, t.scrollTop]),
       [0, 0],
@@ -2963,6 +2977,104 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'ignoreSource: a prototyping grid is never sent to Muse Image; prompt and size only (models keep their UV layout)',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const calls = [];
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        if (/\/images\//.test(req.url()))
+          calls.push({
+            path: new URL(req.url()).pathname,
+            size: req.postDataJSON?.()?.size ?? null,
+            hasImage: /data:image|"image"/.test(req.postData() ?? ''),
+          });
+        return museOk(route);
+      });
+      await page.evaluate(
+        (r) => (window.__pluginRoot = r),
+        fileURLToPath(new URL('../../plugin/src/', import.meta.url)),
+      );
+      const out = await page.evaluate(async () => {
+        const grid = () => {
+          const c = document.createElement('canvas');
+          c.width = 512;
+          c.height = 256;
+          const g = c.getContext('2d');
+          g.fillStyle = '#808080';
+          g.fillRect(0, 0, 512, 256);
+          g.fillStyle = '#ffffff';
+          for (let i = 0; i < 512; i += 32) g.fillRect(i, 0, 2, 256);
+          for (let i = 0; i < 256; i += 32) g.fillRect(0, i, 512, 2);
+          return c;
+        };
+        const p = window.reskin.plugin;
+        const proto = await import('/@fs' + window.__pluginRoot + 'texture/prototype.js');
+        const isGrid = proto.isPrototypeGrid(grid());
+        const t = await p.postTexture(grid(), {
+          theme: 'mossy cobblestones',
+          ignoreSource: true,
+          normalMap: false,
+          roughnessMap: false,
+        });
+        const mod = await import('/src/sampleModel.js');
+        await p.postModel(await mod.buildSampleGlb(), { name: 'robot', ignoreSource: true });
+        const atlas = p.layout.slots.find((s) => s.texture && !s.tiled);
+        const r = await p.postPrompt('rusty steampunk brass', {
+          useVisionPlanning: false,
+          samCheck: false,
+          samZones: false,
+        });
+        return {
+          isGrid,
+          atlasSize: [atlas.width, atlas.height],
+          texture: [t.canvas.width, t.canvas.height, t.wrap],
+          slots: r.slots.map((s) => [s.canvas?.width, s.canvas?.height]),
+          thinking: (r.thinking ?? []).map((e) => e.text).filter((x) => /ignored/.test(x)),
+        };
+      });
+      assert.equal(out.isGrid, true, 'isPrototypeGrid finds the grid');
+      assert.ok(calls.length >= 2, JSON.stringify(calls));
+      assert.ok(
+        calls[0].path.endsWith('/images/generations') && !calls[0].hasImage,
+        'postTexture: a text-to-image request, no image sent: ' + JSON.stringify(calls[0]),
+      );
+      assert.deepEqual(out.texture, [512, 256, 'both'], 'the grid gives the size and the tiling');
+      // The model's atlas is painted on its UV layout (a flat grey stand-in, never the texture), same size.
+      assert.ok(
+        out.slots.some(([w, h]) => w === out.atlasSize[0] && h === out.atlasSize[1]),
+        JSON.stringify(out),
+      );
+      assert.ok(out.thinking.length >= 1, 'the plan says the texture is ignored');
+      // A box with every face over the whole UV square: one seamless picture from the prompt.
+      calls.length = 0;
+      const box = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        const p = window.reskin.plugin;
+        await p.postModel(await mod.buildGridBoxTestGlb(), { name: 'box', ignoreSource: true });
+        const r = await p.postPrompt('rusty metal panels', {
+          useVisionPlanning: false,
+          samCheck: false,
+          samZones: false,
+        });
+        return {
+          size: r.slots.map((s) => [s.canvas.width, s.canvas.height]),
+          cov: p.layout.slots.map((s) => [s.coverage, s.tiled, !!s.texture]),
+          th: (r.thinking ?? []).map((e) => e.text),
+        };
+      });
+      assert.deepEqual(
+        calls.map((c) => [c.path.replace(/.*\/images\//, ''), c.hasImage]),
+        [['generations', false]],
+        'one text-to-image picture for the whole box: ' + JSON.stringify(calls) + JSON.stringify(box),
+      );
+      assert.deepEqual(box.size, [[512, 512]]);
+      await page.context().close();
+    },
+  );
+
   await step('transparency: a see-through background image and a cut-out model texture keep their alpha', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const prompts = [];
@@ -3278,10 +3390,20 @@ try {
     async () => {
       const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
       const prompts = [];
-      // "Muse": magenta sky above, mountains in the lower half.
-      const png = makePng(256, 128, (x, y) => (y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
-        'base64',
-      );
+      // "Muse": magenta sky above, mountains in the lower half, and a purple column at both sides.
+      const png = makePng(256, 128, (x, y) =>
+        x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255],
+      ).toString('base64');
+      // Alternate pieces get a green forest instead of slate, flipped in even sections (so the
+      // joins inside a strip and between strips both change colour; both are softened).
+      const green = makePng(256, 128, (x, y) =>
+        x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [30, 110, 40] : [255, 0, 255],
+      ).toString('base64');
+      const whiteSky = makePng(256, 128, (x, y) => {
+        const ridge = 60 + 20 * Math.sin(x / 9);
+        if (y <= ridge) return [248, 248, 250];
+        return y < ridge + 6 && Math.sin(x / 9) < -0.5 ? [205, 218, 238] : [30, 110, 40];
+      }).toString('base64');
       await page.route('https://api.meta.ai/v1/**', async (route) => {
         const req = route.request();
         if (req.url().endsWith('/responses')) return route.fulfill(samNone());
@@ -3293,8 +3415,13 @@ try {
             body: JSON.stringify(json),
           });
         if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
-        prompts.push(req.postDataJSON()?.prompt ?? '');
-        return ok({ data: [{ b64_json: png }] });
+        const prompt = req.postDataJSON()?.prompt ?? '';
+        prompts.push(prompt);
+        const m = /piece (\d+) of 3 of section (\d+)/.exec(prompt);
+        const even = !!m && (m[1] % 2 === 0) !== (m[2] % 2 === 0);
+        // Strip 3 piece 2: Muse paints a white sky instead of the key (snow caps on the peaks).
+        if (/piece 2 of 3 of section 3/.test(prompt)) return ok({ data: [{ b64_json: whiteSky }] });
+        return ok({ data: [{ b64_json: even ? green : png }] });
       });
       const out = await page.evaluate(async () => {
         const mod = await import('/src/sampleModel.js');
@@ -3343,14 +3470,82 @@ try {
         return {
           top: [a(100, 4), a(300, 89), a(200, 174), a(400, 259)],
           bottom: [a(100, 76), a(300, 161), a(200, 246), a(400, 331)],
+          // Row 20 of 80 (75% up): Muse's mock range only reaches 69% before the stretch.
+          high: Array.from({ length: 64 }, (_, i) => a(i * 2, 20)),
+          // Piece ends (x 0, 170/171, 341/342 of 512) meet at 55% of the strip (row 36 of 80).
+          joinSky: [0, 170, 171, 341, 342].map((x) => a(x, 30)),
+          joinSolid: [0, 170, 171, 341, 342].map((x) => a(x, 42)),
+          base: Array.from({ length: 128 }, (_, i) => a(i * 4, 70)),
+          log: (r.thinking ?? []).map((t) => t.text).filter((t) => /highest peak/.test(t)),
+          // Green (piece 2) next to slate (piece 1) at the join x 170/171, row 70 (base).
+          joinStep: (() => {
+            const px = (x) => c.getContext('2d').getImageData(x * k, 70 * k, 1, 1).data;
+            const diff = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+            // The end of quarter 1 (x 511, row 70) meets the start of quarter 2 (x 0, row 155).
+            const at = (x, y) => c.getContext('2d').getImageData(x * k, y * k, 1, 1).data;
+            return {
+              join: diff(px(170), px(171)),
+              across: diff(px(150), px(190)),
+              sectionJoin: diff(at(511, 70), at(0, 155)),
+              sectionAcross: diff(at(490, 70), at(20, 155)),
+            };
+          })(),
+          // Strip 3 (rows 170-250), piece 2 (x 171-341): white sky keyed, snow kept.
+          whiteSky: {
+            sky: [200, 256, 300].map((x) => a(x, 172)),
+            snow: (() => {
+              const d = c.getContext('2d').getImageData(171 * k, 170 * k, 170 * k, 80 * k).data;
+              let n = 0;
+              for (let i = 0; i < d.length; i += 4) if (d[i + 3] === 255 && d[i] > 150 && d[i + 2] > 200) n++;
+              return n;
+            })(),
+          },
+          purple: (() => {
+            const d = c.getContext('2d').getImageData(0, 0, c.width, 340 * k).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 0 && Math.min(d[i], d[i + 2]) - d[i + 1] > 25) n++;
+            return n;
+          })(),
           below: a(256, 450),
           mask: [mat.transparent, mat.alphaTest],
         };
       });
-      assert.deepEqual(sec.top, [0, 0, 0, 0], 'sky above each quarter is see-through');
+      // Peaks now reach ~92% of the strip, so the top rows are only almost all sky.
+      assert.ok(
+        sec.top.every((a) => a < 64),
+        'sky above each quarter is see-through: ' + JSON.stringify(sec),
+      );
+      assert.ok(
+        sec.high.some((a) => a > 200),
+        'the range is stretched up to fill the strip: ' + JSON.stringify(sec),
+      );
       assert.deepEqual(sec.bottom, [255, 255, 255, 255], 'each quarter stands on its bottom edge');
       assert.equal(sec.below, 0);
       assert.deepEqual(sec.mask, [false, 0.5], 'an alpha MASK material cuts at 0.5');
+      assert.deepEqual(sec.joinSky, [0, 0, 0, 0, 0], 'piece ends come down to the join height: ' + sec.joinSky);
+      assert.deepEqual(sec.joinSolid, [255, 255, 255, 255, 255], 'piece ends are solid below it: ' + sec.joinSolid);
+      assert.ok(
+        sec.base.every((v) => v === 255),
+        'the base is solid all the way across',
+      );
+      assert.equal(sec.purple, 0, 'no key-tinted columns at the piece joins');
+      assert.deepEqual(
+        sec.whiteSky.sky,
+        [0, 0, 0],
+        'a white sky Muse painted instead of the key is keyed out: ' +
+          JSON.stringify(sec.whiteSky) +
+          JSON.stringify(sec.log),
+      );
+      assert.ok(sec.whiteSky.snow > 50, 'pale snow on the peaks is kept: ' + sec.whiteSky.snow);
+      assert.ok(
+        sec.joinStep.across > 60 && sec.joinStep.join < 25,
+        'the base fades across joins: ' + JSON.stringify(sec.joinStep),
+      );
+      assert.ok(
+        sec.joinStep.sectionAcross > 60 && sec.joinStep.sectionJoin < 25,
+        'the base fades where one quarter meets the next: ' + JSON.stringify(sec.joinStep),
+      );
+      assert.equal(sec.log.length, 4, 'one stretch/join line per strip in thinking: ' + sec.log.join(' | '));
       assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
       assert.ok(/piece 1 of 3 of section 1 of 4/.test(prompts.join()), prompts[0]);
       await page.context().close();
