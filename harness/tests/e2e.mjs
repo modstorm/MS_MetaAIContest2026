@@ -3070,7 +3070,7 @@ try {
         [['generations', false]],
         'one text-to-image picture for the whole box: ' + JSON.stringify(calls) + JSON.stringify(box),
       );
-      assert.deepEqual(box.size, [[512, 512]]);
+      assert.deepEqual(box.size, [[1024, 1024]], 'stacked faces get one 1024² seamless picture');
       await page.context().close();
     },
   );
