@@ -3502,6 +3502,20 @@ export class ReskinPlugin {
     return this.goToHistory(this.history.findIndex((e) => e.id === id));
   }
 
+  /**
+   * Removes History entry `index` (the original cannot be removed). If it was the one shown,
+   * the next older entry is shown (the original when none is left).
+   * @returns {boolean} whether an entry was removed
+   */
+  deleteHistory(index) {
+    if (!this.guardIdle() || index < 0 || index >= this.history.length) return false;
+    this.history.splice(index, 1);
+    if (index === this.historyIndex) this.goToHistory(Math.min(index, this.history.length) - 1, { silent: true });
+    else if (index < this.historyIndex) this.historyIndex--;
+    this.emit('history', this.historySummary());
+    return true;
+  }
+
   undo() {
     return this.guardIdle() && this.goToHistory(this.historyIndex - 1);
   }

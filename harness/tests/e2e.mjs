@@ -306,6 +306,15 @@ try {
     assert.equal(await page.locator('#history button.entry').count(), 4); // original + 3
     assert.equal(await page.locator('#history button.entry[data-index="-1"] canvas').count(), 1, 'original thumbnail');
     assert.equal(await page.getAttribute('#history button.entry:first-child', 'data-index'), '2', 'newest first');
+    // Right-click a thumbnail -> Delete from History; the original has no Delete.
+    await page.click('#history button.entry[data-index="-1"] canvas', { button: 'right' });
+    assert.ok(!(await page.isVisible('#img-delete')), 'the original cannot be deleted');
+    await page.keyboard.press('Escape');
+    await page.mouse.click(5, 5);
+    await page.click('#history button.entry[data-index="2"] canvas', { button: 'right' });
+    await page.click('#img-delete');
+    assert.equal(await page.locator('#history button.entry').count(), 3); // original + 2
+    assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 1, 'still showing the same entry');
     await page.click('#btn-undo');
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), 0);
     await page.click('#history button.entry[data-index="-1"]'); // original
@@ -321,11 +330,11 @@ try {
     assert.ok(!(await page.isVisible('#compare-handle')));
     // Turntable spins after load and stops when the user drags.
     assert.ok(await page.evaluate(() => window.reskin.viewer.controls.autoRotate));
-    // History keeps everything: a new paint after going back still keeps all three variations.
+    // History keeps everything: a new paint after going back still keeps the two variations left.
     await page.click('#btn-reskin');
     await reskinViaPopup(page, 'frozen ice crystal');
-    assert.equal(await page.locator('#history button.entry').count(), 5); // original + 3 + 1
-    assert.equal(await page.getAttribute('#history button.entry.current', 'data-index'), '3');
+    assert.equal(await page.locator('#history button.entry').count(), 4); // original + 2 + 1
+    assert.equal(await page.getAttribute('#history button.entry.current', 'data-index'), '2');
     await page.context().close();
   });
 
@@ -459,6 +468,11 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
+    assert.deepEqual(
+      await page.$eval('#sugg-prompt', (t) => [t.selectionStart, t.scrollTop]),
+      [0, 0],
+      "Muse's prompt reads from the top",
+    );
     assert.equal(await page.textContent('#prompt-go'), 'Paint');
     const sheet = await page.$eval('#sugg-sheet canvas', (c) => [c.width, c.height]);
     assert.ok(sheet[0] > sheet[1], 'contact sheet is 3x2');

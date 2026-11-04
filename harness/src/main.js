@@ -442,7 +442,8 @@ function openPrompt() {
   themeChanged();
   $('theme-box').open = !(pending && suggestEnabled() && !needsSuggestion());
   if (!dialog.open) dialog.showModal();
-  ($('theme-box').open ? promptText : $('sugg-prompt')).focus();
+  if ($('theme-box').open) promptText.focus();
+  else focusFromTop($('sugg-prompt'));
 }
 
 $('btn-reskin').onclick = openPrompt;
@@ -691,7 +692,14 @@ function showSuggestion(s, theme) {
   $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
   themeChanged();
   $('theme-box').open = false; // Muse has the theme: fold it away (open it to change the theme)
-  $('sugg-prompt').focus();
+  focusFromTop($('sugg-prompt'));
+}
+
+/** Focus a text box with the caret at the start, scrolled to the top (Muse's prompt reads from the start). */
+function focusFromTop(el) {
+  el.focus({ preventScroll: true });
+  el.setSelectionRange(0, 0);
+  el.scrollTop = 0;
 }
 
 // ---- the progress panel (Run tab): progress, errors, Stop
@@ -994,11 +1002,16 @@ function named(c, name, source) {
 }
 const imgMenu = $('img-menu');
 let menuTarget = null;
+let menuHistoryIndex = -1;
 document.addEventListener('contextmenu', (e) => {
   const c = e.target.closest?.('canvas[data-save-name]');
   if (!c) return;
   e.preventDefault();
   menuTarget = c;
+  // History thumbnails (not the original) can be deleted from here.
+  const entry = c.closest('#history button.entry');
+  menuHistoryIndex = entry ? Number(entry.dataset.index) : -1;
+  $('img-delete').hidden = menuHistoryIndex < 0;
   $('img-save').textContent = `Save "${fileName(c.dataset.saveName)}"`;
   imgMenu.hidden = false;
   imgMenu.style.left = `${Math.min(e.clientX, innerWidth - 220)}px`;
@@ -1022,6 +1035,12 @@ $('img-save').onclick = async () => {
   a.download = fileName(menuTarget.dataset.saveName);
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+$('img-delete').onclick = () => {
+  imgMenu.hidden = true;
+  if (plugin.isBusy || menuHistoryIndex < 0) return;
+  plugin.deleteHistory(menuHistoryIndex);
+  if (compareOn) setCompare(plugin.historyIndex >= 0);
 };
 $('img-open').onclick = async () => {
   imgMenu.hidden = true;
