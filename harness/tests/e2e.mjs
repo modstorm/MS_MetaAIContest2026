@@ -246,7 +246,7 @@ try {
     assert.match(summary, /2 texture slot/);
     await page.screenshot({ path: `${outDir}01-loaded.png` });
     await reskinViaPopup(page, 'molten lava rock with glowing magma veins');
-    assert.ok(await page.isVisible('#compare-handle'), 'before/after slider on after painting');
+    assert.ok(!(await page.isVisible('#compare-handle')), 'the reskin is shown, Compare stays off until clicked');
     const kinds = await page.$$eval('#generated figure', (f) => f.map((x) => x.dataset.kind));
     assert.deepEqual(kinds, ['baseColor'], `maps: ${kinds}`); // no normal/roughness in the sample to regenerate
     await page.waitForTimeout(300);
@@ -262,7 +262,7 @@ try {
     else assert.ok(texName.endsWith('_baseColor.png') && head.toString('latin1', 1, 4) === 'PNG', texName);
     assert.match(texName, /sample-robot-molten-lava/);
     assert.match(exported.name, /sample-robot-molten-lava/);
-    // The before/after slider turned on by itself; export turned it off; it toggles back on.
+    // Compare turns on when clicked.
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.screenshot({ path: `${outDir}03-original.png` });
@@ -297,8 +297,7 @@ try {
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
     assert.match(await page.textContent('#generated'), /Original textures/);
     await page.click('#history button.entry[data-index="1"]');
-    // The slider came on by itself after painting; switch it off and on again.
-    if (await page.isVisible('#compare-handle')) await page.click('#btn-compare');
+    // Compare is off after painting; switch it on and off.
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.waitForTimeout(300);
