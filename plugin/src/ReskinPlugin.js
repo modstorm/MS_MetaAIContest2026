@@ -1641,10 +1641,12 @@ export class ReskinPlugin {
       // A see-through image (a background layer, a cut-out): Muse paints over a flat grey
       // backdrop and the original alpha is put back on the result.
       const sized = source ? resizeCanvas(source, width, height) : null;
+      // An input that already has transparency keeps exactly its own alpha (even with
+      // transparent: true): no key color, no ramp or threshold.
+      const alpha = sized && opts.keepAlpha !== false && opts.alpha !== 'none' ? alphaOf(sized) : null;
+      const key = transparent && !alpha ? pickKeyColor(opts.keyColor, `${theme} ${opts.context ?? ''}`, sized) : null;
       // transparent: Muse paints on a flat key color, which becomes transparency afterwards.
-      const key = transparent ? pickKeyColor(opts.keyColor, `${theme} ${opts.context ?? ''}`, sized) : null;
       const keyNote = key ? keyColorInstruction(key) : '';
-      const alpha = sized && !transparent && opts.keepAlpha !== false && opts.alpha !== 'none' ? alphaOf(sized) : null;
       const context = [
         opts.context,
         alpha

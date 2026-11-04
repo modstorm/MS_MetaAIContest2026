@@ -2958,6 +2958,45 @@ try {
       const a = (x, y) => r.canvas.getContext('2d').getImageData(x, y, 1, 1).data[3];
       const tex = { hasAlpha: r.hasAlpha, left: a(40, 100), edge: a(124, 100), right: a(200, 100) };
       const opaque = await p.postTexture(c, { theme: 'autumn forest', wrap: 'none', keepAlpha: false });
+      // A tiling chain-link fence with soft wires, given as a PNG blob: the alpha comes back exactly.
+      const f = document.createElement('canvas');
+      f.width = f.height = 256;
+      const fg = f.getContext('2d');
+      fg.strokeStyle = 'rgba(90,90,90,1)';
+      fg.lineWidth = 3.3;
+      for (let k = -256; k <= 512; k += 64) {
+        fg.beginPath();
+        fg.moveTo(k, 0);
+        fg.lineTo(k + 256, 256);
+        fg.moveTo(k, 256);
+        fg.lineTo(k + 256, 0);
+        fg.stroke();
+      }
+      const blob = await new Promise((res) => f.toBlob(res, 'image/png'));
+      const inA = (
+        await createImageBitmap(blob).then((b) => {
+          const t = document.createElement('canvas');
+          t.width = b.width;
+          t.height = b.height;
+          t.getContext('2d').drawImage(b, 0, 0);
+          return t;
+        })
+      )
+        .getContext('2d')
+        .getImageData(0, 0, 256, 256).data;
+      const fence = await p.postTexture(blob, { theme: 'candy land' });
+      const outA = fence.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+      let diff = 0,
+        semi = 0;
+      for (let i = 3; i < inA.length; i += 4) {
+        if (inA[i] !== outA[i]) diff++;
+        if (inA[i] > 0 && inA[i] < 255) semi++;
+      }
+      const fence2 = await p.postTexture(blob, { theme: 'candy land', transparent: true });
+      const outB = fence2.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+      let diff2 = 0;
+      for (let i = 3; i < inA.length; i += 4) if (inA[i] !== outB[i]) diff2++;
+      tex.fence = { diff, diff2, semi, wrap: fence.wrap };
       // A model texture with a cut-out hole.
       const mod = await import('/src/sampleModel.js');
       const glb = await mod.buildOrientationTestGlb({ paint: (pg) => pg.clearRect(0, 160, 128, 64) });
@@ -2971,6 +3010,38 @@ try {
       const m = res.slots[0].canvas;
       const k = m.width / 256;
       const ma = (x, y) => m.getContext('2d').getImageData(x * k, y * k, 1, 1).data[3];
+      // A model whose texture is a soft-edged fence: the result's alpha is exactly the texture's.
+      const fenceGlb = await mod.buildOrientationTestGlb({
+        paint: (pg) => {
+          pg.clearRect(0, 0, 256, 256);
+          pg.strokeStyle = 'rgb(90,90,90)';
+          pg.lineWidth = 3.3;
+          for (let j = -256; j <= 512; j += 64) {
+            pg.beginPath();
+            pg.moveTo(j, 0);
+            pg.lineTo(j + 256, 256);
+            pg.stroke();
+          }
+        },
+      });
+      await p.postModel(fenceGlb, { name: 'fence' });
+      const tImg = p.layout.slots[0].texture.image;
+      const tc = document.createElement('canvas');
+      tc.width = tImg.width;
+      tc.height = tImg.height;
+      tc.getContext('2d').drawImage(tImg, 0, 0);
+      const fres = await p.postPrompt('candy land', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const fc = fres.slots[0].canvas;
+      const ia = tc.getContext('2d').getImageData(0, 0, tc.width, tc.height).data;
+      const oa = fc.getContext('2d').getImageData(0, 0, fc.width, fc.height).data;
+      let modelDiff = fc.width === tc.width ? 0 : -1;
+      if (modelDiff === 0) for (let i = 3; i < ia.length; i += 4) if (ia[i] !== oa[i]) modelDiff++;
+      tex.modelDiff = modelDiff;
       return {
         tex,
         opaqueLeft: opaque.canvas.getContext('2d').getImageData(40, 100, 1, 1).data[3],
@@ -2978,7 +3049,13 @@ try {
         solid: ma(192, 192),
       };
     });
-    assert.deepEqual(out.tex, { hasAlpha: true, left: 0, edge: 128, right: 255 }, JSON.stringify(out.tex));
+    const { fence, modelDiff, ...texRest } = out.tex;
+    assert.equal(modelDiff, 0, 'a model texture keeps exactly its alpha');
+    assert.ok(
+      fence.semi > 100 && fence.diff === 0 && fence.diff2 === 0,
+      `fence alpha exactly the input's ${JSON.stringify(fence)}`,
+    );
+    assert.deepEqual(texRest, { hasAlpha: true, left: 0, edge: 128, right: 255 }, JSON.stringify(out.tex));
     assert.ok(/transparent \(see-through\)/.test(prompts[0]), 'Muse is told about the see-through areas');
     assert.equal(out.opaqueLeft, 255, 'keepAlpha: false gives an opaque result');
     assert.equal(out.hole, 0, 'the cut-out stays see-through');
