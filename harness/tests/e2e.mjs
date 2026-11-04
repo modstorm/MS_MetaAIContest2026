@@ -1955,6 +1955,50 @@ try {
     await page.context().close();
   });
 
+  await step("profile keep rects: a game avatar's face area is never sent to Muse and keeps its pixels", async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng(64, 64, () => [200, 30, 30]).toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      edits.push(req.postData() ?? '');
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const out = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'keep-rects' });
+      p.setProfile({ name: 'test', keep: [{ name: 'face', rect: [0, 0, 1, 0.5] }] });
+      const r = await p.postPrompt('pirates', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+        edgePadding: 0,
+      });
+      p.setProfile(null);
+      const c = r.slots[0].canvas;
+      const px = (x, y) => [...c.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3)];
+      return { top: px(c.width / 2, c.height / 4), bottom: px(c.width / 2, (3 * c.height) / 4) };
+    }, glb);
+    assert.equal(edits.length, 1, 'only Body is painted');
+    assert.deepEqual(out.top, [136, 136, 136], `face area kept ${out.top}`);
+    assert.ok(out.bottom[0] > 150 && out.bottom[1] < 80, `body painted ${out.bottom}`);
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');

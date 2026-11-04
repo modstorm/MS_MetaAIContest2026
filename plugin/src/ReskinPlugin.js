@@ -153,6 +153,24 @@ import {
  *   await plugin.postPrompt('haunted pumpkin armor');
  *   const { glb } = await plugin.postExport();
  */
+/** Share (0..1) of a mask canvas's covered pixels (alpha >= 128) inside any of `rects`. */
+function rectShare(mask, rects) {
+  const W = mask.width,
+    H = mask.height;
+  const d = mask.getContext('2d').getImageData(0, 0, W, H).data;
+  let all = 0,
+    inside = 0;
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      if (d[(y * W + x) * 4 + 3] < 128) continue;
+      all++;
+      const u = (x + 0.5) / W,
+        v = (y + 0.5) / H;
+      if (rects.some(({ rect: [u0, v0, u1, v1] }) => u >= u0 && u < u1 && v >= v0 && v < v1)) inside++;
+    }
+  return all ? inside / all : 0;
+}
+
 /** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
 const KEEP_MEMO = new Map();
 
@@ -1289,7 +1307,8 @@ export class ReskinPlugin {
     const detail = opts.detailPreserve ?? 0.35;
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
     // Areas that must never change (vehicle lights, tyre treads) get their original pixels back.
-    const keptAlpha = atlasMode && original ? this.restoreKept(slot, baseColor, original, opts) : null;
+    let keptAlpha = atlasMode && original ? this.restoreKept(slot, baseColor, original, opts) : null;
+    if (atlasMode && original) keptAlpha = this.restoreKeepRects(slot, baseColor, original, opts, keptAlpha);
     // Check the final texture against the plan: areas meant to be painted that still show
     // the original (Muse left them, or something put them back) are flagged for the review.
     if (atlasMode && original) this.checkUnpainted(slot, baseColor, original, ctx.partJobs, keptAlpha, opts);
@@ -1788,6 +1807,52 @@ export class ReskinPlugin {
   }
 
   /**
+   * Never-painted rects for a slot: opts.keepRects and the profile's `keep`, each
+   * { rect: [u0, v0, u1, v1], slot?, name? } in texture fractions measured from the top of the
+   * image (the same as template rects). E.g. a game avatar's face and hands.
+   */
+  keepRectsFor(slot, opts = {}) {
+    return [...(opts.keepRects ?? []), ...(this.profile?.keep ?? [])].filter(
+      (k) => Array.isArray(k?.rect) && (!k.slot || k.slot === slot.id || k.slot === slot.name),
+    );
+  }
+
+  /**
+   * Puts the original pixels back inside the keep rects (see keepRectsFor). Returns the kept
+   * alpha (rgba data, alpha 255 = kept) merged with `keptAlpha`, for the unpainted check.
+   */
+  restoreKeepRects(slot, baseColor, original, opts, keptAlpha) {
+    const rects = this.keepRectsFor(slot, opts);
+    if (!rects.length) return keptAlpha;
+    const W = baseColor.width,
+      H = baseColor.height;
+    const g = ctx2d(baseColor);
+    const src = resizeCanvas(original, W, H);
+    const out = keptAlpha ?? new Uint8ClampedArray(W * H * 4);
+    for (const k of rects) {
+      const [u0, v0, u1, v1] = k.rect;
+      const x = Math.max(0, Math.floor(u0 * W)),
+        y = Math.max(0, Math.floor(v0 * H));
+      const w = Math.min(W, Math.ceil(u1 * W)) - x,
+        h = Math.min(H, Math.ceil(v1 * H)) - y;
+      if (w <= 0 || h <= 0) continue;
+      g.clearRect(x, y, w, h);
+      g.drawImage(src, x, y, w, h, x, y, w, h);
+      for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) out[(yy * W + xx) * 4 + 3] = 255;
+    }
+    const names = rects.map((k) => k.name).filter(Boolean);
+    this.think(
+      'kept',
+      `"${slot.name}": kept ${names.length ? names.join(', ') : `${rects.length} area(s)`} as the original (profile)`,
+      {
+        slotId: slot.id,
+        keepRects: rects.map((k) => ({ name: k.name, rect: k.rect })),
+      },
+    );
+    return out;
+  }
+
+  /**
    * Caller-supplied profile for a family of models (e.g. a game's avatars): artists'
    * templates and exact panels, used by every later reskin. Pass null to clear.
    * @param {{ templates?: object[], panels?: object[], name?: string } | null} profile
@@ -2188,6 +2253,8 @@ export class ReskinPlugin {
     const prevByName = new Map((prev?.jobs ?? []).filter((j) => j.painted).map((j) => [j.part.name, j]));
     const jobs = [];
     const keepTris = this.keepTriangles(slot, opts);
+    // The profile's (or caller's) never-painted rects: an area all inside them costs no Muse call.
+    const keepRects = this.keepRectsFor(slot, opts);
     // Strip layouts are only read for limbs (sleeves, trouser legs); torso, hands and shoes
     // are not laid out as clean wrap-around strips.
     const STRIP_ZONES = new Set(['arms', 'legs']);
@@ -2203,7 +2270,10 @@ export class ReskinPlugin {
       if (anatForStrips && STRIP_ZONES.has(part.zone))
         job.sides = drawFacingMap(slot, part, W, H, { grow, limbCenterX: anatForStrips.cx }).canvas;
       // Vehicle lights (and areas that are all tyre tread) are never repainted.
-      if (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) {
+      if (
+        (keepTris && keptShare(slot, part, keepTris.tris) >= 0.95) ||
+        (keepRects.length && rectShare(mask, keepRects) >= 0.95)
+      ) {
         job.keep = true;
         job.protected = true;
       } else if (locked.has(part.name)) {
