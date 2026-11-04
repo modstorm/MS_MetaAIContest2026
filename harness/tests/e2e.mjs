@@ -141,6 +141,14 @@ async function ui(page, id) {
   await page.click(`#${id}`);
 }
 
+/** Loads the sample model (the popup stays closed) and opens the Reskin popup. */
+async function loadSample(page) {
+  await ui(page, 'btn-sample');
+  await page.waitForSelector('#btn-reskin:not([disabled])');
+  assert.ok(!(await page.isVisible('#prompt-dialog[open]')), 'the popup does not open by itself on load');
+  await page.click('#btn-reskin');
+}
+
 /** Sets the popup's paint mode select (it sits in the collapsed Options section). */
 async function setPaintMode(page, mode) {
   await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
@@ -251,7 +259,7 @@ try {
   console.log('Offline backend');
   await step('sample model loads, analysis shows, prompt pops up, reskin + export', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await page.waitForSelector('#prompt-dialog[open]');
     const summary = await page.textContent('#layout-summary');
     assert.match(summary, /9 meshes/);
@@ -298,7 +306,7 @@ try {
 
   await step('3 variations at once: pick one, history + undo, before/after slider', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await reskinViaPopup(page, 'molten lava rock', { variations: 3 }).catch(async (e) => {
       await page.screenshot({ path: `${outDir}08-variations-fail.png` });
       throw e;
@@ -379,7 +387,7 @@ try {
         body: JSON.stringify(json),
       });
     });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await reskinViaPopup(page, 'frozen ice crystal, frost and snow', { paintMode: 'atlas' });
     const chat = calls.find((c) => c.url.endsWith('/chat/completions'));
     const edit = calls.find((c) => c.url.endsWith('/images/edits'));
@@ -458,7 +466,7 @@ try {
         body: JSON.stringify(json),
       });
     });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
     assert.ok(!(await page.isVisible('#opt-paint-mode')), 'paint options wait for the review');
@@ -575,7 +583,7 @@ try {
         body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(suggestion) } }] }),
       });
     });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await page.waitForSelector('#prompt-dialog[open]');
     assert.ok(await page.isVisible('#mic-btn'), 'mic shows next to the theme');
     await page.click('#mic-btn');
@@ -618,7 +626,7 @@ try {
         body: JSON.stringify({ error: { type: 'authentication_error', message: 'Invalid API key' } }),
       }),
     );
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await page.waitForSelector('#prompt-dialog[open]');
     await page.fill('#prompt-text', 'gold armor');
     await page.click('#prompt-go');
@@ -667,7 +675,7 @@ try {
         ),
       });
     });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await reskinViaPopup(page, 'gold armor', { suggest: false, paintMode: 'atlas' });
     assert.equal(bodies.length, 2);
     assert.ok('tool_enablement' in bodies[0] && !('tool_enablement' in bodies[1]));
@@ -708,7 +716,7 @@ try {
       }
       return ok({ data: [{ b64_json: png }] });
     });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await reskinViaPopup(page, 'scary clown', { paintMode: 'atlas' });
     assert.equal(edits.length, 2);
     assert.match(
@@ -773,6 +781,8 @@ try {
         mimeType: 'model/gltf-binary',
         buffer: Buffer.from(bytes),
       });
+      await page.waitForSelector('#btn-reskin:not([disabled])');
+      await page.click('#btn-reskin');
       await page.waitForSelector('#prompt-dialog[open]');
       const layout = await page.evaluate(() => {
         const p = window.reskin.plugin;
@@ -953,7 +963,7 @@ try {
 
   await step('ID map: flat color per area on the model, restored afterwards, never exported', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
-    await ui(page, 'btn-sample');
+    await loadSample(page);
     await page.waitForSelector('#prompt-dialog[open]');
     await page.click('#prompt-cancel');
     const r = await page.evaluate(() => {
@@ -3604,7 +3614,7 @@ try {
   });
 
   console.log('Drag and drop');
-  await step('dropping a .glb loads it and opens the prompt', async () => {
+  await step('dropping a .glb loads it; the popup waits for Reskin', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
     await page.evaluate(async (bytes) => {
       const file = new File([new Uint8Array(bytes)], 'dropped-robot.glb', { type: 'model/gltf-binary' });
@@ -3613,8 +3623,9 @@ try {
       window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
       window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
     }, Array.from(exported.buf));
-    await page.waitForSelector('#prompt-dialog[open]');
-    assert.equal(await page.evaluate(() => window.reskin.plugin.model.name), 'dropped-robot');
+    await page.waitForFunction(() => window.reskin.plugin.model?.name === 'dropped-robot');
+    await page.waitForSelector('#btn-reskin:not([disabled])');
+    assert.ok(!(await page.isVisible('#prompt-dialog[open]')), 'dropping a model does not open the popup');
     // The reskinned export re-imports with its new textures intact.
     const slots = await page.evaluate(() => window.reskin.plugin.layout.slots.map((s) => s.otherMaps));
     // The sample has no normal / roughness maps, so none are added (only existing ones are regenerated).
