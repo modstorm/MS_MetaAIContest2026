@@ -98,7 +98,11 @@ export function fillMasked(canvas, mask, inside = null, maxPasses = 24, { onlyLi
     for (let p = 0; p < W * H; p++) {
       if (!mask[p] || (inside && !inside[p])) continue;
       const i = p * 4;
-      if (lum(was, i) - lum(d, i) < onlyLighter) {
+      // Lighter than the paint beside it by `onlyLighter`, or by a few percent of that paint
+      // (a faint line on a pale shirt), or near-white and lighter at all (the outline color).
+      const diff = lum(was, i) - lum(d, i);
+      const nearWhite = Math.min(was[i], was[i + 1], was[i + 2]) > 225 && diff > 3;
+      if (!nearWhite && diff < Math.min(onlyLighter, Math.max(6, 0.05 * lum(d, i)))) {
         d[i] = was[i];
         d[i + 1] = was[i + 1];
         d[i + 2] = was[i + 2];

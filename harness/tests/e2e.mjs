@@ -2033,9 +2033,19 @@ try {
       cg.fillRect(31, 0, 3, 64);
       lc.fillMasked(col, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 25 });
       const collar = [...cg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
+      // A faint line on a pale shirt (only a little lighter) goes too.
+      const pale = mk();
+      const sg = pale.getContext('2d');
+      sg.fillStyle = '#b4d2d2';
+      sg.fillRect(0, 0, 64, 64);
+      sg.fillStyle = '#c4e0e0';
+      sg.fillRect(31, 0, 3, 64);
+      lc.fillMasked(pale, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 15 });
+      const shirt = [...sg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
       return {
         n,
         collar,
+        shirt,
         px: [...pg.getImageData(32, 30, 1, 1).data.slice(0, 3)],
         away: [...pg.getImageData(10, 30, 1, 1).data.slice(0, 3)],
       };
@@ -2044,6 +2054,7 @@ try {
     assert.deepEqual(out.px, [16, 32, 64], `line still there ${out.px}`);
     assert.deepEqual(out.away, [16, 32, 64]);
     assert.deepEqual(out.collar, [32, 32, 32], 'a dark line drawn on purpose stays');
+    assert.deepEqual(out.shirt, [180, 210, 210], `faint line on a pale shirt ${out.shirt}`);
     await page.context().close();
   });
 

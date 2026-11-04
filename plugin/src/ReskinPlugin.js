@@ -1287,7 +1287,7 @@ export class ReskinPlugin {
     const tplForLines =
       atlasMode && opts.cleanTemplateLines !== false ? this.templateFor(slot, opts, width, height) : null;
     if (tplForLines && islandMap) {
-      const mask = templateLineMask(tplForLines, Math.max(1, Math.round((2 * width) / 1024)));
+      const mask = templateLineMask(tplForLines, Math.max(1, Math.round((3 * width) / 1024)));
       const inside = new Uint8Array(width * height);
       for (let p = 0; p < inside.length; p++) inside[p] = islandMap[p] >= 0 ? 1 : 0;
       const n = fillMasked(baseColor, mask, inside, 24, { onlyLighter: 15 });
