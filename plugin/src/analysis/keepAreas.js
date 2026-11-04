@@ -781,7 +781,8 @@ export function isColorful(color) {
  * @param {{ W: number, H: number, painted: Uint8ClampedArray, before: Uint8ClampedArray,
  *   orig: Uint8ClampedArray, light: Uint8Array, kept: Uint8Array, cover: Uint8Array,
  *   body: number[], bodyInside: (i: number) => boolean, bodyAround: (i: number) => boolean,
- *   ring?: number, fallback?: Uint8ClampedArray, ringFrom?: Uint8Array }} o  light/kept/cover: 1 per pixel; i = rgba
+ *   ring?: number, fallback?: Uint8ClampedArray, ringFrom?: Uint8Array,
+ *   oldBody?: (r: number, g: number, b: number) => boolean }} o  light/kept/cover: 1 per pixel; i = rgba
  *   index; fallback: new body paint (rgba) for old body paint inside a light with no painted
  *   surface next to it (a light that is its own UV island)
  * @returns {{ inside: number, around: number, lights: number }} pixels changed, light spots
@@ -847,6 +848,8 @@ export function cleanAroundLights(o) {
     // Only pixels that were actually painted: an area left as the original (all kept, so not
     // sent to Muse) would hand its old body paint back.
     if (!changed(i)) continue;
+    // Nor paint that is still the old body color (Muse kept the red around a mirror).
+    if (o.oldBody?.(before[i], before[i + 1], before[i + 2])) continue;
     s[0].push(before[i]);
     s[1].push(before[i + 1]);
     s[2].push(before[i + 2]);

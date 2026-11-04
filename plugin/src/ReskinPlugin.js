@@ -3650,6 +3650,25 @@ export class ReskinPlugin {
       // For a light that is its own UV island (nothing painted next to it in the texture),
       // its old body paint gets a swatch of the new body paint instead.
       let fallback = null;
+      // Old body paint Muse left untouched (a side mirror kept red on a black car): when the new
+      // body paint is not a shade of the old one, it gets the new body paint too.
+      let leftover = null;
+      if (colorful && opts.cleanOldBodyPaint !== false && !this.locked.size) {
+        const newBody = dominantColor(before, (p) => inUv[p] && !kept[p]);
+        if (newBody && !sameShade(newBody[0], newBody[1], newBody[2], body, tol)) {
+          leftover = new Uint8Array(N);
+          let any = 0;
+          for (let p = 0; p < N; p++) {
+            if (!inUv[p] || kept[p]) continue;
+            const i = p * 4;
+            if (!sameShade(od[i], od[i + 1], od[i + 2], body, tol)) continue;
+            const d =
+              Math.abs(before[i] - od[i]) + Math.abs(before[i + 1] - od[i + 1]) + Math.abs(before[i + 2] - od[i + 2]);
+            if (d <= 30) leftover[p] = any = 1;
+          }
+          if (!any) leftover = null;
+        }
+      }
       if (colorful || glassLayer) {
         const on = new Uint8Array(N);
         const old = colorful ? sameShade : nearColor;
@@ -3662,7 +3681,8 @@ export class ReskinPlugin {
           const mctx = ctx2d(mask);
           const md = mctx.createImageData(W, H);
           for (let i = 0; i < ld.length; i += 4)
-            if (ld[i + 3] >= 128 && isBody(i)) md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
+            if ((ld[i + 3] >= 128 && isBody(i)) || leftover?.[i / 4])
+              md.data[i] = md.data[i + 1] = md.data[i + 2] = md.data[i + 3] = 255;
           mctx.putImageData(md, 0, 0);
           fallback = ctx2d(materialFill(resizeCanvas(original, W, H), mask, swatch, { tile: sq.size })).getImageData(
             0,
@@ -3690,10 +3710,26 @@ export class ReskinPlugin {
             ? sameShade(od[i], od[i + 1], od[i + 2], body, tol)
             : nearColor(od[i], od[i + 1], od[i + 2], body, tol),
         ring: opts.lightRing,
+        oldBody: colorful ? (r, gg, b) => sameShade(r, gg, b, body, tol) : null,
       });
       repainted = r.inside;
       cleaned = r.around;
       n -= r.inside;
+      if (leftover && fallback) {
+        let left = 0;
+        for (let p = 0; p < N; p++) {
+          if (!leftover[p]) continue;
+          const i = p * 4;
+          bd.data[i] = fallback[i];
+          bd.data[i + 1] = fallback[i + 1];
+          bd.data[i + 2] = fallback[i + 2];
+          left++;
+        }
+        this.think('kept', `"${slot.name}": ${left} pixel(s) of old body paint left by Muse got the new body paint`, {
+          slotId: slot.id,
+          leftOldBodyPaint: left,
+        });
+      }
     }
     g.putImageData(bd, 0, 0);
     let covered = 0;

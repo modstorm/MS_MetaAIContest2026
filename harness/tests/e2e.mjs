@@ -1775,6 +1775,35 @@ try {
     },
   );
 
+  await step('old body paint Muse leaves untouched (a side mirror) gets the new body paint', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      const mod = await import('/src/sampleModel.js');
+      await p.postModel(await mod.buildVehicleTestGlb({ mirrorName: 'Mirror_L' }), { name: 'leftover' });
+      // "Muse" paints everything but leaves the mirror's square as the original blue.
+      const paint = p.provider.reskinAtlas.bind(p.provider);
+      p.provider.reskinAtlas = async (req) => {
+        const img = await p.toCanvas(await paint(req));
+        const k = img.width / 512;
+        img
+          .getContext('2d')
+          .drawImage(req.atlas, 256 * k, 256 * k, 128 * k, 128 * k, 256 * k, 256 * k, 128 * k, 128 * k);
+        return img;
+      };
+      const r = await p.postPrompt('neon pink candy', { assetClass: 'vehicle', paintMode: 'atlas', keepSam: false });
+      const c = r.slots[0].canvas;
+      const k = c.width / 512;
+      const d = c.getContext('2d').getImageData(290 * k, 290 * k, 60 * k, 60 * k).data;
+      const m = [0, 0, 0];
+      for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) m[j] += d[i + j];
+      return m.map((v) => Math.round(v / (d.length / 4)));
+    });
+    const near = (a, b, t) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+    assert.ok(!near(out, [32, 80, 192], 30), `mirror kept its old body paint ${out}`);
+    await page.context().close();
+  });
+
   await step('never painted: a Glass mesh, an Optics texture and what the user rules say (any class)', async () => {
     const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
     const out = await page.evaluate(async () => {
