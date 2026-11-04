@@ -146,6 +146,18 @@ async function setPaintMode(page, mode) {
   await page.$eval('#opt-paint-mode', (el, m) => (el.value = m), mode);
 }
 
+/** Sets the Variations select (hidden until Muse has reviewed the theme). */
+async function setVariations(page, n) {
+  await page.$eval(
+    '#opt-variations',
+    (el, v) => {
+      el.value = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    String(n),
+  );
+}
+
 /** Turns the automatic review & fix pass on or off (it adds Muse calls). */
 async function setReview(page, on) {
   await page.$eval('#opt-review', (el, v) => (el.checked = v), on);
@@ -154,7 +166,7 @@ async function setReview(page, on) {
 async function reskinViaPopup(page, prompt, { suggest = false, paintMode, review = false, variations = 1 } = {}) {
   await page.waitForSelector('#prompt-dialog[open]');
   await setReview(page, review);
-  await page.selectOption('#opt-variations', String(variations));
+  await setVariations(page, variations);
   if (paintMode) await setPaintMode(page, paintMode);
   await page.$eval('#theme-box', (d) => (d.open = true));
   if (!suggest && (await page.isVisible('#opt-suggest'))) await page.uncheck('#opt-suggest');
@@ -449,9 +461,10 @@ try {
     await ui(page, 'btn-sample');
     await page.waitForSelector('#prompt-dialog[open]');
     assert.equal(await page.textContent('#prompt-go'), 'Get Muse suggestion');
+    assert.ok(!(await page.isVisible('#opt-paint-mode')), 'paint options wait for the review');
     await setPaintMode(page, 'atlas');
     await setReview(page, false);
-    await page.selectOption('#opt-variations', '1');
+    await setVariations(page, 1);
     await page.fill('#prompt-text', 'ice');
     await page.click('#prompt-go');
     await page.waitForSelector('#suggestion:not([hidden])');
@@ -468,6 +481,7 @@ try {
     assert.match(content[0].text, /"ice"/);
     assert.equal(await page.textContent('#sugg-subject'), suggestion.subject);
     assert.equal(await page.inputValue('#sugg-prompt'), suggestion.prompt);
+    assert.ok(await page.isVisible('#opt-paint-mode'), 'paint options shown after the review');
     assert.deepEqual(
       await page.$eval('#sugg-prompt', (t) => [t.selectionStart, t.scrollTop]),
       [0, 0],
@@ -3045,7 +3059,11 @@ try {
           samCheck: false,
           samZones: false,
         });
-        return { size: r.slots.map((s) => [s.canvas.width, s.canvas.height]), cov: p.layout.slots.map((s) => [s.coverage, s.tiled, !!s.texture]), th: (r.thinking ?? []).map((e) => e.text) };
+        return {
+          size: r.slots.map((s) => [s.canvas.width, s.canvas.height]),
+          cov: p.layout.slots.map((s) => [s.coverage, s.tiled, !!s.texture]),
+          th: (r.thinking ?? []).map((e) => e.text),
+        };
       });
       assert.deepEqual(
         calls.map((c) => [c.path.replace(/.*\/images\//, ''), c.hasImage]),

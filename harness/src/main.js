@@ -557,6 +557,7 @@ function needsSuggestion() {
 }
 
 function updateGoLabel() {
+  $('paint-options').hidden = suggestEnabled() && !pending; // wait for Muse's review first
   $('prompt-go').textContent = suggesting
     ? 'Muse is looking…'
     : needsSuggestion()
