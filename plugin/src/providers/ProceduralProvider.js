@@ -48,8 +48,21 @@ export class ProceduralProvider {
   }
 
   /** One standalone texture: the same gradient map (the plugin fixes the wrap seams after). */
-  reskinTexture(req) {
-    return this.reskinAtlas({ theme: req.theme, atlas: req.image, extraInstructions: req.extra });
+  async reskinTexture(req) {
+    const out = await this.reskinAtlas({ theme: req.theme, atlas: req.image, extraInstructions: req.extra });
+    if (!req.keyColor) return out;
+    // Transparent mode: the key-color backdrop of the input stays the key color.
+    const c = out instanceof HTMLCanvasElement ? out : null;
+    if (!c || c.width !== req.image.width || c.height !== req.image.height) return out;
+    const src = ctx2d(req.image).getImageData(0, 0, c.width, c.height).data;
+    const g = ctx2d(c);
+    const img = g.getImageData(0, 0, c.width, c.height);
+    const k = hexRgb(req.keyColor);
+    for (let i = 0; i < src.length; i += 4)
+      if (Math.abs(src[i] - k[0]) + Math.abs(src[i + 1] - k[1]) + Math.abs(src[i + 2] - k[2]) < 30)
+        for (let ch = 0; ch < 3; ch++) img.data[i + ch] = k[ch];
+    g.putImageData(img, 0, 0);
+    return c;
   }
 
   async generateTexture(req) {
@@ -73,9 +86,26 @@ export class ProceduralProvider {
       }
     }
     ctx.putImageData(img, 0, 0);
+    if (req.keyColor) {
+      // Transparent mode: one round subject on the flat key color.
+      const k = hexRgb(req.keyColor);
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h / 2, w * 0.35, h * 0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.fillStyle = `rgb(${k.join(',')})`;
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'source-over';
+    }
     await yieldFrame();
     return out;
   }
+}
+
+function hexRgb(hex) {
+  const h = hex.replace('#', '');
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
 }
 
 const KEYWORD_PALETTES = [

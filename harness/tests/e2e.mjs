@@ -2935,6 +2935,131 @@ try {
     await page.context().close();
   });
 
+  await step('transparency: a see-through background image and a cut-out model texture keep their alpha', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const prompts = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
+      return museOk(route);
+    });
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      // A background layer: the left half is see-through, a soft edge between.
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      const g = c.getContext('2d');
+      g.fillStyle = '#4a7a3a';
+      g.fillRect(128, 0, 128, 256);
+      g.fillStyle = 'rgba(74,122,58,0.5)';
+      g.fillRect(120, 0, 8, 256);
+      const r = await p.postTexture(c, { theme: 'autumn forest', wrap: 'none' });
+      const a = (x, y) => r.canvas.getContext('2d').getImageData(x, y, 1, 1).data[3];
+      const tex = { hasAlpha: r.hasAlpha, left: a(40, 100), edge: a(124, 100), right: a(200, 100) };
+      const opaque = await p.postTexture(c, { theme: 'autumn forest', wrap: 'none', keepAlpha: false });
+      // A model texture with a cut-out hole.
+      const mod = await import('/src/sampleModel.js');
+      const glb = await mod.buildOrientationTestGlb({ paint: (pg) => pg.clearRect(0, 160, 128, 64) });
+      await p.postModel(glb, { name: 'cutout' });
+      const res = await p.postPrompt('pirates', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const m = res.slots[0].canvas;
+      const k = m.width / 256;
+      const ma = (x, y) => m.getContext('2d').getImageData(x * k, y * k, 1, 1).data[3];
+      return {
+        tex,
+        opaqueLeft: opaque.canvas.getContext('2d').getImageData(40, 100, 1, 1).data[3],
+        hole: ma(64, 192),
+        solid: ma(192, 192),
+      };
+    });
+    assert.deepEqual(out.tex, { hasAlpha: true, left: 0, edge: 128, right: 255 }, JSON.stringify(out.tex));
+    assert.ok(/transparent \(see-through\)/.test(prompts[0]), 'Muse is told about the see-through areas');
+    assert.equal(out.opaqueLeft, 255, 'keepAlpha: false gives an opaque result');
+    assert.equal(out.hole, 0, 'the cut-out stays see-through');
+    assert.equal(out.solid, 255);
+    await page.context().close();
+  });
+
+  await step(
+    'transparent images: Muse paints on a key color, the plugin turns it into alpha (soft or hard, trim)',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const off = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const a = (c, x, y) => c.getContext('2d').getImageData(x, y, 1, 1).data[3];
+        const r = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, assetClass: 'icon' });
+        const values = new Set();
+        const d = r.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+        for (let i = 3; i < d.length; i += 4) values.add(d[i]);
+        const hard = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, edge: 'hard' });
+        const hd = hard.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+        let other = 0;
+        for (let i = 3; i < hd.length; i += 4) if (hd[i] !== 0 && hd[i] !== 255) other++;
+        const trimmed = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, trim: true });
+        return {
+          hasAlpha: r.hasAlpha,
+          key: r.keyColor,
+          share: r.alpha,
+          corner: a(r.canvas, 3, 3),
+          centre: a(r.canvas, 128, 128),
+          soft: [...values].some((v) => v > 0 && v < 255),
+          normal: r.normal,
+          wrap: r.wrap,
+          hardOther: other,
+          trimmed: [trimmed.width, trimmed.height],
+        };
+      });
+      assert.equal(off.hasAlpha, true);
+      assert.equal(off.key, '#ff00ff');
+      assert.ok(off.share > 0.3 && off.share < 0.8, `see-through share ${off.share}`);
+      assert.equal(off.corner, 0);
+      assert.equal(off.centre, 255);
+      assert.ok(off.soft, 'soft edges by default');
+      assert.equal(off.normal, null, 'no normal map for a transparent image');
+      assert.equal(off.wrap, 'none');
+      assert.equal(off.hardOther, 0, 'edge: hard is 0 or 255 only');
+      assert.ok(off.trimmed[0] < 220 && off.trimmed[1] < 220, `trimmed ${off.trimmed}`);
+      await page.context().close();
+
+      // Muse: the prompt asks for the key backdrop; a pink input picks green.
+      const page2 = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const prompts = [];
+      await page2.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
+        return museOk(route);
+      });
+      const warn = await page2.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const warnings = [];
+        p.on('warning', (w) => warnings.push(w.message));
+        await p.postTexture(null, { theme: 'smoke puff', transparent: true, size: 128, assetClass: 'particle' });
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        const g = c.getContext('2d');
+        g.fillStyle = '#2a6a2a';
+        g.fillRect(0, 0, 64, 64);
+        g.fillStyle = '#ff60c0'; // a pink flower in a forest
+        g.fillRect(16, 16, 32, 32);
+        await p.postTexture(c, { theme: 'forest', transparent: true });
+        return warnings;
+      });
+      assert.ok(/#FF00FF/.test(prompts[0]) && /particle texture/.test(prompts[0]), prompts[0]);
+      assert.ok(/#00FF00/.test(prompts[1]), `pink input → green key: ${prompts[1]}`);
+      assert.ok(
+        warn.some((w) => /almost nothing was see-through/.test(w)),
+        'Muse ignoring the backdrop is flagged',
+      );
+      await page2.context().close();
+    },
+  );
+
   await step('postTexture: a sky panorama joins left to right, calm poles, Muse gets the equirect prompt', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const prompts = [];

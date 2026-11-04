@@ -637,3 +637,37 @@ export function museSizeFor(width, height) {
   if (aspect < 1 / 1.2) return '1024x1536';
   return '1024x1024';
 }
+
+/**
+ * The alpha channel of `canvas` when it has see-through pixels (any alpha below 250), else
+ * null: a Uint8ClampedArray of width × height alpha values.
+ */
+export function alphaOf(canvas) {
+  const d = ctx2d(canvas).getImageData(0, 0, canvas.width, canvas.height).data;
+  let seeThrough = false;
+  const a = new Uint8ClampedArray(d.length / 4);
+  for (let p = 0; p < a.length; p++) {
+    a[p] = d[p * 4 + 3];
+    if (a[p] < 250) seeThrough = true;
+  }
+  return seeThrough ? a : null;
+}
+
+/** Sets the alpha channel of `canvas` (in place) from `alpha` (see alphaOf), same size. */
+export function applyAlpha(canvas, alpha) {
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, 0, canvas.width, canvas.height);
+  for (let p = 0; p < alpha.length; p++) img.data[p * 4 + 3] = alpha[p];
+  g.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/** A copy of `canvas` drawn over a flat color (the see-through parts show that color). */
+export function flattenOn(canvas, color = '#808080') {
+  const c = createCanvas(canvas.width, canvas.height);
+  const g = ctx2d(c);
+  g.fillStyle = color;
+  g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(canvas, 0, 0);
+  return c;
+}

@@ -100,6 +100,23 @@ export function seamlessTexturePrompt(theme, materialName, extra) {
 }
 
 /**
+ * A new image with transparency: the subject alone on a flat key color (stripped afterwards).
+ * @param {string} theme
+ * @param {{ name?: string, context?: string, classRules?: string[], keyNote: string }} o
+ */
+export function cutoutPrompt(theme, { name, context, classRules = [], keyNote }) {
+  return [
+    `A game image${name ? ` ("${name}")` : ''}: ${theme}.`,
+    context ? `What it is used for: ${context}.` : '',
+    ...classRules,
+    keyNote,
+    'No text, no logos, no watermark, no border.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
  * One standalone texture (not a model atlas): a tiling material, a track surface or an
  * equirectangular sky panorama. `wrap` says which edges must join.
  * @param {string} theme
