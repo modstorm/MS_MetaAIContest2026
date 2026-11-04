@@ -442,7 +442,8 @@ function openPrompt() {
   themeChanged();
   $('theme-box').open = !(pending && suggestEnabled() && !needsSuggestion());
   if (!dialog.open) dialog.showModal();
-  ($('theme-box').open ? promptText : $('sugg-prompt')).focus();
+  if ($('theme-box').open) promptText.focus();
+  else focusFromTop($('sugg-prompt'));
 }
 
 $('btn-reskin').onclick = openPrompt;
@@ -691,7 +692,14 @@ function showSuggestion(s, theme) {
   $('sugg-regions').innerHTML = regions.join('') || '<li>No region plan returned.</li>';
   themeChanged();
   $('theme-box').open = false; // Muse has the theme: fold it away (open it to change the theme)
-  $('sugg-prompt').focus();
+  focusFromTop($('sugg-prompt'));
+}
+
+/** Focus a text box with the caret at the start, scrolled to the top (Muse's prompt reads from the start). */
+function focusFromTop(el) {
+  el.focus({ preventScroll: true });
+  el.setSelectionRange(0, 0);
+  el.scrollTop = 0;
 }
 
 // ---- the progress panel (Run tab): progress, errors, Stop
@@ -730,7 +738,8 @@ function setRunButtons({ busy = false, done = false } = {}) {
 }
 
 $('run-cancel').onclick = () => {
-  if (plugin.isBusy) plugin.cancel();
+  if (changeAbort) changeAbort.abort(new DOMException('Cancelled', 'AbortError'));
+  else if (plugin.isBusy) plugin.cancel();
   else {
     runDialog.close();
   }
@@ -993,11 +1002,16 @@ function named(c, name, source) {
 }
 const imgMenu = $('img-menu');
 let menuTarget = null;
+let menuHistoryIndex = -1;
 document.addEventListener('contextmenu', (e) => {
   const c = e.target.closest?.('canvas[data-save-name]');
   if (!c) return;
   e.preventDefault();
   menuTarget = c;
+  // History thumbnails (not the original) can be deleted from here.
+  const entry = c.closest('#history button.entry');
+  menuHistoryIndex = entry ? Number(entry.dataset.index) : -1;
+  $('img-delete').hidden = menuHistoryIndex < 0;
   $('img-save').textContent = `Save "${fileName(c.dataset.saveName)}"`;
   imgMenu.hidden = false;
   imgMenu.style.left = `${Math.min(e.clientX, innerWidth - 220)}px`;
@@ -1021,6 +1035,12 @@ $('img-save').onclick = async () => {
   a.download = fileName(menuTarget.dataset.saveName);
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+$('img-delete').onclick = () => {
+  imgMenu.hidden = true;
+  if (plugin.isBusy || menuHistoryIndex < 0) return;
+  plugin.deleteHistory(menuHistoryIndex);
+  if (compareOn) setCompare(plugin.historyIndex >= 0);
 };
 $('img-open').onclick = async () => {
   imgMenu.hidden = true;
@@ -1192,23 +1212,39 @@ const redo = () => {
   if (compareOn) setCompare(true);
 };
 // Change request on the shown result: Muse picks the areas, only those are repainted.
-$('change-form').onsubmit = async (e) => {
+$('change-form').onsubmit = (e) => {
   e.preventDefault();
   const text = $('change-text').value.trim();
   if (!text || plugin.isBusy) return;
+  runChange(text);
+};
+/** A change runs like a reskin: run panel, progress bar and the paint crew over the view. */
+let changeAbort = null;
+async function runChange(text) {
   $('btn-change').disabled = true;
+  changeAbort = new AbortController();
+  openRun(text);
+  $('run-title').textContent = 'Changing';
+  setRunButtons({ busy: true });
   try {
-    const r = await plugin.postChange(text);
+    const r = await plugin.postChange(text, { signal: changeAbort.signal });
     log(
       `Change "${text}": repainted ${Object.keys(r.change.areas).join(', ')}${r.change.summary ? ` (${r.change.summary})` : ''}`,
     );
     $('change-text').value = '';
+    runDialog.close();
   } catch (err) {
+    setRunButtons({});
     log(`Change failed: ${err.message}`, 'error');
+    if (err.name === 'AbortError') {
+      $('prompt-stage').textContent = 'Cancelled';
+      setBusy(false);
+    } else showError(err, () => runChange(text));
   } finally {
+    changeAbort = null;
     $('btn-change').disabled = false;
   }
-};
+}
 $('btn-undo').onclick = undo;
 $('btn-redo').onclick = redo;
 window.addEventListener('keydown', (e) => {

@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
+import {
+  analyzeTextureLayout,
+  ringBand,
+  ringBandGeometry,
+  ringLayerBands,
+  summarizeLayout,
+  uvAspect,
+} from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { REVIEW_VIEWS, THUMB_VIEW, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
 import {
@@ -252,6 +259,24 @@ function skinPixels(canvas, x, y, w, h) {
     if (dc <= 0.035) out[q] = 1;
   }
   return out;
+}
+
+/** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
+/** A prompt that asks for see-through areas. */
+const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
+
+const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
+function materialsOfMesh(mesh) {
+  return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+}
+function readMaterial(mat) {
+  const s = { color: mat.color?.clone() };
+  for (const k of MATERIAL_PROPS) if (k in mat) s[k] = mat[k];
+  return s;
+}
+function writeMaterial(mat, s) {
+  for (const k of MATERIAL_PROPS) if (k in s && k in mat) mat[k] = s[k];
+  if (s.color && mat.color) mat.color.copy(s.color);
 }
 
 /** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
@@ -544,6 +569,7 @@ export class ReskinPlugin {
       // Order of the canvases this model's results hand out: 'gltf' (default) or 'image'.
       this.imageOrder = opts.imageOrder === 'image' ? 'image' : 'gltf';
       this.snapshots.clear();
+      this.geometrySnapshots = null;
       this.planCache.clear();
       this.samCache.clear();
       this.samZones.clear();
@@ -1142,10 +1168,45 @@ export class ReskinPlugin {
       return null;
     }
 
-    const atlasMode = !!slot.texture && !slot.tiled;
-    const { width, height } = slot.texture
-      ? fitSize(slot.width, slot.height, maxSize)
-      : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
+    // A backdrop ring around the scene (one or several layered bands, all the way round).
+    const ringish = slot.meshes.some((m) => ringBand(m, { loose: true }));
+    // Transparency asked for (opts.transparent, or the prompt says so): Muse paints on a flat key
+    // color, which becomes alpha; the material is made transparent. From the prompt only for an
+    // untextured mesh or a backdrop ring: on a textured model, "transparent windows" must not cut
+    // the whole texture.
+    const wantAlpha =
+      opts.transparent ??
+      (WANTS_TRANSPARENCY.test(`${theme} ${opts.extraInstructions ?? ''}`) &&
+        (!slot.texture || ringish || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
+    const key = wantAlpha ? pickKeyColor(opts.keyColor, theme) : null;
+    if (opts.replaceShape === true) this.replaceRingShapes(slot);
+    // Layered silhouettes: a ring whose texture holds horizontal strips (a skyline in layers).
+    // Each strip is repainted in place as a new silhouette (mountains instead of buildings) on
+    // the key color, keeping the model's UVs and layering. opts.layers: false turns it off.
+    const layerSize = slot.texture ? fitSize(slot.width, slot.height, maxSize) : { width: 2048, height: 2048 };
+    let layers =
+      key && ringish && opts.layers !== false && opts.replaceShape !== true
+        ? ringLayerBands(slot, Math.min(layerSize.width, maxSize), Math.min(layerSize.height, maxSize))
+        : null;
+    // A plain untextured ring (one band over the whole texture) is painted as one panorama instead.
+    if (layers && !slot.texture && layers.bands.length < 2) layers = null;
+    const atlasMode = !layers && !!slot.texture && !slot.tiled;
+    // An untextured wide band (a background ring or a cylinder around the scene): one panorama
+    // strip whose left and right edges join, repeated around when it is very wide.
+    let strip = null;
+    if (!layers && !slot.texture && !slot.tiled) {
+      const aspect = uvAspect(slot);
+      if (aspect >= 1.5 || /\b(ring|panoram\w*|backdrop|skyline|horizon)\b/i.test(`${theme} ${slot.name}`))
+        // Very wide bands repeat the panorama a few times (each copy is stretched, not tiled 16×).
+        strip = { aspect, repeats: Math.min(3, Math.max(1, Math.round(Math.max(1, aspect) / 4))) };
+    }
+    const { width, height } = layers
+      ? { width: layers.width, height: layers.height }
+      : slot.texture
+        ? fitSize(slot.width, slot.height, maxSize)
+        : strip
+          ? { width: Math.min(2048, maxSize), height: Math.min(1024, maxSize) }
+          : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
 
     let plan = null;
     let orient = null;
@@ -1157,7 +1218,9 @@ export class ReskinPlugin {
     const variants = Math.max(1, Math.min(opts.variants ?? 1, 4));
     const paintVariant = async (opts) => {
       let raw;
-      if (atlasMode) {
+      if (layers) {
+        raw = await this.paintRingLayers(slot, theme, layers, key, opts, signal, report);
+      } else if (atlasMode) {
         original = textureToCanvas(slot.texture, maxSize);
         // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
         const rawParts = slotParts(slot);
@@ -1263,6 +1326,7 @@ export class ReskinPlugin {
                         ? `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change to image 1 and keep everything else in it exactly the same.`
                         : null,
                       opts.extraInstructions,
+                      key ? keyColorInstruction(key) : null,
                       ...this.rulesFor(
                         opts.assetClass,
                         rawParts.map((p) => p.name),
@@ -1270,6 +1334,61 @@ export class ReskinPlugin {
                     ]
                       .filter(Boolean)
                       .join('\n') || undefined,
+                plain,
+                signal,
+              }),
+            ),
+          );
+        }
+      } else if (strip || key || (opts.changeRequest && opts.editAtlas?.get(slot.id))) {
+        // A panorama strip, a transparent image, or a change to the current paint.
+        const notes = [
+          strip
+            ? 'This image is wrapped once around a ring seen from inside (a wide panorama strip): the bottom of the image is the bottom of the ring; the left and right edges must join seamlessly. Flat, even lighting, no perspective.'
+            : '',
+          key ? keyColorInstruction(key) : '',
+          opts.extraInstructions,
+          // A ring backdrop is not a sky panorama (whose rules forbid ground and mountains).
+          ...(strip && opts.assetClass === 'sky'
+            ? this.lessonsFor(opts.assetClass)
+            : this.rulesFor(opts.assetClass, [])),
+        ].filter(Boolean);
+        const cur = opts.changeRequest ? opts.editAtlas?.get(slot.id) : null;
+        if (cur && this.provider.reskinTexture) {
+          report(0.2, 'generate', `Changing "${slot.name}"`);
+          const img = textureToCanvas({ image: cur }, Math.max(width, height));
+          const image = resizeCanvas(key ? flattenOn(img, key.hex) : img, width, height);
+          raw = await this.toCanvas(
+            await this.withFilterRetry('change texture', slot, theme, (plain, t) =>
+              this.provider.reskinTexture({
+                theme: t,
+                image,
+                name: slot.name,
+                context: [
+                  `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change and keep everything else exactly the same.`,
+                  ...notes,
+                ].join('\n'),
+                classRules: [],
+                wrap: strip ? 'x' : 'both',
+                keyColor: key?.hex,
+                plain,
+                signal,
+              }),
+            ),
+          );
+        } else {
+          report(0.2, 'generate', `Generating ${strip ? 'a panorama' : 'an image'} for "${slot.name}"`);
+          raw = await this.toCanvas(
+            await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
+              this.provider.generateTexture({
+                theme: t,
+                materialName: slot.name,
+                width,
+                height,
+                cutout: notes.join('\n'),
+                keyColor: key?.hex,
+                context: '',
+                classRules: [],
                 plain,
                 signal,
               }),
@@ -1313,7 +1432,23 @@ export class ReskinPlugin {
     if (raws.length < variants) {
       this.emit('warning', { message: `"${slot.name}": ${variants - raws.length} of ${variants} variations failed.` });
     }
-    const ctx = { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts };
+    const ctx = {
+      orient,
+      width,
+      height,
+      atlasMode,
+      original,
+      theme,
+      maxSize,
+      signal,
+      report,
+      plan,
+      usedPrompt,
+      opts,
+      key,
+      strip,
+      layers,
+    };
     const done = [];
     for (let vi = 0; vi < raws.length; vi++) {
       const r = await this.finishSlot(slot, {
@@ -1332,6 +1467,7 @@ export class ReskinPlugin {
   /** Post-processing and apply step of one painted texture (see reskinSlot). */
   async finishSlot(slot, ctx) {
     const { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts } = ctx;
+    const { key, strip, layers } = ctx;
     let raw = ctx.raw;
     const maps = []; // generated maps of this result, kept with it in the history
     // Each map carries the identity of the texture it replaces (name, uuid, glTF texture and
@@ -1439,20 +1575,49 @@ export class ReskinPlugin {
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
     }
 
+    // A panorama strip: the left and right edges join.
+    if (strip) baseColor = makeSeamless(baseColor, { x: true, y: false }).canvas;
     // See-through pixels of the original (cut-outs, hair cards, decals) stay see-through.
-    if (original && opts.keepAlpha !== false) {
-      const alpha = alphaOf(resizeCanvas(original, width, height));
-      if (alpha) {
-        applyAlpha(baseColor, alpha);
-        this.think('note', `"${slot.name}": kept the original transparency (alpha)`, { slotId: slot.id });
-      }
+    const keptAlphaOf =
+      original && !layers && opts.keepAlpha !== false ? alphaOf(resizeCanvas(original, width, height)) : null;
+    if (keptAlphaOf) {
+      applyAlpha(baseColor, keptAlphaOf);
+      this.think('note', `"${slot.name}": kept the original transparency (alpha)`, { slotId: slot.id });
+    } else if (key && !layers) {
+      // Transparency asked for: the key-color backdrop Muse painted becomes see-through.
+      const k = keyOut(baseColor, key);
+      if (opts.edge === 'hard') hardenAlpha(baseColor);
+      this.think(
+        'note',
+        `"${slot.name}": ${Math.round(k.share * 100)}% made see-through (the ${key.name} backdrop, ${k.keyColor})`,
+        { slotId: slot.id },
+      );
+      if (k.share < 0.02)
+        this.emit('warning', {
+          message: `"${slot.name}": almost nothing was see-through: Muse did not paint the ${key.name} backdrop.`,
+        });
     }
     report(0.8, 'apply', `Applying "${slot.name}"`);
     const baseTex = this.makeTexture(baseColor, slot.texture, THREE.SRGBColorSpace, slot.uvChannel, !atlasMode);
+    if (strip) {
+      baseTex.wrapS = THREE.RepeatWrapping;
+      baseTex.wrapT = THREE.ClampToEdgeWrapping;
+      baseTex.repeat.set(strip.repeats, 1);
+    }
     for (const mat of slot.materials) {
       this.snapshot(mat);
       mat.map = baseTex;
       mat.color.set(0xffffff);
+      if (key && !keptAlphaOf) {
+        if (mat.alphaTest > 0 && !mat.transparent) {
+          // A cut-out (glTF MASK) material stays one, at a middle cutoff (0.98 drops the edges).
+          mat.alphaTest = 0.5;
+        } else {
+          // Blended so soft edges (mist) stay soft; fully clear pixels are not drawn at all.
+          mat.transparent = true;
+          mat.alphaTest = 0.01;
+        }
+      }
       mat.needsUpdate = true;
     }
     emitMap('baseColor', baseColor, slot.texture);
@@ -1462,6 +1627,7 @@ export class ReskinPlugin {
       report(0.85, 'postprocess', `Normal map for "${slot.name}"`);
       const cache = new Map();
       for (const mat of slot.materials) {
+        if (!('normalMap' in mat)) continue; // unlit (MeshBasicMaterial): no normal map
         const src = this.snapshots.get(mat).normalMap;
         // Only regenerate maps the model already has ('always' also creates new ones).
         if (!src && opts.normalMaps !== 'always') continue;
@@ -1486,6 +1652,7 @@ export class ReskinPlugin {
       report(0.92, 'postprocess', `Roughness map for "${slot.name}"`);
       const cache = new Map();
       for (const mat of slot.materials) {
+        if (!('roughnessMap' in mat)) continue; // unlit or non-PBR: no roughness map
         const snap = this.snapshots.get(mat);
         const src = snap.roughnessMap;
         if (!src && opts.roughnessMaps !== 'always') continue;
@@ -1886,21 +2053,9 @@ export class ReskinPlugin {
   showOriginal(show) {
     if (!this.lastResult) return;
     for (const [mat, snap] of this.snapshots) {
-      const cur = (mat.userData.__reskin ??= {
-        map: mat.map,
-        normalMap: mat.normalMap,
-        roughnessMap: mat.roughnessMap,
-        metalnessMap: mat.metalnessMap,
-        color: mat.color.clone(),
-        roughness: mat.roughness,
-      });
+      const cur = (mat.userData.__reskin ??= readMaterial(mat));
       const s = show ? snap : cur;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
       if (!show) delete mat.userData.__reskin;
     }
@@ -3233,14 +3388,7 @@ export class ReskinPlugin {
   captureMaterials(materials) {
     const state = new Map();
     for (const mat of materials) {
-      state.set(mat, {
-        map: mat.map,
-        normalMap: mat.normalMap,
-        roughnessMap: mat.roughnessMap,
-        metalnessMap: mat.metalnessMap,
-        color: mat.color.clone(),
-        roughness: mat.roughness,
-      });
+      state.set(mat, readMaterial(mat));
     }
     return state;
   }
@@ -3248,12 +3396,7 @@ export class ReskinPlugin {
   applyState(state) {
     for (const [mat, s] of state) {
       delete mat.userData.__reskin;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
     }
   }
@@ -3357,6 +3500,20 @@ export class ReskinPlugin {
   /** Pick a result (e.g. one of the variations) by its id. */
   applyHistory(id) {
     return this.goToHistory(this.history.findIndex((e) => e.id === id));
+  }
+
+  /**
+   * Removes History entry `index` (the original cannot be removed). If it was the one shown,
+   * the next older entry is shown (the original when none is left).
+   * @returns {boolean} whether an entry was removed
+   */
+  deleteHistory(index) {
+    if (!this.guardIdle() || index < 0 || index >= this.history.length) return false;
+    this.history.splice(index, 1);
+    if (index === this.historyIndex) this.goToHistory(Math.min(index, this.history.length) - 1, { silent: true });
+    else if (index < this.historyIndex) this.historyIndex--;
+    this.emit('history', this.historySummary());
+    return true;
   }
 
   undo() {
@@ -3624,7 +3781,9 @@ export class ReskinPlugin {
     const editAtlas = new Map();
     for (const slot of this.layout?.slots ?? []) {
       const img = slot.materials[0]?.map?.image;
-      if (slot.texture && !slot.tiled && img?.width) editAtlas.set(slot.id, img);
+      // Textured atlases, and generated images (untextured meshes, panorama rings) once painted.
+      if (img?.width && ((slot.texture && !slot.tiled) || this.snapshots.has(slot.materials[0])))
+        editAtlas.set(slot.id, img);
     }
     return this.postPrompt(this.lastRun.theme, {
       ...this.lastRun.opts,
@@ -4461,14 +4620,7 @@ export class ReskinPlugin {
 
   snapshot(mat) {
     if (this.snapshots.has(mat)) return;
-    this.snapshots.set(mat, {
-      map: mat.map,
-      normalMap: mat.normalMap,
-      roughnessMap: mat.roughnessMap,
-      metalnessMap: mat.metalnessMap,
-      color: mat.color.clone(),
-      roughness: mat.roughness,
-    });
+    this.snapshots.set(mat, readMaterial(mat));
   }
 
   /** Puts the original maps back on all reskinned materials (or only on `only`). */
@@ -4476,14 +4628,120 @@ export class ReskinPlugin {
     for (const [mat, s] of this.snapshots) {
       if (only && !only.includes(mat)) continue;
       delete mat.userData.__reskin;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
     }
+    // Ring bands made by replaceRingShapes get their original shape back.
+    for (const [mesh, geom] of this.geometrySnapshots ?? []) {
+      if (only && !materialsOfMesh(mesh).some((m) => only.includes(m))) continue;
+      mesh.geometry = geom;
+      this.geometrySnapshots.delete(mesh);
+    }
+  }
+
+  /**
+   * Paints a layered ring backdrop (see ringLayerBands): every piece of every strip is painted
+   * by Muse on the key color as a silhouette standing on the strip's bottom edge, cut out and
+   * put back in place. Returns the texture (see-through where nothing stands).
+   */
+  async paintRingLayers(slot, theme, layers, key, opts, signal, report) {
+    const out = createCanvas(layers.width, layers.height);
+    const g = ctx2d(out);
+    const jobs = [];
+    layers.bands.forEach((band, li) => band.pieces.forEach((piece, pi) => jobs.push({ band, piece, li, pi })));
+    const L = layers.bands.length;
+    this.think(
+      'plan',
+      `"${slot.name}": a backdrop ring in ${L} ${layers.bands.every((b) => b.arc < 330) ? 'section' : 'layer'}(s); ${jobs.length} piece(s) are painted as new silhouettes with transparency`,
+      {
+        slotId: slot.id,
+        layers: layers.bands.map((b) => ({ rows: [b.y0, b.y1], pieces: b.pieces.length, arc: b.arc })),
+      },
+    );
+    let done = 0;
+    const paintOne = async ({ band, piece, li, pi }) => {
+      const w = piece.x1 - piece.x0,
+        h = band.y1 - band.y0;
+      // A strip is a whole ring (a depth layer) or a section of it (sections join end to end).
+      const sections = layers.bands.every((b) => b.arc < 330);
+      const notes = [
+        sections
+          ? `This is piece ${pi + 1} of ${band.pieces.length} of section ${li + 1} of ${L} of a panorama backdrop that goes all the way around a game scene (a wide strip, flat colors, no perspective). The sections join end to end around the ring: keep one style, one palette and one horizon height in every section.`
+          : `This is piece ${pi + 1} of ${band.pieces.length} of layer ${li + 1} of ${L} of a layered panorama backdrop around a game scene (a wide strip, flat colors, no perspective).`,
+        'The scenery stands on the bottom edge of the image and fills the bottom part all the way across; its top outline is the silhouette against the sky. At the far left and right edges it comes down to the same medium height, so the pieces join side by side.',
+        L > 1 && !sections
+          ? 'Each layer is a different range: vary the shapes, and keep the colors of one layer even.'
+          : '',
+        keyColorInstruction(key),
+        'The sky is NOT painted: everything above the silhouette is the flat key color.',
+        opts.extraInstructions,
+        ...this.lessonsFor(opts.assetClass),
+      ].filter(Boolean);
+      const raw = await this.toCanvas(
+        await this.withFilterRetry('paint layer', slot, theme, (plain, t) =>
+          this.provider.generateTexture({
+            theme: t,
+            materialName: `${slot.name} layer ${li + 1}`,
+            // Muse paints the piece at its shape on the model; it is then fitted to its pixels.
+            width: Math.round(1024 * Math.min(1.75, Math.max(0.6, band.pieceAspect ?? w / h))),
+            height: 1024,
+            cutout: notes.join('\n'),
+            keyColor: key.hex,
+            context: '',
+            classRules: [],
+            plain,
+            signal,
+          }),
+        ),
+      );
+      let piece_ = resizeCanvas(raw, w, h);
+      const k = keyOut(piece_, key);
+      if (k.share < 0.02)
+        this.emit('warning', {
+          message: `"${slot.name}" layer ${li + 1} piece ${pi + 1}: almost nothing was see-through (Muse painted a sky).`,
+        });
+      if (layers.flip) piece_ = flipVertical(piece_);
+      g.drawImage(piece_, piece.x0, band.y0);
+      done++;
+      report(
+        0.2 + (0.5 * done) / jobs.length,
+        'generate',
+        `Painted layer ${li + 1}, piece ${pi + 1} (${done}/${jobs.length})`,
+      );
+    };
+    // A few at a time: Muse allows plenty, but the browser decodes every result.
+    const queue = [...jobs];
+    await Promise.all(
+      Array.from({ length: Math.min(6, queue.length) }, async () => {
+        while (queue.length) await paintOne(queue.shift());
+      }),
+    );
+    return out;
+  }
+
+  /**
+   * Swaps each ring-shaped mesh of `slot` (see ringBand) for a plain open band of the same
+   * centre, radius and height, with u once around. Returns how many were swapped.
+   */
+  replaceRingShapes(slot) {
+    let n = 0;
+    for (const mesh of slot.meshes) {
+      if (this.geometrySnapshots?.has(mesh)) {
+        n++;
+        continue;
+      }
+      const ring = ringBand(mesh);
+      if (!ring) continue;
+      (this.geometrySnapshots ??= new Map()).set(mesh, mesh.geometry);
+      mesh.geometry = ringBandGeometry(ring);
+      n++;
+      this.think(
+        'note',
+        `"${mesh.name || slot.name}": a ring of radius ${ring.radius.toFixed(1)}; its outline is replaced by a plain band ${(ring.y1 - ring.y0).toFixed(1)} tall, so the new painting sets the outline`,
+        { slotId: slot.id },
+      );
+    }
+    return n;
   }
 
   async toCanvas(img) {
