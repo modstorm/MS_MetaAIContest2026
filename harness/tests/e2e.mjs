@@ -3345,6 +3345,11 @@ try {
           bottom: [a(100, 76), a(300, 161), a(200, 246), a(400, 331)],
           // Row 20 of 80 (75% up): Muse's mock range only reaches 69% before the stretch.
           high: Array.from({ length: 64 }, (_, i) => a(i * 2, 20)),
+          // Piece ends (x 0, 170/171, 341/342 of 512) meet at 55% of the strip (row 36 of 80).
+          joinSky: [0, 170, 171, 341, 342].map((x) => a(x, 30)),
+          joinSolid: [0, 170, 171, 341, 342].map((x) => a(x, 42)),
+          base: Array.from({ length: 128 }, (_, i) => a(i * 4, 70)),
+          log: (r.thinking ?? []).map((t) => t.text).filter((t) => /highest peak/.test(t)),
           below: a(256, 450),
           mask: [mat.transparent, mat.alphaTest],
         };
@@ -3355,6 +3360,10 @@ try {
       assert.deepEqual(sec.bottom, [255, 255, 255, 255], 'each quarter stands on its bottom edge');
       assert.equal(sec.below, 0);
       assert.deepEqual(sec.mask, [false, 0.5], 'an alpha MASK material cuts at 0.5');
+      assert.deepEqual(sec.joinSky, [0, 0, 0, 0, 0], 'piece ends come down to the join height: ' + sec.joinSky);
+      assert.deepEqual(sec.joinSolid, [255, 255, 255, 255, 255], 'piece ends are solid below it: ' + sec.joinSolid);
+      assert.ok(sec.base.every((v) => v === 255), 'the base is solid all the way across');
+      assert.equal(sec.log.length, 4, 'one stretch/join line per strip in thinking: ' + sec.log.join(' | '));
       assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
       assert.ok(/piece 1 of 3 of section 1 of 4/.test(prompts.join()), prompts[0]);
       await page.context().close();

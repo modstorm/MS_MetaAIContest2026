@@ -82,7 +82,14 @@ import {
   templateLineMask,
   verticalRuns,
 } from './texture/lineCleanup.js';
-import { hardenAlpha, keyColorInstruction, keyOut, pickKeyColor, trimTransparent } from './texture/chromaKey.js';
+import {
+  hardenAlpha,
+  keyColorInstruction,
+  keyOut,
+  pickKeyColor,
+  solidifyScenery,
+  trimTransparent,
+} from './texture/chromaKey.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
@@ -4678,7 +4685,7 @@ export class ReskinPlugin {
     const low =
       /\b(low|small|gentle|rolling|flat|hills?|dunes?|plains?|short)\b/i.test(theme) &&
       !/\b(tall|high|huge|giant|towering|alps|peaks?)\b/i.test(theme);
-    const paintOne = async ({ band, piece, li, pi }) => {
+    const paintOne = async ({ band, piece, li, pi }, retry = false) => {
       const w = piece.x1 - piece.x0,
         h = band.y1 - band.y0;
       // A strip is a whole ring (a depth layer) or a section of it (sections join end to end).
@@ -4691,8 +4698,8 @@ export class ReskinPlugin {
         L > 1 && !sections
           ? 'Each layer is a different range: vary the shapes, and keep the colors of one layer even.'
           : '',
-        keyColorInstruction(key),
-        'The sky is NOT painted: everything above the silhouette is the flat key color.',
+        keyColorInstruction(key, { scenery: true }),
+        'The sky is NOT painted: everything above the silhouette is the flat key color. Below the silhouette there is no key color at all: the base is solid down to the bottom edge, from the left edge to the right edge.',
         opts.extraInstructions,
         ...this.lessonsFor(opts.assetClass),
       ].filter(Boolean);
@@ -4719,6 +4726,15 @@ export class ReskinPlugin {
         this.emit('warning', {
           message: `"${slot.name}" layer ${li + 1} piece ${pi + 1}: almost nothing was see-through (Muse painted a sky).`,
         });
+      // A piece with almost no scenery (one small peak) is painted again, once.
+      if (1 - k.share < (low ? 0.12 : 0.25) && !retry) {
+        this.think(
+          'check',
+          `"${slot.name}" strip ${li + 1} piece ${pi + 1}: only ${Math.round((1 - k.share) * 100)}% scenery, painted again`,
+          { slotId: slot.id },
+        );
+        return paintOne({ band, piece, li, pi }, true);
+      }
       painted.push({ band, piece, canvas: piece_, top: silhouetteTop(piece_) });
       done++;
       report(
@@ -4743,12 +4759,11 @@ export class ReskinPlugin {
       const h = band.y1 - band.y0;
       const highest = Math.max(0, ...mine.map((p) => 1 - p.top / h));
       const scale = highest > 0.05 ? Math.min(3, Math.max(1, target / highest)) : 1;
-      if (scale > 1.02)
-        this.think(
-          'plan',
-          `"${slot.name}" strip ${layers.bands.indexOf(band) + 1}: silhouettes stretched ×${scale.toFixed(2)} to ${Math.round(target * 100)}% height`,
-          { slotId: slot.id },
-        );
+      this.think(
+        'plan',
+        `"${slot.name}" strip ${layers.bands.indexOf(band) + 1}: highest peak at ${Math.round(highest * 100)}% of the strip; ${scale > 1.02 ? `silhouettes stretched ×${scale.toFixed(2)} to ${Math.round(target * 100)}%` : 'no stretch needed'}; base made solid and piece ends brought to ${low ? 30 : 55}% so they join`,
+        { slotId: slot.id, highest, scale },
+      );
       for (const p of mine) {
         let c = p.canvas;
         if (scale > 1.02) {
@@ -4756,6 +4771,8 @@ export class ReskinPlugin {
           ctx2d(t).drawImage(c, 0, 0, c.width, h, 0, h - h * scale, c.width, h * scale);
           c = t;
         }
+        // A solid base in every column, and both ends at the same join height.
+        solidifyScenery(c, { base: low ? 0.12 : 0.18, join: low ? 0.3 : 0.55 });
         if (layers.flip) c = flipVertical(c);
         g.drawImage(c, p.piece.x0, band.y0);
       }

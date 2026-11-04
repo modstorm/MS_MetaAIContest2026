@@ -46,8 +46,13 @@ export function pickKeyColor(wanted, text = '', image = null) {
   return pinkText ? KEYS.green : KEYS.magenta;
 }
 
-/** The instruction for Muse: the subject alone on a flat key-color backdrop. */
-export function keyColorInstruction(key) {
+/**
+ * The instruction for Muse: the subject alone on a flat key-color backdrop. `scenery`: a strip
+ * of landscape that runs off the left, right and bottom edges, with the key color only above it.
+ */
+export function keyColorInstruction(key, { scenery = false } = {}) {
+  if (scenery)
+    return `Transparent cut-out: the scenery runs off the left, right and bottom edges of the image without a gap, and everything above its outline is a perfectly flat, solid ${key.name} (${key.hex}) background. No gradient, texture, clouds or shadow in that background, and do not use ${key.name} or anything close to it anywhere in the scenery.`;
   return `Transparent cut-out: paint only the subject, whole and fully inside the frame, on a perfectly flat, solid ${key.name} (${key.hex}) background that fills everything around it and every gap. No gradient, texture, floor, horizon, frame or shadow on the background, and do not use ${key.name} or anything close to it anywhere in the subject.`;
 }
 
@@ -171,6 +176,73 @@ export function hardenAlpha(canvas, threshold = 128) {
   const g = ctx2d(canvas);
   const img = g.getImageData(0, 0, canvas.width, canvas.height);
   for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] >= threshold ? 255 : 0;
+  g.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/**
+ * Cleans up one painted piece of a ring backdrop (in place, image order: up is up): every
+ * column is solid from its silhouette down to the bottom edge (gaps filled with the colour
+ * above, or the piece's base colour), at least `base` of the height is solid, and the columns
+ * near both ends ease to the shared `join` height so neighbouring pieces meet without a cliff.
+ */
+export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12 } = {}) {
+  const W = canvas.width,
+    H = canvas.height;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, 0, W, H);
+  const d = img.data;
+  // The base colour: the median of the solid pixels in the bottom fifth.
+  const rs = [],
+    gs = [],
+    bs = [];
+  for (let y = Math.floor(H * 0.8); y < H; y++)
+    for (let x = 0; x < W; x += 3) {
+      const i = (y * W + x) * 4;
+      if (d[i + 3] > 200) (rs.push(d[i]), gs.push(d[i + 1]), bs.push(d[i + 2]));
+    }
+  const med = (v, f) => (v.length ? v.sort((a, b) => a - b)[v.length >> 1] : f);
+  const baseCol = [med(rs, 24), med(gs, 28), med(bs, 36)];
+  const baseTop = Math.round(H * (1 - base)),
+    joinTop = Math.round(H * (1 - join)),
+    R = Math.max(4, Math.round(W * ramp));
+  for (let x = 0; x < W; x++) {
+    let top = H;
+    for (let y = 0; y < H; y++)
+      if (d[(y * W + x) * 4 + 3] > 128) {
+        top = y;
+        break;
+      }
+    const orig = top;
+    top = Math.min(top, baseTop);
+    const e = Math.min(x, W - 1 - x);
+    if (e < R) {
+      const t0 = 1 - e / R,
+        t = t0 * t0 * (3 - 2 * t0);
+      top = Math.round(top * (1 - t) + joinTop * t);
+    }
+    // Colour to fill with: the first solid pixel at or below the new top, else the base colour.
+    let last = baseCol;
+    for (let y = Math.max(top, orig); y < H; y++) {
+      const i = (y * W + x) * 4;
+      if (d[i + 3] > 128) {
+        last = [d[i], d[i + 1], d[i + 2]];
+        break;
+      }
+    }
+    for (let y = 0; y < H; y++) {
+      const i = (y * W + x) * 4;
+      if (y < top) {
+        d[i + 3] = 0;
+        continue;
+      }
+      // Keep the soft outline where the column was not moved.
+      if (top === orig && y < orig + 2 && d[i + 3] > 0) continue;
+      if (d[i + 3] > 128) last = [d[i], d[i + 1], d[i + 2]];
+      else [d[i], d[i + 1], d[i + 2]] = last;
+      d[i + 3] = 255;
+    }
+  }
   g.putImageData(img, 0, 0);
   return canvas;
 }
