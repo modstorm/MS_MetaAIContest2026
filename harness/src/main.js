@@ -222,7 +222,7 @@ async function load(input, name) {
     $('generated').innerHTML = '<span class="muted">Nothing generated yet.</span>';
     setLoaded(true);
     refreshZones();
-    openPrompt(); // the prompt pops up as soon as a model is in
+    // The Reskin popup opens only when Reskin is clicked (not on load).
   } catch (err) {
     log(`Load failed: ${err.message}`, 'err');
   }

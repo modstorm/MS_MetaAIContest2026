@@ -1373,11 +1373,14 @@ export class ReskinPlugin {
     }
     const { width, height } = layers
       ? { width: layers.width, height: layers.height }
-      : slot.texture
-        ? fitSize(slot.width, slot.height, maxSize)
-        : strip
-          ? { width: Math.min(2048, maxSize), height: Math.min(1024, maxSize) }
-          : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
+      : stacked
+        ? // One seamless picture for stacked faces: always 1024² (Kris), whatever the grid's size.
+          { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) }
+        : slot.texture
+          ? fitSize(slot.width, slot.height, maxSize)
+          : strip
+            ? { width: Math.min(2048, maxSize), height: Math.min(1024, maxSize) }
+            : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
 
     let plan = null;
     let orient = null;

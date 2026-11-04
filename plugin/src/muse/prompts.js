@@ -90,9 +90,10 @@ export function plainSeamlessTexturePrompt(theme) {
 
 export function seamlessTexturePrompt(theme, materialName, extra) {
   return [
-    `A seamless, tileable surface texture${materialName && !isPlaceholderName(materialName) ? ` for the material "${materialName}"` : ''} of a 3D model, theme: "${theme}".`,
+    `One seamless surface texture${materialName && !isPlaceholderName(materialName) ? ` for the material "${materialName}"` : ''} of a 3D model, theme: "${theme}".`,
     'Orthographic top-down view of the surface, flat even lighting, no shadows, no perspective, no objects, no text.',
-    'The left/right and top/bottom edges must tile without visible seams.',
+    'The left/right and top/bottom edges must join without visible seams when the image is placed next to itself.',
+    'The image is ONE single picture of the surface filling the whole square: never a smaller tile repeated inside it (no 2×2, 3×3 or 4×4 copies). Every panel, plank, tile or stone in it differs a little (wear, size, color).',
     extra ?? '',
   ]
     .join('\n')
