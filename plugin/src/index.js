@@ -49,6 +49,7 @@ export {
   canvasToDataUrl,
 } from './texture/imageUtils.js';
 export { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
+export { isPrototypeGrid } from './texture/prototype.js';
 export { ASSET_CLASSES, registerAssetClass, getAssetClass, detectAssetClass, assetClassRules } from './assetClasses.js';
 export { drawFacingMap, splitPartRegions, FACINGS } from './analysis/facing.js';
 export { makeSeamless, canvasSeams, seamRatio, wrapAxis, calmPoles } from './texture/seamless.js';

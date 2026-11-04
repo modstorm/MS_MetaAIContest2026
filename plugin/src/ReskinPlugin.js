@@ -272,6 +272,15 @@ function skinPixels(canvas, x, y, w, h) {
 
 /** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
 /** A prompt that asks for see-through areas. */
+/** A flat mid-grey canvas the size of `canvas` (a stand-in for a texture Muse must not see). */
+function flatLike(canvas) {
+  const c = createCanvas(canvas.width, canvas.height);
+  const g = ctx2d(c);
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+
 /** The share of `canvas` pixels that are solid (alpha over 128). */
 function opaqueShare(canvas) {
   const d = ctx2d(canvas).getImageData(0, 0, canvas.width, canvas.height).data;
@@ -678,6 +687,8 @@ export class ReskinPlugin {
    * @param {import('./io/modelIO.js').LoadOptions} [opts]
    *   Also opts.imageOrder: 'gltf' (default) | 'image', the row order of the canvases this
    *   model's reskin results and textureUpdated events hand out (see PostPromptOptions).
+   *   Also opts.ignoreSource: true, the default for this model's reskins: Muse Image never sees
+   *   the existing textures and paints from the prompt alone (see PostPromptOptions).
    * @returns {Promise<{ model: LoadedModel, layout: TextureLayout }>}
    */
   async postModel(input, opts = {}) {
@@ -689,6 +700,9 @@ export class ReskinPlugin {
       this.model = model;
       // Order of the canvases this model's results hand out: 'gltf' (default) or 'image'.
       this.imageOrder = opts.imageOrder === 'image' ? 'image' : 'gltf';
+      // ignoreSource: the model's own textures (a prototyping grid) are never shown to Muse
+      // Image; it paints from the prompt alone at each texture's size (see PostPromptOptions).
+      this.ignoreSource = opts.ignoreSource === true;
       this.snapshots.clear();
       this.geometrySnapshots = null;
       this.planCache.clear();
@@ -946,7 +960,11 @@ export class ReskinPlugin {
         idSheet = this.renderIdSheet({ size: Math.round((opts.viewSize ?? 384) * 0.75) });
         this.emit('views', { views, sheet, idSheet });
 
-        atlasSlots = this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
+        // ignoreSource: the textures (a prototyping grid) are not shown to Muse at all.
+        atlasSlots =
+          (opts.ignoreSource ?? this.ignoreSource)
+            ? []
+            : this.layout.slots.filter((s) => s.texture && !s.tiled).slice(0, 4);
         const atlases = atlasSlots.map((slot) => {
           const original = textureToCanvas(slot.texture, 1024);
           const rawParts = this.idRegions(slot);
@@ -1289,6 +1307,15 @@ export class ReskinPlugin {
       return null;
     }
 
+    // ignoreSource: the existing texture (a prototyping grid) is not shown to Muse. An atlas is
+    // still painted area by area on its UV layout, from a flat grey stand-in at the same size; a
+    // tiled texture is painted from the prompt alone. UVs, tiling and transparency are kept.
+    const ignoreSource = (opts.ignoreSource ?? this.ignoreSource) === true;
+    const source = ignoreSource ? null : slot.texture;
+    if (ignoreSource && slot.texture)
+      this.think('plan', `"${slot.name}": the existing texture is ignored; Muse paints from the prompt only`, {
+        slotId: slot.id,
+      });
     // A backdrop ring around the scene (one or several layered bands, all the way round).
     const ringish = slot.meshes.some((m) => ringBand(m, { loose: true }));
     // Transparency asked for (opts.transparent, or the prompt says so): Muse paints on a flat key
@@ -1298,7 +1325,7 @@ export class ReskinPlugin {
     const wantAlpha =
       opts.transparent ??
       (WANTS_TRANSPARENCY.test(`${theme} ${opts.extraInstructions ?? ''}`) &&
-        (!slot.texture || ringish || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
+        (!source || ringish || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
     const key = wantAlpha ? pickKeyColor(opts.keyColor, theme) : null;
     if (opts.replaceShape === true) this.replaceRingShapes(slot);
     // Layered silhouettes: a ring whose texture holds horizontal strips (a skyline in layers).
@@ -1306,7 +1333,7 @@ export class ReskinPlugin {
     // the key color, keeping the model's UVs and layering. opts.layers: false turns it off.
     const layerSize = slot.texture ? fitSize(slot.width, slot.height, maxSize) : { width: 2048, height: 2048 };
     let layers =
-      key && ringish && opts.layers !== false && opts.replaceShape !== true
+      key && ringish && !ignoreSource && opts.layers !== false && opts.replaceShape !== true
         ? ringLayerBands(slot, Math.min(layerSize.width, maxSize), Math.min(layerSize.height, maxSize))
         : null;
     // A plain untextured ring (one band over the whole texture) is painted as one panorama instead.
@@ -1342,7 +1369,9 @@ export class ReskinPlugin {
       if (layers) {
         raw = await this.paintRingLayers(slot, theme, layers, key, opts, signal, report);
       } else if (atlasMode) {
-        original = textureToCanvas(slot.texture, maxSize);
+        original = ignoreSource
+          ? flatLike(textureToCanvas(slot.texture, maxSize))
+          : textureToCanvas(slot.texture, maxSize);
         // Parts from the 3D file (one per mesh name), with which way "up" points in the image.
         const rawParts = slotParts(slot);
         // Part by part when the atlas has several areas: several named meshes, or one mesh
@@ -1522,7 +1551,8 @@ export class ReskinPlugin {
           await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
             this.provider.generateTexture({
               theme: t,
-              materialName: slot.name,
+              // A prototype's material name ("Grid") pulls Muse back to what it names.
+              materialName: ignoreSource ? undefined : slot.name,
               width,
               height,
               extraInstructions: plain
@@ -1558,7 +1588,8 @@ export class ReskinPlugin {
       width,
       height,
       atlasMode,
-      original,
+      // A flat stand-in (ignoreSource) has no pixels worth keeping or comparing with.
+      original: ignoreSource ? null : original,
       theme,
       maxSize,
       signal,
@@ -1907,13 +1938,18 @@ export class ReskinPlugin {
         ? (normalizeAssetClass(opts.assetClass) ?? String(opts.assetClass))
         : detectAssetClass({ subject: `${opts.context ?? ''} ${theme}`, modelName: name });
       report(0.02, 'load', `Reading "${name}"`);
-      const source = input == null ? null : await this.toInputCanvas(input);
+      const input_ = input == null ? null : await this.toInputCanvas(input);
       signal.throwIfAborted();
+      // ignoreSource: the input (a prototyping grid) only gives the size and how it wraps;
+      // Muse paints from the prompt alone and never sees it.
+      const ignoreSource = opts.ignoreSource === true;
+      const source = ignoreSource ? null : input_;
       const maxSize = Math.min(opts.maxTextureSize ?? 2048, 4096);
       const transparent = !!opts.transparent;
-      const wrap = resolveWrap(opts.wrap ?? (transparent ? 'none' : undefined), assetClass, source);
+      const wrap = resolveWrap(opts.wrap ?? (transparent ? 'none' : undefined), assetClass, input_);
       let width, height;
-      if (source) ({ width, height } = fitSize(source.width, source.height, maxSize));
+      if (input_ && !(ignoreSource && (opts.width || opts.size)))
+        ({ width, height } = fitSize(input_.width, input_.height, maxSize));
       else {
         width = Math.min(opts.width ?? opts.size ?? 1024, maxSize);
         height = Math.min(opts.height ?? opts.size ?? (wrap === 'equirect' ? Math.round(width / 2) : width), maxSize);
@@ -1975,7 +2011,8 @@ export class ReskinPlugin {
         raw = await this.withFilterRetry('generate texture', job, theme, (plain, t) =>
           this.provider.generateTexture({
             theme: t,
-            materialName: name,
+            // useName: false (or ignoreSource) leaves the name out of the prompt.
+            materialName: opts.useName === false || ignoreSource ? undefined : name,
             width,
             height,
             plain,

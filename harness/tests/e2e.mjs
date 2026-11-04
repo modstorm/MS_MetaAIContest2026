@@ -2963,6 +2963,81 @@ try {
     await page.context().close();
   });
 
+  await step(
+    'ignoreSource: a prototyping grid is never sent to Muse Image; prompt and size only (models keep their UV layout)',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const calls = [];
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        if (/\/images\//.test(req.url()))
+          calls.push({
+            path: new URL(req.url()).pathname,
+            size: req.postDataJSON?.()?.size ?? null,
+            hasImage: /data:image|"image"/.test(req.postData() ?? ''),
+          });
+        return museOk(route);
+      });
+      await page.evaluate(
+        (r) => (window.__pluginRoot = r),
+        fileURLToPath(new URL('../../plugin/src/', import.meta.url)),
+      );
+      const out = await page.evaluate(async () => {
+        const grid = () => {
+          const c = document.createElement('canvas');
+          c.width = 512;
+          c.height = 256;
+          const g = c.getContext('2d');
+          g.fillStyle = '#808080';
+          g.fillRect(0, 0, 512, 256);
+          g.fillStyle = '#ffffff';
+          for (let i = 0; i < 512; i += 32) g.fillRect(i, 0, 2, 256);
+          for (let i = 0; i < 256; i += 32) g.fillRect(0, i, 512, 2);
+          return c;
+        };
+        const p = window.reskin.plugin;
+        const proto = await import('/@fs' + window.__pluginRoot + 'texture/prototype.js');
+        const isGrid = proto.isPrototypeGrid(grid());
+        const t = await p.postTexture(grid(), {
+          theme: 'mossy cobblestones',
+          ignoreSource: true,
+          normalMap: false,
+          roughnessMap: false,
+        });
+        const mod = await import('/src/sampleModel.js');
+        await p.postModel(await mod.buildSampleGlb(), { name: 'robot', ignoreSource: true });
+        const atlas = p.layout.slots.find((s) => s.texture && !s.tiled);
+        const r = await p.postPrompt('rusty steampunk brass', {
+          useVisionPlanning: false,
+          samCheck: false,
+          samZones: false,
+        });
+        return {
+          isGrid,
+          atlasSize: [atlas.width, atlas.height],
+          texture: [t.canvas.width, t.canvas.height, t.wrap],
+          slots: r.slots.map((s) => [s.canvas?.width, s.canvas?.height]),
+          thinking: (r.thinking ?? []).map((e) => e.text).filter((x) => /ignored/.test(x)),
+        };
+      });
+      assert.equal(out.isGrid, true, 'isPrototypeGrid finds the grid');
+      assert.ok(calls.length >= 2, JSON.stringify(calls));
+      assert.ok(
+        calls[0].path.endsWith('/images/generations') && !calls[0].hasImage,
+        'postTexture: a text-to-image request, no image sent: ' + JSON.stringify(calls[0]),
+      );
+      assert.deepEqual(out.texture, [512, 256, 'both'], 'the grid gives the size and the tiling');
+      // The model's atlas is painted on its UV layout (a flat grey stand-in, never the texture), same size.
+      assert.ok(
+        out.slots.some(([w, h]) => w === out.atlasSize[0] && h === out.atlasSize[1]),
+        JSON.stringify(out),
+      );
+      assert.ok(out.thinking.length >= 1, 'the plan says the texture is ignored');
+      await page.context().close();
+    },
+  );
+
   await step('transparency: a see-through background image and a cut-out model texture keep their alpha', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const prompts = [];
