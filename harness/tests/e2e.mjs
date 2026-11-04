@@ -3343,11 +3343,15 @@ try {
         return {
           top: [a(100, 4), a(300, 89), a(200, 174), a(400, 259)],
           bottom: [a(100, 76), a(300, 161), a(200, 246), a(400, 331)],
+          // Row 20 of 80 (75% up): Muse's mock range only reaches 69% before the stretch.
+          high: Array.from({ length: 64 }, (_, i) => a(i * 2, 20)),
           below: a(256, 450),
           mask: [mat.transparent, mat.alphaTest],
         };
       });
-      assert.deepEqual(sec.top, [0, 0, 0, 0], 'sky above each quarter is see-through');
+      // Peaks now reach ~92% of the strip, so the top rows are only almost all sky.
+      assert.ok(sec.top.every((a) => a < 64), 'sky above each quarter is see-through: ' + JSON.stringify(sec));
+      assert.ok(sec.high.some((a) => a > 200), 'the range is stretched up to fill the strip: ' + JSON.stringify(sec));
       assert.deepEqual(sec.bottom, [255, 255, 255, 255], 'each quarter stands on its bottom edge');
       assert.equal(sec.below, 0);
       assert.deepEqual(sec.mask, [false, 0.5], 'an alpha MASK material cuts at 0.5');

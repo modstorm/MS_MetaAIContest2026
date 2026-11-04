@@ -263,6 +263,20 @@ function skinPixels(canvas, x, y, w, h) {
 
 /** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
 /** A prompt that asks for see-through areas. */
+/** The first row (from the top) where a column has a mostly solid pixel, over all columns. */
+function silhouetteTop(canvas) {
+  const W = canvas.width,
+    H = canvas.height;
+  const d = ctx2d(canvas).getImageData(0, 0, W, H).data;
+  for (let y = 0; y < H; y++) {
+    let n = 0;
+    for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] > 128) n++;
+    // A few stray pixels are not a peak.
+    if (n > Math.max(2, W * 0.004)) return y;
+  }
+  return H;
+}
+
 const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
 
 const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
@@ -4659,6 +4673,11 @@ export class ReskinPlugin {
       },
     );
     let done = 0;
+    const painted = [];
+    // Height words: "low hills", "dunes" keep a low ridge; everything else is a tall range.
+    const low =
+      /\b(low|small|gentle|rolling|flat|hills?|dunes?|plains?|short)\b/i.test(theme) &&
+      !/\b(tall|high|huge|giant|towering|alps|peaks?)\b/i.test(theme);
     const paintOne = async ({ band, piece, li, pi }) => {
       const w = piece.x1 - piece.x0,
         h = band.y1 - band.y0;
@@ -4668,7 +4687,7 @@ export class ReskinPlugin {
         sections
           ? `This is piece ${pi + 1} of ${band.pieces.length} of section ${li + 1} of ${L} of a panorama backdrop that goes all the way around a game scene (a wide strip, flat colors, no perspective). The sections join end to end around the ring: keep one style, one palette and one horizon height in every section.`
           : `This is piece ${pi + 1} of ${band.pieces.length} of layer ${li + 1} of ${L} of a layered panorama backdrop around a game scene (a wide strip, flat colors, no perspective).`,
-        'The scenery stands on the bottom edge of the image and fills the bottom part all the way across; its top outline is the silhouette against the sky. At the far left and right edges it comes down to the same medium height, so the pieces join side by side.',
+        `The scenery stands on the bottom edge of the image: a solid base fills the bottom ${low ? '10%' : '15-20%'} all the way across, and its top outline is the silhouette against the sky. ${low ? 'The ridge stays low, between about 25% and 50% of the image height.' : 'The ridge is tall: peaks and ridges vary between about 50% and 95% of the image height, and the highest peak nearly touches the top edge.'} At the far left and right edges it comes down to the same height (about ${low ? '30%' : '55%'} of the image), so the pieces join side by side.`,
         L > 1 && !sections
           ? 'Each layer is a different range: vary the shapes, and keep the colors of one layer even.'
           : '',
@@ -4700,8 +4719,7 @@ export class ReskinPlugin {
         this.emit('warning', {
           message: `"${slot.name}" layer ${li + 1} piece ${pi + 1}: almost nothing was see-through (Muse painted a sky).`,
         });
-      if (layers.flip) piece_ = flipVertical(piece_);
-      g.drawImage(piece_, piece.x0, band.y0);
+      painted.push({ band, piece, canvas: piece_, top: silhouetteTop(piece_) });
       done++;
       report(
         0.2 + (0.5 * done) / jobs.length,
@@ -4716,6 +4734,32 @@ export class ReskinPlugin {
         while (queue.length) await paintOne(queue.shift());
       }),
     );
+    // Muse often paints the range lower than asked: each strip is stretched up from its base
+    // (one factor for all its pieces, so the joins stay level) until its highest peak reaches
+    // the target height.
+    const target = low ? 0.5 : 0.92;
+    for (const band of layers.bands) {
+      const mine = painted.filter((p) => p.band === band);
+      const h = band.y1 - band.y0;
+      const highest = Math.max(0, ...mine.map((p) => 1 - p.top / h));
+      const scale = highest > 0.05 ? Math.min(3, Math.max(1, target / highest)) : 1;
+      if (scale > 1.02)
+        this.think(
+          'plan',
+          `"${slot.name}" strip ${layers.bands.indexOf(band) + 1}: silhouettes stretched ×${scale.toFixed(2)} to ${Math.round(target * 100)}% height`,
+          { slotId: slot.id },
+        );
+      for (const p of mine) {
+        let c = p.canvas;
+        if (scale > 1.02) {
+          const t = createCanvas(c.width, h);
+          ctx2d(t).drawImage(c, 0, 0, c.width, h, 0, h - h * scale, c.width, h * scale);
+          c = t;
+        }
+        if (layers.flip) c = flipVertical(c);
+        g.drawImage(c, p.piece.x0, band.y0);
+      }
+    }
     return out;
   }
 
