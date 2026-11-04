@@ -1999,6 +1999,54 @@ try {
     await page.context().close();
   });
 
+  await step('template outlines and labels Muse copied are painted over with the paint beside them', async () => {
+    const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+    await page.evaluate((r) => (window.__pluginRoot = r), fileURLToPath(new URL('../../plugin/src/', import.meta.url)));
+    const out = await page.evaluate(async () => {
+      const lc = await import('/@fs' + window.__pluginRoot + 'texture/lineCleanup.js');
+      const mk = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        return c;
+      };
+      // Template: white with one red panel border at x = 32.
+      const tpl = mk();
+      const tg = tpl.getContext('2d');
+      tg.fillStyle = '#fff';
+      tg.fillRect(0, 0, 64, 64);
+      tg.fillStyle = '#e00';
+      tg.fillRect(32, 0, 1, 64);
+      // "Muse" painted navy trousers but copied the border as a light line.
+      const paint = mk();
+      const pg = paint.getContext('2d');
+      pg.fillStyle = '#102040';
+      pg.fillRect(0, 0, 64, 64);
+      pg.fillStyle = '#e0e0e0';
+      pg.fillRect(31, 0, 3, 64);
+      const n = lc.fillMasked(paint, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 25 });
+      // A dark collar drawn along a guide line stays.
+      const col = mk();
+      const cg = col.getContext('2d');
+      cg.fillStyle = '#e0e0e0';
+      cg.fillRect(0, 0, 64, 64);
+      cg.fillStyle = '#202020';
+      cg.fillRect(31, 0, 3, 64);
+      lc.fillMasked(col, lc.templateLineMask(tpl, 2), null, 24, { onlyLighter: 25 });
+      const collar = [...cg.getImageData(32, 30, 1, 1).data.slice(0, 3)];
+      return {
+        n,
+        collar,
+        px: [...pg.getImageData(32, 30, 1, 1).data.slice(0, 3)],
+        away: [...pg.getImageData(10, 30, 1, 1).data.slice(0, 3)],
+      };
+    });
+    assert.ok(out.n > 0);
+    assert.deepEqual(out.px, [16, 32, 64], `line still there ${out.px}`);
+    assert.deepEqual(out.away, [16, 32, 64]);
+    assert.deepEqual(out.collar, [32, 32, 32], 'a dark line drawn on purpose stays');
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');
