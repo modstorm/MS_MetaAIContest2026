@@ -2058,6 +2058,63 @@ try {
     await page.context().close();
   });
 
+  await step('template line cleanup runs in a real paint: the light line Muse copied is gone', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    // "Muse" paints dark navy with a light vertical line in the middle (a copied outline).
+    const png = makePng(256, 256, (x) => (x >= 127 && x <= 129 ? [225, 225, 225] : [16, 32, 64])).toString('base64');
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const out = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'tpl-lines' });
+      const t = document.createElement('canvas');
+      t.width = t.height = 256;
+      const g = t.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, 256, 256);
+      g.fillStyle = '#e00';
+      g.fillRect(128, 0, 1, 256);
+      const run = async (cleanTemplateLines) => {
+        const r = await p.postPrompt('jeans', {
+          paintMode: 'atlas',
+          useVisionPlanning: false,
+          normalMaps: false,
+          roughnessMaps: false,
+          samCheck: false,
+          templates: [{ image: t }],
+          cleanTemplateLines,
+        });
+        const c = r.slots[0].canvas;
+        const k = c.width / 256;
+        return [
+          ...c
+            .getContext('2d')
+            .getImageData(128 * k, 200 * k, 1, 1)
+            .data.slice(0, 3),
+        ];
+      };
+      return { off: await run(false), on: await run(true) };
+    }, glb);
+    assert.ok(out.off[0] > 150, `the mock line should be there without the cleanup ${out.off}`);
+    assert.ok(out.on[0] < 60, `line still there ${out.on}`);
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');

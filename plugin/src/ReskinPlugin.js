@@ -1286,11 +1286,10 @@ export class ReskinPlugin {
     // trousers): those pixels take the paint on both sides of the line.
     const tplForLines =
       atlasMode && opts.cleanTemplateLines !== false ? this.templateFor(slot, opts, width, height) : null;
-    if (tplForLines && islandMap) {
-      const mask = templateLineMask(tplForLines, Math.max(1, Math.round((3 * width) / 1024)));
-      const inside = new Uint8Array(width * height);
-      for (let p = 0; p < inside.length; p++) inside[p] = islandMap[p] >= 0 ? 1 : 0;
-      const n = fillMasked(baseColor, mask, inside, 24, { onlyLighter: 15 });
+    if (tplForLines) {
+      const mask = templateLineMask(tplForLines, Math.max(2, Math.round((3 * width) / 1024)));
+      // Also the gutters between islands on a line (sampled at the seams through filtering).
+      const n = fillMasked(baseColor, mask, null, 24, { onlyLighter: 15 });
       if (n)
         this.think('note', `"${slot.name}": removed the template's outlines and labels from the paint (${n} px)`, {
           slotId: slot.id,
