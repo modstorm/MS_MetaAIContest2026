@@ -64,7 +64,14 @@ import {
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
 import { paintHairStrands } from './texture/strands.js';
-import { fillMasked, growMask, horizontalRuns, seamLineMask, templateLineMask } from './texture/lineCleanup.js';
+import {
+  fillMasked,
+  growMask,
+  horizontalRuns,
+  seamLineMask,
+  templateLineMask,
+  verticalRuns,
+} from './texture/lineCleanup.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
@@ -1358,6 +1365,13 @@ export class ReskinPlugin {
         vertical: true,
       });
       n += fillMasked(baseColor, band, null, 32, { minStep: 30 });
+      // The same along vertical strip borders (pale streaks at the edges of trouser strips),
+      // only for paint much lighter than beside it, so stripes drawn on purpose mostly stay.
+      const vertical = verticalRuns(lines, width, height, Math.max(8, Math.round((40 * width) / 1024)));
+      const vband = growMask(vertical, width, height, Math.max(3, Math.round((8 * width) / 1024)), {
+        horizontal: true,
+      });
+      n += fillMasked(baseColor, vband, null, 24, { minStep: 45 });
       if (n)
         this.think('note', `"${slot.name}": removed the template's outlines and labels from the paint (${n} px)`, {
           slotId: slot.id,

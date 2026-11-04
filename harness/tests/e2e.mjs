@@ -2151,7 +2151,7 @@ try {
     // "Muse" paints dark navy with a light vertical line in the middle (a copied outline).
     // ...and a light band along a horizontal panel border (the border at texture y 191).
     const png = makePng(256, 256, (x, y) =>
-      (x >= 127 && x <= 129) || (y >= 60 && y <= 68) ? [225, 225, 225] : [16, 32, 64],
+      (x >= 127 && x <= 131) || (y >= 60 && y <= 68) ? [225, 225, 225] : [16, 32, 64],
     ).toString('base64');
     await page.route('https://api.meta.ai/v1/**', async (route) => {
       const req = route.request();
@@ -2199,12 +2199,22 @@ try {
             .getImageData(x * k, y * k, 1, 1)
             .data.slice(0, 3),
         ];
-        return { line: px(128, 200), band: px(40, 191), bandEdge: px(40, 188), below: px(40, 150) };
+        return {
+          line: px(128, 200),
+          streak: px(131, 200),
+          band: px(40, 191),
+          bandEdge: px(40, 188),
+          below: px(40, 150),
+        };
       };
       return { off: await run(false), on: await run(true) };
     }, glb);
     assert.ok(out.off.line[0] > 150, `the mock line should be there without the cleanup ${out.off.line}`);
     assert.ok(out.on.line[0] < 60, `line still there ${out.on.line}`);
+    assert.ok(
+      out.off.streak[0] > 150 && out.on.streak[0] < 60,
+      `streak beside the border ${out.off.streak} ${out.on.streak}`,
+    );
     assert.ok(out.off.band[0] > 150, `the mock band should be there without the cleanup ${out.off.band}`);
     assert.ok(out.on.band[0] < 60 && out.on.bandEdge[0] < 60, `band still there ${out.on.band} ${out.on.bandEdge}`);
     assert.deepEqual(out.on.below, [16, 32, 64]);

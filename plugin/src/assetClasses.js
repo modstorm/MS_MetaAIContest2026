@@ -36,6 +36,7 @@ export const ASSET_CLASSES = [
       'Each garment covers its whole area on every side: sleeves, trousers, gloves and shoes leave no strips of skin or of the old colors.',
       'Separate areas of the same part use the same fabric, pattern and colors.',
       'Keep skin as skin (it may change tone for the theme) unless the theme is a costume, robot or creature.',
+      'The outfit must read as the theme at a glance: use its most recognisable garments, colors and markings (a doctor: white coat or scrubs; an astronaut: a white or orange space suit with patches), not a generic or neighbouring costume.',
       NO_SEAM_CROSSING,
     ],
     parts: [

@@ -19,10 +19,10 @@ export function templateLineMask(template, grow = 2) {
 }
 
 /**
- * Grows a 0/1 mask by `n` pixels (4-neighbours). With `vertical`, only up and down: a
- * horizontal line becomes a taller band, a vertical line stays as thin as it was.
+ * Grows a 0/1 mask by `n` pixels (4-neighbours). With `vertical`, only up and down (a
+ * horizontal line becomes a taller band); with `horizontal`, only left and right.
  */
-export function growMask(mask, W, H, n, { vertical = false } = {}) {
+export function growMask(mask, W, H, n, { vertical = false, horizontal = false } = {}) {
   for (let k = 0; k < n; k++) {
     const next = mask.slice();
     for (let y = 0; y < H; y++)
@@ -32,14 +32,31 @@ export function growMask(mask, W, H, n, { vertical = false } = {}) {
         if (
           (!vertical && x > 0 && mask[p - 1]) ||
           (!vertical && x < W - 1 && mask[p + 1]) ||
-          (y > 0 && mask[p - W]) ||
-          (y < H - 1 && mask[p + W])
+          (!horizontal && y > 0 && mask[p - W]) ||
+          (!horizontal && y < H - 1 && mask[p + W])
         )
           next[p] = 1;
       }
     mask = next;
   }
   return mask;
+}
+
+/** The pixels of `mask` in vertical runs of at least `minRun` (long vertical lines, no text). */
+export function verticalRuns(mask, W, H, minRun) {
+  const out = new Uint8Array(W * H);
+  for (let x = 0; x < W; x++)
+    for (let y = 0; y < H; ) {
+      if (!mask[y * W + x]) {
+        y++;
+        continue;
+      }
+      let e = y;
+      while (e < H && mask[e * W + x]) e++;
+      if (e - y >= minRun) for (let k = y; k < e; k++) out[k * W + x] = 1;
+      y = e;
+    }
+  return out;
 }
 
 /** The pixels of `mask` in horizontal runs of at least `minRun` (long horizontal lines, no text). */
