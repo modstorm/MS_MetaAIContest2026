@@ -3166,7 +3166,7 @@ try {
   );
 
   await step(
-    'background ring: an unlit, untextured cylinder gets a transparent panorama; a change edits it',
+    'background ring: an unlit, untextured ring gets a transparent 360° panorama (shape kept); a change edits it',
     async () => {
       const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
       const prompts = [];
@@ -3191,7 +3191,25 @@ try {
       const out = await page.evaluate(async () => {
         const mod = await import('/src/sampleModel.js');
         const p = window.reskin.plugin;
-        const { layout } = await p.postModel(await mod.buildRingTestGlb(), { name: 'BG_ring' });
+        const { layout } = await p.postModel(await mod.buildRingTestGlb({ skyline: true }), { name: 'BG_ring' });
+        const mesh = p.model.scene.getObjectByName('Cylinder');
+        const topYs = (g) => {
+          const pos = g.getAttribute('position');
+          const ys = new Set();
+          for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0.5) ys.add(pos.getY(i).toFixed(2));
+          return ys.size;
+        };
+        const uRange = (g) => {
+          const uv = g.getAttribute('uv');
+          let lo = 1,
+            hi = 0;
+          for (let i = 0; i < uv.count; i++) {
+            lo = Math.min(lo, uv.getX(i));
+            hi = Math.max(hi, uv.getX(i));
+          }
+          return [lo, hi];
+        };
+        const before = topYs(mesh.geometry);
         const theme =
           'Panoramic ring of mountains background, flat unlit game albedo with alpha transparency. Leave sky gaps between peaks fully transparent.';
         const r = await p.postPrompt(theme, { useVisionPlanning: false, samCheck: false });
@@ -3209,9 +3227,14 @@ try {
           hasNormalProp: 'normalMap' in mat,
           repeat: mat.map.repeat.x,
           wrapS: mat.map.wrapS,
+          before,
+          after: topYs(mesh.geometry),
+          uRange: uRange(mesh.geometry),
         };
         const ch = await p.postChange('add mountains');
-        return { first, changed: ch.slots.length, sameMat: mat.map !== null && mat.type };
+        const changedShape = topYs(mesh.geometry);
+        p.revert();
+        return { first, changed: ch.slots.length, changedShape, reverted: topYs(mesh.geometry) };
       });
       assert.equal(out.first.slots, 1);
       assert.ok(out.first.tris > 0, 'triangles counted');
@@ -3220,11 +3243,102 @@ try {
       assert.equal(out.first.top, 0, 'sky gap is see-through');
       assert.equal(out.first.bottom, 255, 'mountains are solid');
       assert.equal(out.first.transparent, true);
-      assert.ok(out.first.repeat >= 2 && out.first.wrapS === 1000, `ring repeats around ${out.first.repeat}`);
+      assert.ok(
+        out.first.repeat >= 1 && out.first.repeat <= 3 && out.first.wrapS === 1000,
+        `repeats ${out.first.repeat}`,
+      );
+      assert.ok(out.first.before > 3 && out.first.after === out.first.before, 'the shape is kept');
+      assert.deepEqual(out.first.uRange, [0, 1], 'the panorama goes all the way round');
+      assert.equal(out.changedShape, out.first.before);
+      assert.equal(out.reverted, out.first.before);
       assert.ok(out.first.size[0] === 2 * out.first.size[1], `wide strip ${out.first.size}`);
       assert.ok(/#FF00FF/.test(prompts[0]) && /ring seen from inside/.test(prompts[0]), prompts[0]);
       assert.equal(out.changed, 1, 'the change repaints the ring');
       assert.ok(/add mountains/.test(prompts.at(-1)), `change sent to Muse: ${prompts.at(-1)}`);
+      await page.context().close();
+    },
+  );
+
+  await step(
+    'layered backdrop ring: each skyline strip is repainted in place as a new silhouette with alpha',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const prompts = [];
+      // "Muse": magenta sky above, mountains in the lower half.
+      const png = makePng(256, 128, (x, y) => (y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
+        'base64',
+      );
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+        prompts.push(req.postDataJSON()?.prompt ?? '');
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const out = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        const p = window.reskin.plugin;
+        await p.postModel(await mod.buildLayeredRingTestGlb(), { name: 'BG_ring' });
+        const r = await p.postPrompt(
+          'Panoramic ring of mountains background with alpha transparency, sky gaps fully transparent',
+          { useVisionPlanning: false, samCheck: false },
+        );
+        const c = r.slots[0].canvas;
+        const k = c.width / 512;
+        const a = (x, y) => c.getContext('2d').getImageData(x * k, y * k, 1, 1).data[3];
+        const mat = p.model.scene.getObjectByName('Cylinder').material;
+        return {
+          bandTop: [a(100, 4), a(300, 89), a(200, 259)],
+          bandBottom: [a(100, 76), a(300, 161), a(200, 331)],
+          below: a(256, 450),
+          transparent: mat.transparent,
+          type: mat.type,
+        };
+      });
+      assert.deepEqual(out.bandTop, [0, 0, 0], 'sky above each silhouette is see-through');
+      assert.deepEqual(out.bandBottom, [255, 255, 255], 'each strip stands on its bottom edge');
+      assert.equal(out.below, 0, 'the unused part of the texture is see-through');
+      assert.equal(out.transparent, true);
+      assert.equal(out.type, 'MeshBasicMaterial');
+      assert.equal(prompts.length, 32, `4 layers × 8 pieces painted: ${prompts.length}`);
+      assert.ok(/piece 1 of 8 of layer 1 of 4/.test(prompts.join()) && /#FF00FF/.test(prompts[0]), prompts[0]);
+      // A ring cut into quarters, each quarter across its own strip, with an alpha MASK material.
+      prompts.length = 0;
+      const sec = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        const p = window.reskin.plugin;
+        await p.postModel(await mod.buildLayeredRingTestGlb({ sections: true }), { name: 'BG_ring' });
+        const r = await p.postPrompt('mountains around the entire ring, cut out with transparency', {
+          fast: true,
+          samZones: false,
+          transparent: true,
+          useVisionPlanning: false,
+          samCheck: false,
+        });
+        const c = r.slots[0].canvas;
+        const k = c.width / 512;
+        const a = (x, y) => c.getContext('2d').getImageData(x * k, y * k, 1, 1).data[3];
+        const mat = p.model.scene.getObjectByName('Cylinder').material;
+        return {
+          top: [a(100, 4), a(300, 89), a(200, 174), a(400, 259)],
+          bottom: [a(100, 76), a(300, 161), a(200, 246), a(400, 331)],
+          below: a(256, 450),
+          mask: [mat.transparent, mat.alphaTest],
+        };
+      });
+      assert.deepEqual(sec.top, [0, 0, 0, 0], 'sky above each quarter is see-through');
+      assert.deepEqual(sec.bottom, [255, 255, 255, 255], 'each quarter stands on its bottom edge');
+      assert.equal(sec.below, 0);
+      assert.deepEqual(sec.mask, [false, 0.5], 'an alpha MASK material cuts at 0.5');
+      assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
+      assert.ok(/piece 1 of 3 of section 1 of 4/.test(prompts.join()), prompts[0]);
       await page.context().close();
     },
   );

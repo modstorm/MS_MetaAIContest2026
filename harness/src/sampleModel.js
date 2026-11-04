@@ -601,9 +601,106 @@ export async function buildGlassOpticsTestGlb() {
  * Test asset: a background ring (an open cylinder around the scene, radius 10, 2 tall) with an
  * unlit MeshBasicMaterial and no texture, like an editor's mountain backdrop.
  */
-export async function buildRingTestGlb() {
+export async function buildRingTestGlb({ skyline = false } = {}) {
   const geom = new THREE.CylinderGeometry(10, 10, 2, 48, 1, true);
+  if (skyline) {
+    // A city skyline cut into the top: the top vertices at different heights.
+    const pos = geom.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, 1 + ((i * 37) % 11) / 10);
+  }
   const mat = new THREE.MeshBasicMaterial({ color: 0x8090a0, name: 'Background', side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.name = 'Cylinder';
+  const root = new THREE.Group();
+  root.add(mesh);
+  return exportGLB(root);
+}
+
+/**
+ * Test asset like an editor's skyline backdrop: one "Cylinder" mesh of 4 rings (radius 10–13,
+ * different heights), each ring cut into 3 arcs; the texture (512², unlit, with alpha) holds
+ * 4 skyline strips, rows 0–80, 85–165, 170–250 and 255–335, each arc a third of a strip.
+ */
+export async function buildLayeredRingTestGlb({ sections = false } = {}) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const bands = [
+    [0, 80],
+    [85, 165],
+    [170, 250],
+    [255, 335],
+  ];
+  g.fillStyle = '#000';
+  for (const [, y1] of bands)
+    for (let x = 0; x < 512; x += 16) {
+      const h = 20 + ((x * 7) % 50);
+      g.fillRect(x, y1 - h, 12, h);
+    }
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const pos = [],
+    uv = [],
+    idx = [];
+  // sections: one ring of 32 segments, each quarter mapped across its own strip (alpha MASK).
+  if (sections) {
+    for (let i = 0; i < 32; i++) {
+      const L = Math.floor(i / 8),
+        j = i % 8;
+      const [y0, y1] = bands[L];
+      const a0 = (i / 32) * Math.PI * 2,
+        a1 = ((i + 1) / 32) * Math.PI * 2;
+      const base = pos.length / 3;
+      for (const [a, u] of [
+        [a0, j / 8],
+        [a1, (j + 1) / 8],
+      ]) {
+        pos.push(Math.cos(a) * 12, 3, Math.sin(a) * 12);
+        uv.push(u, y0 / 512);
+        pos.push(Math.cos(a) * 12, 0, Math.sin(a) * 12);
+        uv.push(u, y1 / 512);
+      }
+      idx.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+    }
+  }
+  const SEG = sections ? 0 : 48;
+  bands.forEach(([y0, y1], L) => {
+    const radius = 10 + L,
+      top = 1 + L * 0.3;
+    for (let i = 0; i < SEG; i++) {
+      const a0 = (i / SEG) * Math.PI * 2,
+        a1 = ((i + 1) / SEG) * Math.PI * 2;
+      const arc = Math.floor(i / 16),
+        j = i % 16;
+      const u0 = (arc + j / 16) / 3,
+        u1 = (arc + (j + 1) / 16) / 3;
+      const base = pos.length / 3;
+      for (const [a, u] of [
+        [a0, u0],
+        [a1, u1],
+      ]) {
+        pos.push(Math.cos(a) * radius, top, Math.sin(a) * radius);
+        uv.push(u, y0 / 512);
+        pos.push(Math.cos(a) * radius, 0, Math.sin(a) * radius);
+        uv.push(u, y1 / 512);
+      }
+      idx.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+    }
+  });
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  // glTF order (texture flipY false): v counts down the image.
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geom.setIndex(idx);
+  geom.computeVertexNormals();
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: !sections,
+    alphaTest: sections ? 0.98 : 0,
+    side: THREE.DoubleSide,
+    name: 'Background',
+  });
   const mesh = new THREE.Mesh(geom, mat);
   mesh.name = 'Cylinder';
   const root = new THREE.Group();
