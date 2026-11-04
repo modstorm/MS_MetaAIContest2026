@@ -998,7 +998,7 @@ export class ReskinPlugin {
       };
       this.lastResult = result;
       this.lastPrompt = theme;
-      const { signal: _s, fixes: _f, changeRequest: _c, ...runOpts } = opts;
+      const { signal: _s, fixes: _f, changeRequest: _c, editAtlas: _e, ...runOpts } = opts;
       this.lastRun = { theme, opts: runOpts };
       this.emit('progress', { stage: 'done', message: 'Done', progress: 1 });
       this.emit('reskinned', result);
@@ -1087,9 +1087,22 @@ export class ReskinPlugin {
           const guide =
             rawParts.length > 1
               ? drawPartMap(slot, rawParts, original.width, original.height)
-              : drawUvGuide(slot, original.width, original.height, { lineWidth: Math.max(1, original.width / 1024) });
+              : // Filled islands only: Muse copied drawn triangle edges into the paint (the van's
+                // wireframe lines).
+                drawUvGuide(slot, original.width, original.height, { wireframe: false });
           const uvGuide = transformCanvas(guide, orient);
-          const sendAtlas = transformCanvas(original, orient);
+          // A change request on a one-pass result: Muse edits the current paint, not the original.
+          const editFrom = opts.changeRequest ? opts.editAtlas?.get(slot.id) : null;
+          const sendAtlas = transformCanvas(
+            editFrom
+              ? resizeCanvas(
+                  textureToCanvas({ image: editFrom }, Math.max(original.width, original.height)),
+                  original.width,
+                  original.height,
+                )
+              : original,
+            orient,
+          );
           const planKey = `${this.provider.name}:${slot.texture.uuid}:${orient ? `${orient.rot}${orient.flipX}` : ''}`;
           const suggested = opts.suggestion?.plans?.[slot.id];
           if (suggested) {
@@ -1145,6 +1158,9 @@ export class ReskinPlugin {
                 extraInstructions: plain
                   ? undefined
                   : [
+                      editFrom
+                        ? `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change to image 1 and keep everything else in it exactly the same.`
+                        : null,
                       opts.extraInstructions,
                       ...this.rulesFor(
                         opts.assetClass,
@@ -3138,10 +3154,21 @@ export class ReskinPlugin {
     const thinkStart = (this.thinkingLog ??= []).length;
     for (let i = 0; i < passes; i++) {
       const review = await this.reviewOnce(opts);
-      const fixable = review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
+      const onePass = !this.areaNames().length;
+      const fixable = onePass
+        ? review.issues.filter((x) => x.fix || x.problem)
+        : review.issues.filter((x) => x.area && this.areaNames().includes(x.area));
       const pass = { notes: review, sheet: review.sheet, repainted: [] };
       out.push(pass);
       if (opts.fix === false || !fixable.length) break;
+      if (onePass) {
+        // Painted in one pass: one edit of the whole texture with every correction.
+        const text = fixable.map((x) => `${x.area ? `${x.area}: ` : ''}${x.fix || x.problem}`).join(' ');
+        pass.repainted = ['whole texture'];
+        this.status('reskinning', 'Fixing the whole texture');
+        await this.onePassEdit(`Correction from a review: ${text}`, opts.signal);
+        continue;
+      }
       const fixes = {};
       for (const x of fixable) fixes[x.area] = [fixes[x.area], x.fix || x.problem].filter(Boolean).join(' ');
       pass.repainted = Object.keys(fixes);
@@ -3174,7 +3201,14 @@ export class ReskinPlugin {
       this.goToHistory(opts.historyIndex, { silent: true });
     }
     const names = this.areaNames();
-    if (!names.length) throw new Error('Change requests need a part-by-part result (this one was painted in one pass)');
+    // Painted in one pass (no separate areas): the whole texture is edited from its current paint.
+    if (!names.length) {
+      this.think('change', `Change "${request}": editing the whole texture (painted in one pass)`, { request });
+      const res = await this.onePassEdit(request, opts.signal);
+      res.change = { request, areas: {}, summary: 'whole texture' };
+      res.thinking = this.thinkingLog.slice(thinkStart);
+      return res;
+    }
     // What each area looks like now (area themes / plan), so Muse can match "the stripes" etc.
     const jobsBy = new Map();
     for (const rec of this.lastPartJobs.values()) for (const j of rec.jobs) jobsBy.set(j.part.name, j);
@@ -3227,6 +3261,26 @@ export class ReskinPlugin {
     res.change = { request, areas: fixes, summary };
     res.thinking = this.thinkingLog.slice(thinkStart);
     return res;
+  }
+
+  /**
+   * Edits every texture of a one-pass result from its current paint: `request` is applied and
+   * everything else is kept (one Muse image per texture). Kept areas (lights, glass, treads)
+   * are put back as in any run.
+   */
+  async onePassEdit(request, signal) {
+    const editAtlas = new Map();
+    for (const slot of this.layout?.slots ?? []) {
+      const img = slot.materials[0]?.map?.image;
+      if (slot.texture && !slot.tiled && img?.width) editAtlas.set(slot.id, img);
+    }
+    return this.postPrompt(this.lastRun.theme, {
+      ...this.lastRun.opts,
+      variants: 1,
+      changeRequest: request,
+      editAtlas,
+      signal,
+    });
   }
 
   /** What an area was painted as (its area theme or plan description), if known. */

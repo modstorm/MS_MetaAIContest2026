@@ -1880,6 +1880,52 @@ try {
     await page.context().close();
   });
 
+  await step('change request on a one-pass result: the whole texture is edited from its current paint', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const png = makePng().toString('base64');
+    const edits = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      const ok = (json) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify(json),
+        });
+      if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+      edits.push(req.postData() ?? '');
+      return ok({ data: [{ b64_json: png }] });
+    });
+    const glb = await page.evaluate(async () => {
+      const mod = await import('/src/sampleModel.js');
+      return Array.from(new Uint8Array(await mod.buildOrientationTestGlb()));
+    });
+    const res = await page.evaluate(async (bytes) => {
+      const p = window.reskin.plugin;
+      await p.postModel(new Uint8Array(bytes).buffer, { name: 'change-one-pass' });
+      await p.postPrompt('steampunk', {
+        paintMode: 'atlas',
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const before = p.historySummary().entries.length;
+      const r = await p.postChange('make the body blue');
+      const h = p.historySummary();
+      return { change: r.change, entries: h.entries.length - before, label: h.entries.at(-1).change };
+    }, glb);
+    assert.equal(edits.length, 2, 'one paint, one edit');
+    assert.match(edits[1], /change requested by the user: make the body blue/i);
+    assert.doesNotMatch(edits[0], /change requested/i);
+    assert.equal(res.change.summary, 'whole texture');
+    assert.equal(res.entries, 1);
+    assert.equal(res.label, 'make the body blue');
+    await page.context().close();
+  });
+
   await step('review & fix: one 8-angle image goes to Muse, only the flagged area is repainted', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const png = makePng().toString('base64');

@@ -56,7 +56,7 @@ export function reskinAtlasPrompt(theme, plan, extra, parts) {
     '- Paint flat, unlit albedo color: no baked shadows, no highlights, no perspective, no lettering.',
     multi
       ? '- Image 2 is only a guide: do not copy its flat colors. Paint each part only inside its own colored area, and repaint every part.'
-      : '- Do not draw the UV outlines from image 2; they are only a guide.',
+      : '- Image 2 is only a mask (white = used by the model): do not copy it, and do not draw any outlines, edges or wireframe lines.',
     "- Respect each part's orientation below: facial features, lettering and patterns must point the way the part's top points.",
     '- Fill empty space between islands with colors that match the neighbouring island to avoid seams. Never leave black or dark gaps next to an island.',
     '- Small parts made of many tiny islands (hands, fingers, buttons) should be one clean solid color each, without patterns.',
