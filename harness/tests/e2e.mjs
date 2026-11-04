@@ -3287,6 +3287,11 @@ try {
       const green = makePng(256, 128, (x, y) =>
         x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [30, 110, 40] : [255, 0, 255],
       ).toString('base64');
+      const whiteSky = makePng(256, 128, (x, y) => {
+        const ridge = 60 + 20 * Math.sin(x / 9);
+        if (y <= ridge) return [248, 248, 250];
+        return y < ridge + 6 && Math.sin(x / 9) < -0.5 ? [205, 218, 238] : [30, 110, 40];
+      }).toString('base64');
       await page.route('https://api.meta.ai/v1/**', async (route) => {
         const req = route.request();
         if (req.url().endsWith('/responses')) return route.fulfill(samNone());
@@ -3302,6 +3307,8 @@ try {
         prompts.push(prompt);
         const m = /piece (\d+) of 3 of section (\d+)/.exec(prompt);
         const even = !!m && (m[1] % 2 === 0) !== (m[2] % 2 === 0);
+        // Strip 3 piece 2: Muse paints a white sky instead of the key (snow caps on the peaks).
+        if (/piece 2 of 3 of section 3/.test(prompt)) return ok({ data: [{ b64_json: whiteSky }] });
         return ok({ data: [{ b64_json: even ? green : png }] });
       });
       const out = await page.evaluate(async () => {
@@ -3371,6 +3378,16 @@ try {
               sectionAcross: diff(at(490, 70), at(20, 155)),
             };
           })(),
+          // Strip 3 (rows 170-250), piece 2 (x 171-341): white sky keyed, snow kept.
+          whiteSky: {
+            sky: [200, 256, 300].map((x) => a(x, 172)),
+            snow: (() => {
+              const d = c.getContext('2d').getImageData(171 * k, 170 * k, 170 * k, 80 * k).data;
+              let n = 0;
+              for (let i = 0; i < d.length; i += 4) if (d[i + 3] === 255 && d[i] > 150 && d[i + 2] > 200) n++;
+              return n;
+            })(),
+          },
           purple: (() => {
             const d = c.getContext('2d').getImageData(0, 0, c.width, 340 * k).data;
             let n = 0;
@@ -3400,6 +3417,14 @@ try {
         'the base is solid all the way across',
       );
       assert.equal(sec.purple, 0, 'no key-tinted columns at the piece joins');
+      assert.deepEqual(
+        sec.whiteSky.sky,
+        [0, 0, 0],
+        'a white sky Muse painted instead of the key is keyed out: ' +
+          JSON.stringify(sec.whiteSky) +
+          JSON.stringify(sec.log),
+      );
+      assert.ok(sec.whiteSky.snow > 50, 'pale snow on the peaks is kept: ' + sec.whiteSky.snow);
       assert.ok(
         sec.joinStep.across > 60 && sec.joinStep.join < 25,
         'the base fades across joins: ' + JSON.stringify(sec.joinStep),

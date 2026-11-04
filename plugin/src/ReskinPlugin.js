@@ -87,7 +87,9 @@ import {
   keyColorInstruction,
   keyOut,
   pickKeyColor,
+  keySkyFromTop,
   solidifyScenery,
+  topSolidShare,
   trimTransparent,
 } from './texture/chromaKey.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
@@ -270,6 +272,14 @@ function skinPixels(canvas, x, y, w, h) {
 
 /** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
 /** A prompt that asks for see-through areas. */
+/** The share of `canvas` pixels that are solid (alpha over 128). */
+function opaqueShare(canvas) {
+  const d = ctx2d(canvas).getImageData(0, 0, canvas.width, canvas.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 128) n++;
+  return n / (canvas.width * canvas.height);
+}
+
 /** The first row (from the top) where a column has a mostly solid pixel, over all columns. */
 function silhouetteTop(canvas) {
   const W = canvas.width,
@@ -4776,7 +4786,7 @@ export class ReskinPlugin {
     const low =
       /\b(low|small|gentle|rolling|flat|hills?|dunes?|plains?|short)\b/i.test(theme) &&
       !/\b(tall|high|huge|giant|towering|alps|peaks?)\b/i.test(theme);
-    const paintOne = async ({ band, piece, li, pi }, retry = false) => {
+    const paintOne = async ({ band, piece, li, pi }, retry = false, strongKey = false) => {
       const w = piece.x1 - piece.x0,
         h = band.y1 - band.y0;
       // A strip is a whole ring (a depth layer) or a section of it (sections join end to end).
@@ -4791,6 +4801,9 @@ export class ReskinPlugin {
           : '',
         keyColorInstruction(key, { scenery: true }),
         'The sky is NOT painted: everything above the silhouette is the flat key color. Below the silhouette there is no key color at all: the base is solid down to the bottom edge, from the left edge to the right edge.',
+        strongKey
+          ? `IMPORTANT: the background above the scenery must be pure flat ${key.hex} (${key.name}) right up to the top edge and into both top corners. Never white, pale, grey, blue or any sky color there.`
+          : '',
         opts.extraInstructions,
         ...this.lessonsFor(opts.assetClass),
       ].filter(Boolean);
@@ -4813,6 +4826,19 @@ export class ReskinPlugin {
       );
       let piece_ = resizeCanvas(raw, w, h);
       const k = keyOut(piece_, key);
+      // Muse sometimes paints a white or pale sky instead of the key: the top rows stay solid.
+      // That sky colour is keyed from the top edge down (only where it connects to the top).
+      if (topSolidShare(piece_) > 0.5) {
+        const sky = keySkyFromTop(piece_);
+        const still = topSolidShare(piece_) > 0.5;
+        this.think(
+          'check',
+          `"${slot.name}" strip ${li + 1} piece ${pi + 1}: Muse painted a sky (${sky?.skyColor ?? 'mixed colours'}) instead of the key colour; ${still ? (retry ? 'it could not be keyed and the piece was kept as it is' : 'it could not be keyed, painted again') : `keyed it from the top (${Math.round((sky?.keyed ?? 0) * 100)}% see-through)`}`,
+          { slotId: slot.id },
+        );
+        if (still && !retry) return paintOne({ band, piece, li, pi }, true, true);
+        if (!still) k.share = 1 - opaqueShare(piece_);
+      }
       if (k.share < 0.02)
         this.emit('warning', {
           message: `"${slot.name}" layer ${li + 1} piece ${pi + 1}: almost nothing was see-through (Muse painted a sky).`,

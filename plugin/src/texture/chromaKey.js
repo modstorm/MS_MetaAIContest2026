@@ -266,3 +266,74 @@ export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12,
   g.putImageData(img, 0, 0);
   return canvas;
 }
+
+/** The solid share (alpha over 128) of the top `rows` share of `canvas`. */
+export function topSolidShare(canvas, rows = 0.1) {
+  const W = canvas.width,
+    n = Math.max(1, Math.round(canvas.height * rows));
+  const d = ctx2d(canvas).getImageData(0, 0, W, n).data;
+  let s = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 128) s++;
+  return s / (W * n);
+}
+
+/**
+ * Keys out a sky that Muse painted in some other colour than the key (white, pale blue...), in
+ * place. The sky colour is the median of the solid pixels in the top row; only pixels connected
+ * to the top edge through pixels close to that colour are keyed (a flood fill), so the same
+ * colour inside the scenery (snow caps below a darker outline) is kept. Soft ramp and unmixing
+ * as keyOut, but tight: a flat painted sky is very even, and pale snow just below it must stay
+ * (a sky that is not flat enough to key is painted again instead). Returns { skyColor: '#rrggbb', keyed: share of pixels made see-through } or null.
+ */
+export function keySkyFromTop(canvas, { inner = 14, outer = 36 } = {}) {
+  const W = canvas.width,
+    H = canvas.height;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, 0, W, H);
+  const d = img.data;
+  const top = [];
+  for (let y = 0; y < Math.min(3, H); y++)
+    for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] > 128) top.push((y * W + x) * 4);
+  if (top.length < W * 0.3) return null;
+  const med = (c) => {
+    const v = top.map((i) => d[i + c]).sort((a, b) => a - b);
+    return v[v.length >> 1];
+  };
+  const sky = [med(0), med(1), med(2)];
+  const N = W * H;
+  const seen = new Uint8Array(N);
+  const stack = [];
+  const near = (p) => {
+    const i = p * 4;
+    return d[i + 3] > 0 && dist(d[i], d[i + 1], d[i + 2], sky) < outer;
+  };
+  for (let x = 0; x < W; x++)
+    if (near(x)) {
+      seen[x] = 1;
+      stack.push(x);
+    }
+  let keyed = 0;
+  while (stack.length) {
+    const p = stack.pop();
+    const i = p * 4;
+    const a = Math.min(1, Math.max(0, (dist(d[i], d[i + 1], d[i + 2], sky) - inner) / (outer - inner)));
+    if (a <= 0.02) {
+      d[i + 3] = 0;
+      keyed++;
+    } else {
+      // Pixel = a·scenery + (1−a)·sky: take the sky out of the edge pixels.
+      for (let c = 0; c < 3; c++) d[i + c] = Math.min(255, Math.max(0, (d[i + c] - (1 - a) * sky[c]) / a));
+      d[i + 3] = Math.round(d[i + 3] * a);
+    }
+    // Spread only through pixels that are (nearly) sky, not across the soft outline.
+    if (a > 0.5) continue;
+    const x = p % W;
+    for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p - W, p + W])
+      if (q >= 0 && q < N && !seen[q] && near(q)) {
+        seen[q] = 1;
+        stack.push(q);
+      }
+  }
+  g.putImageData(img, 0, 0);
+  return { skyColor: `#${sky.map((v) => v.toString(16).padStart(2, '0')).join('')}`, keyed: keyed / N };
+}
