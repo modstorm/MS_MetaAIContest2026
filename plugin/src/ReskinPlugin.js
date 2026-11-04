@@ -179,6 +179,27 @@ function rectShare(mask, rects) {
   return all ? inside / all : 0;
 }
 
+/** Mean color of the most common color bin (16 levels per channel) among pixels `use(p)`. */
+function mainColor(d, use) {
+  const bins = new Map();
+  const key = (i) => ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+  for (let p = 0; p < d.length / 4; p++) {
+    if (d[p * 4 + 3] < 128 || !use(p)) continue;
+    const k = key(p * 4);
+    bins.set(k, (bins.get(k) ?? 0) + 1);
+  }
+  if (!bins.size) return null;
+  const top = [...bins].sort((a, b) => b[1] - a[1])[0][0];
+  const sum = [0, 0, 0];
+  let n = 0;
+  for (let p = 0; p < d.length / 4; p++) {
+    if (d[p * 4 + 3] < 128 || !use(p) || key(p * 4) !== top) continue;
+    for (let c = 0; c < 3; c++) sum[c] += d[p * 4 + c];
+    n++;
+  }
+  return sum.map((v) => v / n);
+}
+
 /**
  * Which pixels of a rect of `canvas` have the rect's main skin tone (any shade of it: same
  * hue mix, lighter or darker): a 0/1 array over the rect, or null when the rect's main color is
@@ -1404,7 +1425,8 @@ export class ReskinPlugin {
     if (original && detail > 0) baseColor = applyDetailPreserve(baseColor, original, detail);
     // Areas that must never change (vehicle lights, tyre treads) get their original pixels back.
     let keptAlpha = atlasMode && original ? this.restoreKept(slot, baseColor, original, opts) : null;
-    if (atlasMode && original) keptAlpha = this.restoreKeepRects(slot, baseColor, original, opts, keptAlpha);
+    if (atlasMode && original)
+      keptAlpha = this.restoreKeepRects(slot, baseColor, original, opts, keptAlpha, faceJob?.mask, ctx.partJobs?.jobs);
     // Check the final texture against the plan: areas meant to be painted that still show
     // the original (Muse left them, or something put them back) are flagged for the review.
     if (atlasMode && original) this.checkUnpainted(slot, baseColor, original, ctx.partJobs, keptAlpha, opts);
@@ -1924,23 +1946,70 @@ export class ReskinPlugin {
    * { rect: [u0, v0, u1, v1], slot?, name? } in texture fractions measured from the top of the
    * image (the same as template rects). E.g. a game avatar's face and hands.
    */
-  keepRectsFor(slot, opts = {}) {
+  keepRectsFor(slot, opts = {}, { withFace = false } = {}) {
     return [...(opts.keepRects ?? []), ...(this.profile?.keep ?? [])].filter(
-      (k) => Array.isArray(k?.rect) && (!k.slot || k.slot === slot.id || k.slot === slot.name),
+      (k) =>
+        Array.isArray(k?.rect) &&
+        (!k.slot || k.slot === slot.id || k.slot === slot.name) &&
+        // opts.paintFace: the face is painted with the theme (zombie, alien, face paint).
+        (withFace || !opts.paintFace || !/\bface\b/i.test(k.name ?? '')),
     );
+  }
+
+  /**
+   * With opts.paintFace, how the face's skin color changed: per-channel factors (new / old) from
+   * the main color of the face before and after painting, or null when it hardly changed. The
+   * face is the face area that was painted (`faceMask`) or the profile's face keep rects.
+   */
+  faceSkinShift(slot, baseColor, src, opts, faceMask) {
+    const W = baseColor.width,
+      H = baseColor.height;
+    let inFace = null;
+    if (faceMask) {
+      const m = ctx2d(resizeCanvas(faceMask, W, H)).getImageData(0, 0, W, H).data;
+      inFace = (p) => m[p * 4 + 3] >= 128;
+    } else {
+      const rects = this.keepRectsFor(slot, opts, { withFace: true })
+        .filter((k) => /\bface\b/i.test(k.name ?? ''))
+        .map((k) => k.rect);
+      if (!rects.length) return null;
+      inFace = (p) => {
+        const u = ((p % W) + 0.5) / W,
+          v = (Math.floor(p / W) + 0.5) / H;
+        return rects.some(([u0, v0, u1, v1]) => u >= u0 && u < u1 && v >= v0 && v < v1);
+      };
+    }
+    const before = mainColor(ctx2d(src).getImageData(0, 0, W, H).data, inFace);
+    const after = mainColor(ctx2d(baseColor).getImageData(0, 0, W, H).data, inFace);
+    if (!before || !after) return null;
+    if (Math.max(...after.map((c, i) => Math.abs(c - before[i]))) < 12) return null;
+    return { before, after, factor: after.map((c, i) => c / Math.max(1, before[i])) };
   }
 
   /**
    * Puts the original pixels back inside the keep rects (see keepRectsFor). Returns the kept
    * alpha (rgba data, alpha 255 = kept) merged with `keptAlpha`, for the unpainted check.
    */
-  restoreKeepRects(slot, baseColor, original, opts, keptAlpha) {
+  restoreKeepRects(slot, baseColor, original, opts, keptAlpha, faceMask = null, jobs = null) {
     const rects = this.keepRectsFor(slot, opts);
     if (!rects.length) return keptAlpha;
     const W = baseColor.width,
       H = baseColor.height;
     const g = ctx2d(baseColor);
     const src = resizeCanvas(original, W, H);
+    // Kept skin only on the areas that are kept (hands): a piece of another area that the model
+    // maps onto the same skin swatch (the toy's waist band) keeps that area's paint.
+    let lazyOwners;
+    const owners = () => (lazyOwners ??= this.keepRectOwners(slot, opts, rects, W, H, jobs));
+    // A painted face that changed skin color (a green zombie): kept skin takes the same change,
+    // keeping its shape and shading, so the hands match the face.
+    const shift = opts.paintFace ? this.faceSkinShift(slot, baseColor, src, opts, faceMask) : null;
+    if (shift)
+      this.think(
+        'note',
+        `"${slot.name}": the painted face's skin changed from rgb(${shift.before.map(Math.round)}) to rgb(${shift.after.map(Math.round)}); the kept skin (hands) takes the same color`,
+        { slotId: slot.id },
+      );
     const out = keptAlpha ?? new Uint8ClampedArray(W * H * 4);
     for (const k of rects) {
       const [u0, v0, u1, v1] = k.rect;
@@ -1959,9 +2028,13 @@ export class ReskinPlugin {
       // Only the skin-coloured pixels: a sleeve or cuff reaching into the rect keeps its paint.
       const cur = g.getImageData(x, y, w, h);
       const orig = ctx2d(src).getImageData(x, y, w, h).data;
+      const own = owners();
       for (let q = 0; q < w * h; q++) {
         if (!only[q]) continue;
-        for (let c = 0; c < 4; c++) cur.data[q * 4 + c] = orig[q * 4 + c];
+        const p = (y + Math.floor(q / w)) * W + x + (q % w);
+        if (own && own.painted[p] && !own.kept[p]) continue;
+        for (let c = 0; c < 4; c++)
+          cur.data[q * 4 + c] = shift && c < 3 ? orig[q * 4 + c] * shift.factor[c] : orig[q * 4 + c];
         out[((y + Math.floor(q / w)) * W + x + (q % w)) * 4 + 3] = 255;
       }
       g.putImageData(cur, x, y);
@@ -1976,6 +2049,37 @@ export class ReskinPlugin {
       },
     );
     return out;
+  }
+
+  /**
+   * Which texture pixels belong to areas that are painted and which to areas that are kept
+   * (all inside the keep rects): { painted, kept } 0/1 maps at W×H, or null when the slot has no
+   * areas. Uses the part-by-part jobs when there are some, else the slot's paint areas.
+   */
+  keepRectOwners(slot, opts, rects, W, H, jobs) {
+    let list = jobs?.map((j) => ({ mask: j.mask, kept: !!j.keep && !j.locked })) ?? null;
+    if (!list) {
+      let regions = [];
+      try {
+        regions = this.idRegions(slot, opts);
+      } catch {
+        return null;
+      }
+      if (regions.length < 2) return null;
+      list = regions.map((part) => {
+        const mask = partMask(slot, part, W, H, 1);
+        return { mask, kept: rectShare(mask, rects) >= 0.95 };
+      });
+    }
+    if (!list.length) return null;
+    const painted = new Uint8Array(W * H),
+      kept = new Uint8Array(W * H);
+    for (const { mask, kept: k } of list) {
+      const d = ctx2d(resizeCanvas(mask, W, H)).getImageData(0, 0, W, H).data;
+      const into = k ? kept : painted;
+      for (let p = 0; p < W * H; p++) if (d[p * 4 + 3] >= 128) into[p] = 1;
+    }
+    return { painted, kept };
   }
 
   /**

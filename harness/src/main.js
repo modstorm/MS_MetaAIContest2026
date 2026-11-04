@@ -790,6 +790,7 @@ function paintOptions() {
     maxTextureSize: Number($('opt-size').value),
     samCheck: $('opt-sam').checked,
     samZones: $('opt-sam-zones').checked,
+    paintFace: $('opt-paint-face').checked,
   };
 }
 

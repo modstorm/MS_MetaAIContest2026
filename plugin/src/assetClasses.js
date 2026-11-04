@@ -44,6 +44,7 @@ export const ASSET_CLASSES = [
         match: /\b(head|face|skull)\b/i,
         rules: [
           'Face: eyes, nose and mouth stay exactly where they are. Glasses, goggles or a mask are drawn once, over the existing eyes.',
+          'When the face is repainted (zombie, alien, face paint, make-up), the eyes and mouth stay clearly readable: same size, same positions, with strong contrast against the skin.',
         ],
       },
       {

@@ -2000,7 +2000,7 @@ try {
   });
 
   await step(
-    'profile keep rects for hands keep only skin-coloured pixels; a sleeve inside the rect is painted',
+    'profile keep rects: hands keep only their skin pixels (not a sleeve, not another area); paintFace recolors them',
     async () => {
       const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
       const png = makePng(64, 64, () => [200, 30, 30]).toString('base64');
@@ -2019,29 +2019,30 @@ try {
       });
       const out = await page.evaluate(async () => {
         const mod = await import('/src/sampleModel.js');
-        // Skin everywhere, with a grey sleeve at the left of the lower half (shaded skin too).
+        // Skin everywhere; in the Head area (the "hands", top half) shaded skin and a grey sleeve.
         const glb = await mod.buildOrientationTestGlb({
           paint: (g) => {
             g.fillStyle = 'rgb(235,186,155)';
             g.fillRect(0, 0, 256, 256);
             g.fillStyle = 'rgb(174,138,115)';
-            g.fillRect(192, 128, 64, 128);
+            g.fillRect(192, 64, 64, 64);
             g.fillStyle = 'rgb(119,119,118)';
-            g.fillRect(0, 128, 64, 128);
+            g.fillRect(0, 64, 64, 64);
           },
         });
         const p = window.reskin.plugin;
         await p.postModel(glb, { name: 'keep-skin' });
         const opts = {
+          paintMode: 'atlas',
           useVisionPlanning: false,
           normalMaps: false,
           roughnessMaps: false,
           samCheck: false,
           edgePadding: 0,
         };
-        const run = async (keep) => {
-          p.setProfile({ name: 'test', keep: [keep] });
-          const r = await p.postPrompt('pirates', opts);
+        const run = async (keep, extra = {}) => {
+          p.setProfile({ name: 'test', keep });
+          const r = await p.postPrompt('pirates', { ...opts, ...extra });
           const c = r.slots[0].canvas;
           const k = c.width / 256;
           const px = (x, y) => [
@@ -2050,22 +2051,45 @@ try {
               .getImageData(x * k, y * k, 1, 1)
               .data.slice(0, 3),
           ];
-          return { skin: px(128, 90), shaded: px(224, 160), sleeve: px(32, 160), outside: px(128, 20) };
+          return {
+            face: px(64, 20),
+            skin: px(128, 90),
+            shaded: px(224, 100),
+            sleeve: px(32, 100),
+            otherArea: px(128, 135),
+            outside: px(128, 200),
+          };
         };
-        const hands = await run({ name: 'hands and arm skin', rect: [0, 0.25, 1, 0.75] });
-        const face = await run({ name: 'face', rect: [0, 0.25, 1, 0.75] });
+        // The rect holds all of Head and a strip of Body (the toy's waist band on the skin swatch).
+        const hands = await run([{ name: 'hands and arm skin', rect: [0, 0, 1, 0.55] }]);
+        const face = await run([{ name: 'face', rect: [0, 0, 1, 0.55] }]);
+        const both = [
+          { name: 'face', rect: [0, 0, 0.5, 0.2] },
+          { name: 'hands', rect: [0, 0, 1, 0.55] },
+        ];
+        const off = await run(both);
+        const on = await run(both, { paintFace: true });
         p.setProfile(null);
-        return { hands, face };
+        return { hands, face, off, on };
       });
       const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+      const red = (c) => c[0] > 150 && c[1] < 80;
       assert.ok(near(out.hands.skin, [235, 186, 155]), `skin kept ${out.hands.skin}`);
       assert.ok(near(out.hands.shaded, [174, 138, 115]), `shaded skin kept ${out.hands.shaded}`);
+      assert.ok(red(out.hands.sleeve), `sleeve in the rect painted ${out.hands.sleeve}`);
       assert.ok(
-        out.hands.sleeve[0] > 150 && out.hands.sleeve[1] < 80,
-        `sleeve in the rect painted ${out.hands.sleeve}`,
+        red(out.hands.otherArea),
+        `another area's skin-colored piece in the rect painted ${out.hands.otherArea}`,
       );
-      assert.ok(out.hands.outside[0] > 150 && out.hands.outside[1] < 80, `outside painted ${out.hands.outside}`);
+      assert.ok(red(out.hands.outside), `outside painted ${out.hands.outside}`);
       assert.ok(near(out.face.sleeve, [119, 119, 118]), `a face rect keeps everything ${out.face.sleeve}`);
+      assert.ok(
+        near(out.off.face, [235, 186, 155]) && near(out.off.skin, [235, 186, 155]),
+        `face kept ${out.off.face}`,
+      );
+      assert.ok(out.on.face[0] - out.on.face[1] > 100, `paintFace: face painted ${out.on.face}`);
+      assert.ok(out.on.skin[0] - out.on.skin[1] > 100, `paintFace: hands take the face's new color ${out.on.skin}`);
+      assert.ok(out.on.shaded[0] < out.on.skin[0] - 20, `hand shading kept ${out.on.shaded} vs ${out.on.skin}`);
       await page.context().close();
     },
   );
