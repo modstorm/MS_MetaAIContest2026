@@ -6,6 +6,7 @@ import {
   ringLayerBands,
   summarizeLayout,
   uvAspect,
+  uvSourceOf,
 } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { REVIEW_VIEWS, THUMB_VIEW, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
@@ -272,6 +273,25 @@ function skinPixels(canvas, x, y, w, h) {
 
 /** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
 /** A prompt that asks for see-through areas. */
+/**
+ * How many times over the UV triangles of `slot` cover the area they cover (1: laid out side by
+ * side; 6: every face of a box over the same whole square).
+ */
+function uvStacking(slot) {
+  let area = 0;
+  for (const mesh of slot.meshes) {
+    const src = uvSourceOf(mesh, slot.uvChannel, slot.texture);
+    if (!src) continue;
+    const n = Math.floor((src.index ? src.index.length : src.uvs.length / 2) / 3);
+    for (let t = 0; t < n; t++) {
+      const v = [0, 1, 2].map((k) => (src.index ? src.index[t * 3 + k] : t * 3 + k));
+      const [ax, ay, bx, by, cx, cy] = v.flatMap((i) => [src.uvs[i * 2], src.uvs[i * 2 + 1]]);
+      area += Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2;
+    }
+  }
+  return area / Math.max(1e-6, slot.coverage?.coverage ?? 1);
+}
+
 /** A flat mid-grey canvas the size of `canvas` (a stand-in for a texture Muse must not see). */
 function flatLike(canvas) {
   const c = createCanvas(canvas.width, canvas.height);
@@ -1338,7 +1358,10 @@ export class ReskinPlugin {
         : null;
     // A plain untextured ring (one band over the whole texture) is painted as one panorama instead.
     if (layers && !slot.texture && layers.bands.length < 2) layers = null;
-    const atlasMode = !layers && !!slot.texture && !slot.tiled;
+    // ignoreSource on stacked UVs (every face of a box over the whole square): there is no
+    // layout to keep, so one seamless picture from the prompt covers every face continuously.
+    const stacked = ignoreSource && slot.coverage?.coverage > 0.6 && uvStacking(slot) > 2.5;
+    const atlasMode = !layers && !!slot.texture && !slot.tiled && !stacked;
     // An untextured wide band (a background ring or a cylinder around the scene): one panorama
     // strip whose left and right edges join, repeated around when it is very wide.
     let strip = null;

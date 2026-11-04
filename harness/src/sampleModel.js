@@ -707,3 +707,28 @@ export async function buildLayeredRingTestGlb({ sections = false } = {}) {
   root.add(mesh);
   return exportGLB(root);
 }
+
+/** A 2 m box, every face over the whole 0-1 UV square, with a grey prototyping grid texture. */
+export async function buildGridBoxTestGlb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#7a7a7a';
+  g.fillRect(0, 0, 512, 512);
+  g.fillStyle = '#d8d8d8';
+  for (let i = 0; i < 512; i += 64) {
+    g.fillRect(i, 0, 3, 512);
+    g.fillRect(0, i, 512, 3);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 2, 2),
+    new THREE.MeshStandardMaterial({ map: tex, name: 'Grid' }),
+  );
+  mesh.name = 'Box';
+  const root = new THREE.Group();
+  root.add(mesh);
+  return exportGLB(root);
+}

@@ -3034,6 +3034,25 @@ try {
         JSON.stringify(out),
       );
       assert.ok(out.thinking.length >= 1, 'the plan says the texture is ignored');
+      // A box with every face over the whole UV square: one seamless picture from the prompt.
+      calls.length = 0;
+      const box = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        const p = window.reskin.plugin;
+        await p.postModel(await mod.buildGridBoxTestGlb(), { name: 'box', ignoreSource: true });
+        const r = await p.postPrompt('rusty metal panels', {
+          useVisionPlanning: false,
+          samCheck: false,
+          samZones: false,
+        });
+        return { size: r.slots.map((s) => [s.canvas.width, s.canvas.height]), cov: p.layout.slots.map((s) => [s.coverage, s.tiled, !!s.texture]), th: (r.thinking ?? []).map((e) => e.text) };
+      });
+      assert.deepEqual(
+        calls.map((c) => [c.path.replace(/.*\/images\//, ''), c.hasImage]),
+        [['generations', false]],
+        'one text-to-image picture for the whole box: ' + JSON.stringify(calls) + JSON.stringify(box),
+      );
+      assert.deepEqual(box.size, [[512, 512]]);
       await page.context().close();
     },
   );
