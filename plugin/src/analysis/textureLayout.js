@@ -78,8 +78,15 @@ function materialsOf(mesh) {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 }
 
+/** Materials with a base color map and color: PBR, and unlit / simple-lit ones (kept as they are). */
 function isStandard(m) {
-  return m.isMeshStandardMaterial === true;
+  return (
+    m.isMeshStandardMaterial === true ||
+    m.isMeshBasicMaterial === true ||
+    m.isMeshLambertMaterial === true ||
+    m.isMeshPhongMaterial === true ||
+    m.isMeshToonMaterial === true
+  );
 }
 
 function imageSize(tex) {
@@ -110,7 +117,7 @@ export function analyzeTextureLayout(root) {
       materials.add(mat);
       if (!isStandard(mat)) {
         warnings.push(
-          `Material "${mat.name || mat.type}" on "${mesh.name}" is ${mat.type}; only standard/physical PBR materials are reskinned.`,
+          `Material "${mat.name || mat.type}" on "${mesh.name}" is ${mat.type}; only mesh materials with a color map are reskinned.`,
         );
         continue;
       }
@@ -141,6 +148,7 @@ export function analyzeTextureLayout(root) {
         sources.set(key, []);
       }
       if (!slot.materials.includes(mat)) slot.materials.push(mat);
+      if (mat.isMeshBasicMaterial) slot.unlit = true;
       for (const m of OTHER_MAPS) {
         if (mat[m] && !slot.otherMaps.includes(m)) slot.otherMaps.push(m);
       }
@@ -246,4 +254,47 @@ export function summarizeLayout(layout) {
       otherMaps: s.otherMaps,
     })),
   };
+}
+
+/**
+ * How wide the texture is on the model compared with how tall: world length per unit of u
+ * over world length per unit of v, from the triangle edges that run along u or along v
+ * (a ring 2πr around and h tall gives about 2πr / h). 1 when it cannot tell.
+ */
+export function uvAspect(slot) {
+  let su = 0,
+    nu = 0,
+    sv = 0,
+    nv = 0;
+  const a = new THREE.Vector3(),
+    b = new THREE.Vector3();
+  for (const mesh of slot.meshes) {
+    const geom = mesh.geometry;
+    const pos = geom.getAttribute('position');
+    const uv = geom.getAttribute(slot.uvChannel === 0 ? 'uv' : `uv${slot.uvChannel}`);
+    if (!pos || !uv) continue;
+    const index = geom.getIndex();
+    const tris = index ? index.count / 3 : pos.count / 3;
+    const step = Math.max(1, Math.floor(tris / 4000));
+    mesh.updateMatrixWorld(true);
+    for (let t = 0; t < tris; t += step) {
+      for (let e = 0; e < 3; e++) {
+        const i0 = index ? index.getX(t * 3 + e) : t * 3 + e;
+        const i1 = index ? index.getX(t * 3 + ((e + 1) % 3)) : t * 3 + ((e + 1) % 3);
+        const du = Math.abs(uv.getX(i1) - uv.getX(i0)),
+          dv = Math.abs(uv.getY(i1) - uv.getY(i0));
+        a.fromBufferAttribute(pos, i0).applyMatrix4(mesh.matrixWorld);
+        b.fromBufferAttribute(pos, i1).applyMatrix4(mesh.matrixWorld);
+        const len = a.distanceTo(b);
+        if (du > 1e-6 && du > 4 * dv) {
+          su += len / du;
+          nu++;
+        } else if (dv > 1e-6 && dv > 4 * du) {
+          sv += len / dv;
+          nv++;
+        }
+      }
+    }
+  }
+  return nu && nv ? su / nu / (sv / nv) : 1;
 }

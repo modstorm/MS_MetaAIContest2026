@@ -3150,6 +3150,70 @@ try {
     },
   );
 
+  await step(
+    'background ring: an unlit, untextured cylinder gets a transparent panorama; a change edits it',
+    async () => {
+      const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const prompts = [];
+      // "Muse": magenta sky above, slate mountains in the lower half.
+      const png = makePng(256, 128, (x, y) => (y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
+        'base64',
+      );
+      await page.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+        const ok = (json) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'access-control-allow-origin': '*' },
+            body: JSON.stringify(json),
+          });
+        if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
+        prompts.push(req.postDataJSON()?.prompt ?? '');
+        return ok({ data: [{ b64_json: png }] });
+      });
+      const out = await page.evaluate(async () => {
+        const mod = await import('/src/sampleModel.js');
+        const p = window.reskin.plugin;
+        const { layout } = await p.postModel(await mod.buildRingTestGlb(), { name: 'BG_ring' });
+        const theme =
+          'Panoramic ring of mountains background, flat unlit game albedo with alpha transparency. Leave sky gaps between peaks fully transparent.';
+        const r = await p.postPrompt(theme, { useVisionPlanning: false, samCheck: false });
+        const c = r.slots[0]?.canvas;
+        const a = (x, y) => c.getContext('2d').getImageData(x, y, 1, 1).data[3];
+        const mat = p.model.scene.getObjectByName('Cylinder').material;
+        const first = {
+          slots: layout.slots.length,
+          tris: layout.triangleCount,
+          size: [c.width, c.height],
+          top: a(c.width / 2, 5),
+          bottom: a(c.width / 2, c.height - 5),
+          type: mat.type,
+          transparent: mat.transparent,
+          hasNormalProp: 'normalMap' in mat,
+          repeat: mat.map.repeat.x,
+          wrapS: mat.map.wrapS,
+        };
+        const ch = await p.postChange('add mountains');
+        return { first, changed: ch.slots.length, sameMat: mat.map !== null && mat.type };
+      });
+      assert.equal(out.first.slots, 1);
+      assert.ok(out.first.tris > 0, 'triangles counted');
+      assert.equal(out.first.type, 'MeshBasicMaterial', 'stays unlit');
+      assert.equal(out.first.hasNormalProp, false, 'no normal map put on an unlit material');
+      assert.equal(out.first.top, 0, 'sky gap is see-through');
+      assert.equal(out.first.bottom, 255, 'mountains are solid');
+      assert.equal(out.first.transparent, true);
+      assert.ok(out.first.repeat >= 2 && out.first.wrapS === 1000, `ring repeats around ${out.first.repeat}`);
+      assert.ok(out.first.size[0] === 2 * out.first.size[1], `wide strip ${out.first.size}`);
+      assert.ok(/#FF00FF/.test(prompts[0]) && /ring seen from inside/.test(prompts[0]), prompts[0]);
+      assert.equal(out.changed, 1, 'the change repaints the ring');
+      assert.ok(/add mountains/.test(prompts.at(-1)), `change sent to Muse: ${prompts.at(-1)}`);
+      await page.context().close();
+    },
+  );
+
   await step('postTexture: a sky panorama joins left to right, calm poles, Muse gets the equirect prompt', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
     const prompts = [];

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { analyzeTextureLayout, summarizeLayout } from './analysis/textureLayout.js';
+import { analyzeTextureLayout, summarizeLayout, uvAspect } from './analysis/textureLayout.js';
 import { generateBoxUvs } from './analysis/uvGenerate.js';
 import { REVIEW_VIEWS, THUMB_VIEW, renderAxisViews, stackCanvases } from './analysis/renderViews.js';
 import {
@@ -252,6 +252,21 @@ function skinPixels(canvas, x, y, w, h) {
     if (dc <= 0.035) out[q] = 1;
   }
   return out;
+}
+
+/** Material settings the plugin changes (only those the material type has: unlit has no normalMap). */
+/** A prompt that asks for see-through areas. */
+const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
+
+const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
+function readMaterial(mat) {
+  const s = { color: mat.color?.clone() };
+  for (const k of MATERIAL_PROPS) if (k in mat) s[k] = mat[k];
+  return s;
+}
+function writeMaterial(mat, s) {
+  for (const k of MATERIAL_PROPS) if (k in s && k in mat) mat[k] = s[k];
+  if (s.color && mat.color) mat.color.copy(s.color);
 }
 
 /** What SAM found never to paint, per model (see findKeepZones): kept across postModel calls. */
@@ -1143,9 +1158,28 @@ export class ReskinPlugin {
     }
 
     const atlasMode = !!slot.texture && !slot.tiled;
+    // Transparency asked for (opts.transparent, or the prompt says so): Muse paints on a flat key
+    // color, which becomes alpha; the material is made transparent.
+    // From the prompt only for an untextured mesh or a single wide band (a background ring): on
+    // a textured model, "transparent windows" must not cut the whole texture.
+    const wantAlpha =
+      opts.transparent ??
+      (WANTS_TRANSPARENCY.test(`${theme} ${opts.extraInstructions ?? ''}`) &&
+        (!slot.texture || (slot.meshes.length === 1 && uvAspect(slot) >= 1.5)));
+    const key = wantAlpha ? pickKeyColor(opts.keyColor, theme) : null;
+    // An untextured wide band (a background ring or a cylinder around the scene): one panorama
+    // strip whose left and right edges join, repeated around when it is very wide.
+    let strip = null;
+    if (!slot.texture && !slot.tiled) {
+      const aspect = uvAspect(slot);
+      if (aspect >= 1.5 || /\b(ring|panoram\w*|backdrop|skyline|horizon)\b/i.test(`${theme} ${slot.name}`))
+        strip = { aspect, repeats: Math.max(1, Math.round(Math.max(1, aspect) / 2)) };
+    }
     const { width, height } = slot.texture
       ? fitSize(slot.width, slot.height, maxSize)
-      : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
+      : strip
+        ? { width: Math.min(2048, maxSize), height: Math.min(1024, maxSize) }
+        : { width: Math.min(1024, maxSize), height: Math.min(1024, maxSize) };
 
     let plan = null;
     let orient = null;
@@ -1263,6 +1297,7 @@ export class ReskinPlugin {
                         ? `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change to image 1 and keep everything else in it exactly the same.`
                         : null,
                       opts.extraInstructions,
+                      key ? keyColorInstruction(key) : null,
                       ...this.rulesFor(
                         opts.assetClass,
                         rawParts.map((p) => p.name),
@@ -1270,6 +1305,61 @@ export class ReskinPlugin {
                     ]
                       .filter(Boolean)
                       .join('\n') || undefined,
+                plain,
+                signal,
+              }),
+            ),
+          );
+        }
+      } else if (strip || key || (opts.changeRequest && opts.editAtlas?.get(slot.id))) {
+        // A panorama strip, a transparent image, or a change to the current paint.
+        const notes = [
+          strip
+            ? 'This image is wrapped once around a ring seen from inside (a wide panorama strip): the bottom of the image is the bottom of the ring; the left and right edges must join seamlessly. Flat, even lighting, no perspective.'
+            : '',
+          key ? keyColorInstruction(key) : '',
+          opts.extraInstructions,
+          // A ring backdrop is not a sky panorama (whose rules forbid ground and mountains).
+          ...(strip && opts.assetClass === 'sky'
+            ? this.lessonsFor(opts.assetClass)
+            : this.rulesFor(opts.assetClass, [])),
+        ].filter(Boolean);
+        const cur = opts.changeRequest ? opts.editAtlas?.get(slot.id) : null;
+        if (cur && this.provider.reskinTexture) {
+          report(0.2, 'generate', `Changing "${slot.name}"`);
+          const img = textureToCanvas({ image: cur }, Math.max(width, height));
+          const image = resizeCanvas(key ? flattenOn(img, key.hex) : img, width, height);
+          raw = await this.toCanvas(
+            await this.withFilterRetry('change texture', slot, theme, (plain, t) =>
+              this.provider.reskinTexture({
+                theme: t,
+                image,
+                name: slot.name,
+                context: [
+                  `MOST IMPORTANT: change requested by the user: ${opts.changeRequest} Apply only this change and keep everything else exactly the same.`,
+                  ...notes,
+                ].join('\n'),
+                classRules: [],
+                wrap: strip ? 'x' : 'both',
+                keyColor: key?.hex,
+                plain,
+                signal,
+              }),
+            ),
+          );
+        } else {
+          report(0.2, 'generate', `Generating ${strip ? 'a panorama' : 'an image'} for "${slot.name}"`);
+          raw = await this.toCanvas(
+            await this.withFilterRetry('generate texture', slot, theme, (plain, t) =>
+              this.provider.generateTexture({
+                theme: t,
+                materialName: slot.name,
+                width,
+                height,
+                cutout: notes.join('\n'),
+                keyColor: key?.hex,
+                context: '',
+                classRules: [],
                 plain,
                 signal,
               }),
@@ -1313,7 +1403,22 @@ export class ReskinPlugin {
     if (raws.length < variants) {
       this.emit('warning', { message: `"${slot.name}": ${variants - raws.length} of ${variants} variations failed.` });
     }
-    const ctx = { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts };
+    const ctx = {
+      orient,
+      width,
+      height,
+      atlasMode,
+      original,
+      theme,
+      maxSize,
+      signal,
+      report,
+      plan,
+      usedPrompt,
+      opts,
+      key,
+      strip,
+    };
     const done = [];
     for (let vi = 0; vi < raws.length; vi++) {
       const r = await this.finishSlot(slot, {
@@ -1332,6 +1437,7 @@ export class ReskinPlugin {
   /** Post-processing and apply step of one painted texture (see reskinSlot). */
   async finishSlot(slot, ctx) {
     const { orient, width, height, atlasMode, original, theme, maxSize, signal, report, plan, usedPrompt, opts } = ctx;
+    const { key, strip } = ctx;
     let raw = ctx.raw;
     const maps = []; // generated maps of this result, kept with it in the history
     // Each map carries the identity of the texture it replaces (name, uuid, glTF texture and
@@ -1439,20 +1545,43 @@ export class ReskinPlugin {
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
     }
 
+    // A panorama strip: the left and right edges join.
+    if (strip) baseColor = makeSeamless(baseColor, { x: true, y: false }).canvas;
     // See-through pixels of the original (cut-outs, hair cards, decals) stay see-through.
-    if (original && opts.keepAlpha !== false) {
-      const alpha = alphaOf(resizeCanvas(original, width, height));
-      if (alpha) {
-        applyAlpha(baseColor, alpha);
-        this.think('note', `"${slot.name}": kept the original transparency (alpha)`, { slotId: slot.id });
-      }
+    const keptAlphaOf = original && opts.keepAlpha !== false ? alphaOf(resizeCanvas(original, width, height)) : null;
+    if (keptAlphaOf) {
+      applyAlpha(baseColor, keptAlphaOf);
+      this.think('note', `"${slot.name}": kept the original transparency (alpha)`, { slotId: slot.id });
+    } else if (key) {
+      // Transparency asked for: the key-color backdrop Muse painted becomes see-through.
+      const k = keyOut(baseColor, key);
+      if (opts.edge === 'hard') hardenAlpha(baseColor);
+      this.think(
+        'note',
+        `"${slot.name}": ${Math.round(k.share * 100)}% made see-through (the ${key.name} backdrop, ${k.keyColor})`,
+        { slotId: slot.id },
+      );
+      if (k.share < 0.02)
+        this.emit('warning', {
+          message: `"${slot.name}": almost nothing was see-through: Muse did not paint the ${key.name} backdrop.`,
+        });
     }
     report(0.8, 'apply', `Applying "${slot.name}"`);
     const baseTex = this.makeTexture(baseColor, slot.texture, THREE.SRGBColorSpace, slot.uvChannel, !atlasMode);
+    if (strip) {
+      baseTex.wrapS = THREE.RepeatWrapping;
+      baseTex.wrapT = THREE.ClampToEdgeWrapping;
+      baseTex.repeat.set(strip.repeats, 1);
+    }
     for (const mat of slot.materials) {
       this.snapshot(mat);
       mat.map = baseTex;
       mat.color.set(0xffffff);
+      if (key && !keptAlphaOf) {
+        // Blended so soft edges (mist) stay soft; fully clear pixels are not drawn at all.
+        mat.transparent = true;
+        mat.alphaTest = 0.01;
+      }
       mat.needsUpdate = true;
     }
     emitMap('baseColor', baseColor, slot.texture);
@@ -1462,6 +1591,7 @@ export class ReskinPlugin {
       report(0.85, 'postprocess', `Normal map for "${slot.name}"`);
       const cache = new Map();
       for (const mat of slot.materials) {
+        if (!('normalMap' in mat)) continue; // unlit (MeshBasicMaterial): no normal map
         const src = this.snapshots.get(mat).normalMap;
         // Only regenerate maps the model already has ('always' also creates new ones).
         if (!src && opts.normalMaps !== 'always') continue;
@@ -1486,6 +1616,7 @@ export class ReskinPlugin {
       report(0.92, 'postprocess', `Roughness map for "${slot.name}"`);
       const cache = new Map();
       for (const mat of slot.materials) {
+        if (!('roughnessMap' in mat)) continue; // unlit or non-PBR: no roughness map
         const snap = this.snapshots.get(mat);
         const src = snap.roughnessMap;
         if (!src && opts.roughnessMaps !== 'always') continue;
@@ -1886,21 +2017,9 @@ export class ReskinPlugin {
   showOriginal(show) {
     if (!this.lastResult) return;
     for (const [mat, snap] of this.snapshots) {
-      const cur = (mat.userData.__reskin ??= {
-        map: mat.map,
-        normalMap: mat.normalMap,
-        roughnessMap: mat.roughnessMap,
-        metalnessMap: mat.metalnessMap,
-        color: mat.color.clone(),
-        roughness: mat.roughness,
-      });
+      const cur = (mat.userData.__reskin ??= readMaterial(mat));
       const s = show ? snap : cur;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
       if (!show) delete mat.userData.__reskin;
     }
@@ -3233,14 +3352,7 @@ export class ReskinPlugin {
   captureMaterials(materials) {
     const state = new Map();
     for (const mat of materials) {
-      state.set(mat, {
-        map: mat.map,
-        normalMap: mat.normalMap,
-        roughnessMap: mat.roughnessMap,
-        metalnessMap: mat.metalnessMap,
-        color: mat.color.clone(),
-        roughness: mat.roughness,
-      });
+      state.set(mat, readMaterial(mat));
     }
     return state;
   }
@@ -3248,12 +3360,7 @@ export class ReskinPlugin {
   applyState(state) {
     for (const [mat, s] of state) {
       delete mat.userData.__reskin;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
     }
   }
@@ -3624,7 +3731,9 @@ export class ReskinPlugin {
     const editAtlas = new Map();
     for (const slot of this.layout?.slots ?? []) {
       const img = slot.materials[0]?.map?.image;
-      if (slot.texture && !slot.tiled && img?.width) editAtlas.set(slot.id, img);
+      // Textured atlases, and generated images (untextured meshes, panorama rings) once painted.
+      if (img?.width && ((slot.texture && !slot.tiled) || this.snapshots.has(slot.materials[0])))
+        editAtlas.set(slot.id, img);
     }
     return this.postPrompt(this.lastRun.theme, {
       ...this.lastRun.opts,
@@ -4461,14 +4570,7 @@ export class ReskinPlugin {
 
   snapshot(mat) {
     if (this.snapshots.has(mat)) return;
-    this.snapshots.set(mat, {
-      map: mat.map,
-      normalMap: mat.normalMap,
-      roughnessMap: mat.roughnessMap,
-      metalnessMap: mat.metalnessMap,
-      color: mat.color.clone(),
-      roughness: mat.roughness,
-    });
+    this.snapshots.set(mat, readMaterial(mat));
   }
 
   /** Puts the original maps back on all reskinned materials (or only on `only`). */
@@ -4476,12 +4578,7 @@ export class ReskinPlugin {
     for (const [mat, s] of this.snapshots) {
       if (only && !only.includes(mat)) continue;
       delete mat.userData.__reskin;
-      mat.map = s.map;
-      mat.normalMap = s.normalMap;
-      mat.roughnessMap = s.roughnessMap;
-      mat.metalnessMap = s.metalnessMap;
-      mat.color.copy(s.color);
-      mat.roughness = s.roughness;
+      writeMaterial(mat, s);
       mat.needsUpdate = true;
     }
   }

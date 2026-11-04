@@ -596,3 +596,17 @@ export async function buildGlassOpticsTestGlb() {
   root.add(optics);
   return exportGLB(root);
 }
+
+/**
+ * Test asset: a background ring (an open cylinder around the scene, radius 10, 2 tall) with an
+ * unlit MeshBasicMaterial and no texture, like an editor's mountain backdrop.
+ */
+export async function buildRingTestGlb() {
+  const geom = new THREE.CylinderGeometry(10, 10, 2, 48, 1, true);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x8090a0, name: 'Background', side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.name = 'Cylinder';
+  const root = new THREE.Group();
+  root.add(mesh);
+  return exportGLB(root);
+}
