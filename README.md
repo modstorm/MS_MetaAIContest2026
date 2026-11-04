@@ -75,7 +75,8 @@ Edge cases handled:
 plugin/            the reskin plugin (plain ES modules, depends only on three)
   src/
     ReskinPlugin.js        the class a host uses: post functions + update listener
-    muse/MuseClient.js     Meta Model API client (images/generations, images/edits, chat/completions)
+    muse/MuseClient.js     Meta Model API client (images, chat/completions, SAM via responses, asr/transcribe)
+    muse/pricing.js        model prices, usage tally and cost estimate
     muse/prompts.js        all prompts sent to Muse
     providers/             MuseProvider, ProceduralProvider (offline), provider contract
     analysis/              UV islands, coverage/overlap, texture layout, UV generation
@@ -130,13 +131,33 @@ A custom backend is any object with `reskinAtlas(req)` and `generateTexture(req)
 - `npm run build` never embeds the key. On the hosted demo, you paste your own key in ⚙ Settings, and it is stored only in that browser's localStorage.
 - For production, put `plugin/src/server/index.js` (`createMuseMiddleware`) in front of the API and point the plugin at it with `baseUrl`.
 
-## Muse API reference
+## Meta models used
 
-These are the endpoints used, from [dev.meta.ai/docs](https://dev.meta.ai/docs/image-generation):
+Muse Reskin uses five of Meta's models, each for its own job:
 
-- `POST /v1/images/edits`: `muse-image-1.0`, JSON body `{ model, prompt, images: [{ image_url }], size, output_format }`
-- `POST /v1/images/generations`: `muse-image-1.0`, `{ model, prompt, size, output_format }`
-- `POST /v1/chat/completions`: `muse-spark-1.3`, OpenAI-style messages with `image_url` parts
+- **Muse Spark** (`muse-spark-1.3`) is the brain. It looks at six rendered views of the model and works out what it is (avatar, vehicle, prop, sky…) and which part is which. It turns your short idea like "steampunk" into a detailed paint plan, splits that plan into a theme for each part, and at the end reviews the painted result from 8 angles so only the problem areas get repainted. Each review also saves a few lessons that improve later reskins.
+- **Muse Wonder** (`muse-wonder-1.0`, Preview) is an optional deeper-thinking version of Spark for the suggestion and review steps, picked in Settings. If Wonder turns a request down, that step falls back to Spark.
+- **Muse Image** (`muse-image-1.0`) is the painter. It repaints each part of the texture using a mask and a style reference, so the colours stay consistent across parts. It also makes seamless tiled materials, gloves and hands, transparent images (it paints on a flat colour that the plugin then strips out, like the fences and the mountain ring), and normal and roughness maps if you want them.
+- **SAM 3.1** (`sam-3.1`) is the inspector. After each part is painted, it checks for things that landed in the wrong place, like a face on the trousers. If it finds one, only the pixels SAM marked get repainted.
+- **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`) lets you say the theme out loud. The words fill the Theme box, and Spark reviews them the same as typed text.
+
+| Model | Endpoint | Price (dev.meta.ai, 2026-11) |
+| --- | --- | --- |
+| `muse-spark-1.3` | `/v1/chat/completions` | $1.25 / $4.25 per 1M tokens in / out ($0.15 cached) |
+| `muse-wonder-1.0` | `/v1/chat/completions` | $4 / $20 per 1M tokens in / out |
+| `muse-image-1.0` | `/v1/images/edits`, `/v1/images/generations` | $0.01 per image |
+| `sam-3.1` | `/v1/responses` (streamed masks) | $2.50 per 1,000 images |
+| `muse-voice-transcribe-1.0` | `/v1/asr/transcribe` | $3 per 1,000 audio minutes |
+
+Every call's usage is counted. The harness shows the cost of the current reskin and of the session, and an estimate before you paint (`plugin/src/muse/pricing.js`). To use other model versions, set `imageModel`, `visionModel`, `samModel` or `transcribeModel` in the `muse` options.
+
+Request formats, from [dev.meta.ai/docs](https://dev.meta.ai/docs/image-generation):
+
+- `POST /v1/images/edits`: JSON body `{ model, prompt, images: [{ image_url }], size, output_format }`
+- `POST /v1/images/generations`: `{ model, prompt, size, output_format }`
+- `POST /v1/chat/completions`: OpenAI-style messages with `image_url` parts
+- `POST /v1/responses` (SAM 3.1): a short noun phrase (`input_text`) and an `input_image`; the masks stream back and are decoded with `@meta-sam/parser`
+- `POST /v1/asr/transcribe`: a multipart audio upload
 
 ## License
 
