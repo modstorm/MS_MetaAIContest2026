@@ -1147,7 +1147,7 @@ $('compare-handle').addEventListener('pointerdown', (e) => {
 });
 
 viewer.onSpinChange = (on) => $('btn-spin').classList.toggle('on', on);
-$('btn-spin').onclick = () => viewer.setSpin(!viewer.controls.autoRotate);
+$('btn-spin').onclick = () => viewer.spinFromButton(!viewer.controls.autoRotate);
 
 // ------------------------------------------------------------------ history + undo
 function renderHistory(h) {

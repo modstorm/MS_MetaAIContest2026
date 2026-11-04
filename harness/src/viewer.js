@@ -70,8 +70,17 @@ export class Viewer {
     this.onSpinChange?.(on);
   }
 
-  /** Points the camera at the object and puts the grid at its feet. */
-  frame(obj) {
+  /** Turntable on from the button: recentre on the model first so it spins around its own centre. */
+  spinFromButton(on) {
+    if (on && this.content) this.frame(this.content, { keepAngle: true });
+    this.setSpin(on);
+  }
+
+  /**
+   * Points the camera at the object and puts the grid at its feet.
+   * keepAngle: keep looking from the current direction (only the centre and distance are reset).
+   */
+  frame(obj, { keepAngle = false } = {}) {
     const box = new THREE.Box3().setFromObject(obj);
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
@@ -80,7 +89,9 @@ export class Viewer {
     const dist = (radius / Math.sin((this.camera.fov * Math.PI) / 360)) * 1.1;
     this.camera.near = dist / 100;
     this.camera.far = dist * 100;
-    this.camera.position.copy(center).add(new THREE.Vector3(0.6, 0.35, 1).normalize().multiplyScalar(dist));
+    const dir = keepAngle ? this.camera.position.clone().sub(this.controls.target) : new THREE.Vector3(0.6, 0.35, 1);
+    if (dir.lengthSq() < 1e-12) dir.set(0.6, 0.35, 1);
+    this.camera.position.copy(center).add(dir.normalize().multiplyScalar(dist));
     this.camera.updateProjectionMatrix();
     this.controls.target.copy(center);
     this.controls.update();
