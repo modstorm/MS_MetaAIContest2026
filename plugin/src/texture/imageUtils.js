@@ -653,10 +653,47 @@ export function alphaOf(canvas) {
   return seeThrough ? a : null;
 }
 
-/** Sets the alpha channel of `canvas` (in place) from `alpha` (see alphaOf), same size. */
-export function applyAlpha(canvas, alpha) {
+/**
+ * Sets the alpha channel of `canvas` (in place) from `alpha` (see alphaOf), same size.
+ * With `bleed` (default on), the color of every pixel that is not fully solid (alpha below
+ * `solid`) comes from the nearest solid pixel: Muse painted those edges over a backdrop, which
+ * would show as a pale fringe, and see-through pixels get the edge color (no mip-map bleed).
+ */
+export function applyAlpha(canvas, alpha, { bleed = true, solid = 230 } = {}) {
   const g = ctx2d(canvas);
-  const img = g.getImageData(0, 0, canvas.width, canvas.height);
+  const W = canvas.width,
+    H = canvas.height;
+  const img = g.getImageData(0, 0, W, H);
+  if (bleed) {
+    const d = img.data;
+    const src = new Int32Array(alpha.length).fill(-1);
+    let queue = [];
+    for (let p = 0; p < alpha.length; p++)
+      if (alpha[p] >= solid) {
+        src[p] = p;
+        queue.push(p);
+      }
+    // Breadth-first from the solid pixels: each other pixel takes its nearest solid pixel's color.
+    while (queue.length) {
+      const next = [];
+      for (const p of queue) {
+        const x = p % W;
+        for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p - W, p + W]) {
+          if (q < 0 || q >= alpha.length || src[q] >= 0) continue;
+          src[q] = src[p];
+          next.push(q);
+        }
+      }
+      queue = next;
+    }
+    for (let p = 0; p < alpha.length; p++) {
+      const s0 = src[p];
+      if (s0 < 0 || s0 === p) continue;
+      d[p * 4] = d[s0 * 4];
+      d[p * 4 + 1] = d[s0 * 4 + 1];
+      d[p * 4 + 2] = d[s0 * 4 + 2];
+    }
+  }
   for (let p = 0; p < alpha.length; p++) img.data[p * 4 + 3] = alpha[p];
   g.putImageData(img, 0, 0);
   return canvas;

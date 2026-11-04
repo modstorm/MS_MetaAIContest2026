@@ -2944,6 +2944,7 @@ try {
       if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
       return museOk(route);
     });
+    await page.evaluate((r) => (window.__pluginRoot = r), fileURLToPath(new URL('../../plugin/src/', import.meta.url)));
     const out = await page.evaluate(async () => {
       const p = window.reskin.plugin;
       // A background layer: the left half is see-through, a soft edge between.
@@ -2996,7 +2997,20 @@ try {
       const outB = fence2.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
       let diff2 = 0;
       for (let i = 3; i < inA.length; i += 4) if (inA[i] !== outB[i]) diff2++;
-      tex.fence = { diff, diff2, semi, wrap: fence.wrap };
+      // Edge pixels (not fully solid) take the color of the nearest solid pixel: no pale fringe.
+      const iu = await import('/@fs' + window.__pluginRoot + 'texture/imageUtils.js');
+      const e = document.createElement('canvas');
+      e.width = 8;
+      e.height = 1;
+      const eg = e.getContext('2d');
+      eg.fillStyle = 'rgb(200,200,210)'; // Muse's pale edge over the backdrop
+      eg.fillRect(0, 0, 8, 1);
+      eg.fillStyle = 'rgb(240,80,160)'; // the painted wire
+      eg.fillRect(3, 0, 2, 1);
+      iu.applyAlpha(e, new Uint8ClampedArray([0, 0, 128, 255, 255, 128, 0, 0]));
+      const ed = eg.getImageData(0, 0, 8, 1).data;
+      const fringe = [2, 5].filter((x) => Math.abs(ed[x * 4] - 240) > 4 || Math.abs(ed[x * 4 + 1] - 80) > 4).length;
+      tex.fence = { diff, diff2, semi, fringe, wrap: fence.wrap };
       // A model texture with a cut-out hole.
       const mod = await import('/src/sampleModel.js');
       const glb = await mod.buildOrientationTestGlb({ paint: (pg) => pg.clearRect(0, 160, 128, 64) });
@@ -3052,7 +3066,7 @@ try {
     const { fence, modelDiff, ...texRest } = out.tex;
     assert.equal(modelDiff, 0, 'a model texture keeps exactly its alpha');
     assert.ok(
-      fence.semi > 100 && fence.diff === 0 && fence.diff2 === 0,
+      fence.semi > 100 && fence.diff === 0 && fence.diff2 === 0 && fence.fringe === 0,
       `fence alpha exactly the input's ${JSON.stringify(fence)}`,
     );
     assert.deepEqual(texRest, { hasAlpha: true, left: 0, edge: 128, right: 255 }, JSON.stringify(out.tex));
