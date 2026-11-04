@@ -18,6 +18,7 @@ import {
   plainReskinTexturePrompt,
   reskinTexturePrompt,
   seamlessTexturePrompt,
+  cutoutPrompt,
   suggestPrompt as suggestPromptText,
   suggestFromAnalysisPrompt,
   visionPlanPrompt,
@@ -435,9 +436,16 @@ export class MuseProvider {
 
   generateTexture(req) {
     return this.paint('generateImage', {
-      prompt: req.plain
-        ? plainSeamlessTexturePrompt(req.theme)
-        : seamlessTexturePrompt(req.theme, req.materialName, req.extraInstructions),
+      prompt: req.cutout
+        ? cutoutPrompt(req.theme, {
+            name: req.materialName,
+            context: req.plain ? '' : req.context,
+            classRules: req.plain ? [] : req.classRules,
+            keyNote: req.cutout,
+          })
+        : req.plain
+          ? plainSeamlessTexturePrompt(req.theme)
+          : seamlessTexturePrompt(req.theme, req.materialName, req.extraInstructions),
       size: museSizeFor(req.width, req.height),
       signal: req.signal,
     });

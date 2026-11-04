@@ -246,7 +246,7 @@ try {
     assert.match(summary, /2 texture slot/);
     await page.screenshot({ path: `${outDir}01-loaded.png` });
     await reskinViaPopup(page, 'molten lava rock with glowing magma veins');
-    assert.ok(await page.isVisible('#compare-handle'), 'before/after slider on after painting');
+    assert.ok(!(await page.isVisible('#compare-handle')), 'the reskin is shown, Compare stays off until clicked');
     const kinds = await page.$$eval('#generated figure', (f) => f.map((x) => x.dataset.kind));
     assert.deepEqual(kinds, ['baseColor'], `maps: ${kinds}`); // no normal/roughness in the sample to regenerate
     await page.waitForTimeout(300);
@@ -262,7 +262,7 @@ try {
     else assert.ok(texName.endsWith('_baseColor.png') && head.toString('latin1', 1, 4) === 'PNG', texName);
     assert.match(texName, /sample-robot-molten-lava/);
     assert.match(exported.name, /sample-robot-molten-lava/);
-    // The before/after slider turned on by itself; export turned it off; it toggles back on.
+    // Compare turns on when clicked.
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.screenshot({ path: `${outDir}03-original.png` });
@@ -297,8 +297,7 @@ try {
     assert.equal(await page.evaluate(() => window.reskin.plugin.historyIndex), -1);
     assert.match(await page.textContent('#generated'), /Original textures/);
     await page.click('#history button.entry[data-index="1"]');
-    // The slider came on by itself after painting; switch it off and on again.
-    if (await page.isVisible('#compare-handle')) await page.click('#btn-compare');
+    // Compare is off after painting; switch it on and off.
     await page.click('#btn-compare');
     assert.ok(await page.isVisible('#compare-handle'));
     await page.waitForTimeout(300);
@@ -2934,6 +2933,222 @@ try {
     assert.equal(out.busy, false);
     await page.context().close();
   });
+
+  await step('transparency: a see-through background image and a cut-out model texture keep their alpha', async () => {
+    const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+    const prompts = [];
+    await page.route('https://api.meta.ai/v1/**', async (route) => {
+      const req = route.request();
+      if (req.url().endsWith('/responses')) return route.fulfill(samNone());
+      if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
+      return museOk(route);
+    });
+    await page.evaluate((r) => (window.__pluginRoot = r), fileURLToPath(new URL('../../plugin/src/', import.meta.url)));
+    const out = await page.evaluate(async () => {
+      const p = window.reskin.plugin;
+      // A background layer: the left half is see-through, a soft edge between.
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      const g = c.getContext('2d');
+      g.fillStyle = '#4a7a3a';
+      g.fillRect(128, 0, 128, 256);
+      g.fillStyle = 'rgba(74,122,58,0.5)';
+      g.fillRect(120, 0, 8, 256);
+      const r = await p.postTexture(c, { theme: 'autumn forest', wrap: 'none' });
+      const a = (x, y) => r.canvas.getContext('2d').getImageData(x, y, 1, 1).data[3];
+      const tex = { hasAlpha: r.hasAlpha, left: a(40, 100), edge: a(124, 100), right: a(200, 100) };
+      const opaque = await p.postTexture(c, { theme: 'autumn forest', wrap: 'none', keepAlpha: false });
+      // A tiling chain-link fence with soft wires, given as a PNG blob: the alpha comes back exactly.
+      const f = document.createElement('canvas');
+      f.width = f.height = 256;
+      const fg = f.getContext('2d');
+      fg.strokeStyle = 'rgba(90,90,90,1)';
+      fg.lineWidth = 3.3;
+      for (let k = -256; k <= 512; k += 64) {
+        fg.beginPath();
+        fg.moveTo(k, 0);
+        fg.lineTo(k + 256, 256);
+        fg.moveTo(k, 256);
+        fg.lineTo(k + 256, 0);
+        fg.stroke();
+      }
+      const blob = await new Promise((res) => f.toBlob(res, 'image/png'));
+      const inA = (
+        await createImageBitmap(blob).then((b) => {
+          const t = document.createElement('canvas');
+          t.width = b.width;
+          t.height = b.height;
+          t.getContext('2d').drawImage(b, 0, 0);
+          return t;
+        })
+      )
+        .getContext('2d')
+        .getImageData(0, 0, 256, 256).data;
+      const fence = await p.postTexture(blob, { theme: 'candy land' });
+      const outA = fence.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+      let diff = 0,
+        semi = 0;
+      for (let i = 3; i < inA.length; i += 4) {
+        if (inA[i] !== outA[i]) diff++;
+        if (inA[i] > 0 && inA[i] < 255) semi++;
+      }
+      const fence2 = await p.postTexture(blob, { theme: 'candy land', transparent: true });
+      const outB = fence2.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+      let diff2 = 0;
+      for (let i = 3; i < inA.length; i += 4) if (inA[i] !== outB[i]) diff2++;
+      // Edge pixels (not fully solid) take the color of the nearest solid pixel: no pale fringe.
+      const iu = await import('/@fs' + window.__pluginRoot + 'texture/imageUtils.js');
+      const e = document.createElement('canvas');
+      e.width = 8;
+      e.height = 1;
+      const eg = e.getContext('2d');
+      eg.fillStyle = 'rgb(200,200,210)'; // Muse's pale edge over the backdrop
+      eg.fillRect(0, 0, 8, 1);
+      eg.fillStyle = 'rgb(240,80,160)'; // the painted wire
+      eg.fillRect(3, 0, 2, 1);
+      iu.applyAlpha(e, new Uint8ClampedArray([0, 0, 128, 255, 255, 128, 0, 0]));
+      const ed = eg.getImageData(0, 0, 8, 1).data;
+      const fringe = [2, 5].filter((x) => Math.abs(ed[x * 4] - 240) > 4 || Math.abs(ed[x * 4 + 1] - 80) > 4).length;
+      tex.fence = { diff, diff2, semi, fringe, wrap: fence.wrap };
+      // A model texture with a cut-out hole.
+      const mod = await import('/src/sampleModel.js');
+      const glb = await mod.buildOrientationTestGlb({ paint: (pg) => pg.clearRect(0, 160, 128, 64) });
+      await p.postModel(glb, { name: 'cutout' });
+      const res = await p.postPrompt('pirates', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const m = res.slots[0].canvas;
+      const k = m.width / 256;
+      const ma = (x, y) => m.getContext('2d').getImageData(x * k, y * k, 1, 1).data[3];
+      // A model whose texture is a soft-edged fence: the result's alpha is exactly the texture's.
+      const fenceGlb = await mod.buildOrientationTestGlb({
+        paint: (pg) => {
+          pg.clearRect(0, 0, 256, 256);
+          pg.strokeStyle = 'rgb(90,90,90)';
+          pg.lineWidth = 3.3;
+          for (let j = -256; j <= 512; j += 64) {
+            pg.beginPath();
+            pg.moveTo(j, 0);
+            pg.lineTo(j + 256, 256);
+            pg.stroke();
+          }
+        },
+      });
+      await p.postModel(fenceGlb, { name: 'fence' });
+      const tImg = p.layout.slots[0].texture.image;
+      const tc = document.createElement('canvas');
+      tc.width = tImg.width;
+      tc.height = tImg.height;
+      tc.getContext('2d').drawImage(tImg, 0, 0);
+      const fres = await p.postPrompt('candy land', {
+        useVisionPlanning: false,
+        normalMaps: false,
+        roughnessMaps: false,
+        samCheck: false,
+      });
+      const fc = fres.slots[0].canvas;
+      const ia = tc.getContext('2d').getImageData(0, 0, tc.width, tc.height).data;
+      const oa = fc.getContext('2d').getImageData(0, 0, fc.width, fc.height).data;
+      let modelDiff = fc.width === tc.width ? 0 : -1;
+      if (modelDiff === 0) for (let i = 3; i < ia.length; i += 4) if (ia[i] !== oa[i]) modelDiff++;
+      tex.modelDiff = modelDiff;
+      return {
+        tex,
+        opaqueLeft: opaque.canvas.getContext('2d').getImageData(40, 100, 1, 1).data[3],
+        hole: ma(64, 192),
+        solid: ma(192, 192),
+      };
+    });
+    const { fence, modelDiff, ...texRest } = out.tex;
+    assert.equal(modelDiff, 0, 'a model texture keeps exactly its alpha');
+    assert.ok(
+      fence.semi > 100 && fence.diff === 0 && fence.diff2 === 0 && fence.fringe === 0,
+      `fence alpha exactly the input's ${JSON.stringify(fence)}`,
+    );
+    assert.deepEqual(texRest, { hasAlpha: true, left: 0, edge: 128, right: 255 }, JSON.stringify(out.tex));
+    assert.ok(/transparent \(see-through\)/.test(prompts[0]), 'Muse is told about the see-through areas');
+    assert.equal(out.opaqueLeft, 255, 'keepAlpha: false gives an opaque result');
+    assert.equal(out.hole, 0, 'the cut-out stays see-through');
+    assert.equal(out.solid, 255);
+    await page.context().close();
+  });
+
+  await step(
+    'transparent images: Muse paints on a key color, the plugin turns it into alpha (soft or hard, trim)',
+    async () => {
+      const page = await newPage({ provider: 'offline', apiKey: '', useProxy: false });
+      const off = await page.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const a = (c, x, y) => c.getContext('2d').getImageData(x, y, 1, 1).data[3];
+        const r = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, assetClass: 'icon' });
+        const values = new Set();
+        const d = r.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+        for (let i = 3; i < d.length; i += 4) values.add(d[i]);
+        const hard = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, edge: 'hard' });
+        const hd = hard.canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+        let other = 0;
+        for (let i = 3; i < hd.length; i += 4) if (hd[i] !== 0 && hd[i] !== 255) other++;
+        const trimmed = await p.postTexture(null, { theme: 'gold coin', transparent: true, size: 256, trim: true });
+        return {
+          hasAlpha: r.hasAlpha,
+          key: r.keyColor,
+          share: r.alpha,
+          corner: a(r.canvas, 3, 3),
+          centre: a(r.canvas, 128, 128),
+          soft: [...values].some((v) => v > 0 && v < 255),
+          normal: r.normal,
+          wrap: r.wrap,
+          hardOther: other,
+          trimmed: [trimmed.width, trimmed.height],
+        };
+      });
+      assert.equal(off.hasAlpha, true);
+      assert.equal(off.key, '#ff00ff');
+      assert.ok(off.share > 0.3 && off.share < 0.8, `see-through share ${off.share}`);
+      assert.equal(off.corner, 0);
+      assert.equal(off.centre, 255);
+      assert.ok(off.soft, 'soft edges by default');
+      assert.equal(off.normal, null, 'no normal map for a transparent image');
+      assert.equal(off.wrap, 'none');
+      assert.equal(off.hardOther, 0, 'edge: hard is 0 or 255 only');
+      assert.ok(off.trimmed[0] < 220 && off.trimmed[1] < 220, `trimmed ${off.trimmed}`);
+      await page.context().close();
+
+      // Muse: the prompt asks for the key backdrop; a pink input picks green.
+      const page2 = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
+      const prompts = [];
+      await page2.route('https://api.meta.ai/v1/**', async (route) => {
+        const req = route.request();
+        if (!req.url().endsWith('/chat/completions')) prompts.push(req.postDataJSON()?.prompt ?? '');
+        return museOk(route);
+      });
+      const warn = await page2.evaluate(async () => {
+        const p = window.reskin.plugin;
+        const warnings = [];
+        p.on('warning', (w) => warnings.push(w.message));
+        await p.postTexture(null, { theme: 'smoke puff', transparent: true, size: 128, assetClass: 'particle' });
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        const g = c.getContext('2d');
+        g.fillStyle = '#2a6a2a';
+        g.fillRect(0, 0, 64, 64);
+        g.fillStyle = '#ff60c0'; // a pink flower in a forest
+        g.fillRect(16, 16, 32, 32);
+        await p.postTexture(c, { theme: 'forest', transparent: true });
+        return warnings;
+      });
+      assert.ok(/#FF00FF/.test(prompts[0]) && /particle texture/.test(prompts[0]), prompts[0]);
+      assert.ok(/#00FF00/.test(prompts[1]), `pink input → green key: ${prompts[1]}`);
+      assert.ok(
+        warn.some((w) => /almost nothing was see-through/.test(w)),
+        'Muse ignoring the backdrop is flagged',
+      );
+      await page2.context().close();
+    },
+  );
 
   await step('postTexture: a sky panorama joins left to right, calm poles, Muse gets the equirect prompt', async () => {
     const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });

@@ -60,6 +60,9 @@ import {
   textureToCanvas,
   transformCanvas,
   untransformCanvas,
+  alphaOf,
+  applyAlpha,
+  flattenOn,
 } from './texture/imageUtils.js';
 import { deriveNormalMap, deriveRoughnessMap } from './texture/pbrMaps.js';
 import { flattenTinyIslands, islandIdMap, keepSkinSwatches, padIslands } from './texture/islandPost.js';
@@ -72,6 +75,7 @@ import {
   templateLineMask,
   verticalRuns,
 } from './texture/lineCleanup.js';
+import { hardenAlpha, keyColorInstruction, keyOut, pickKeyColor, trimTransparent } from './texture/chromaKey.js';
 import { canvasSeams, makeSeamless } from './texture/seamless.js';
 import {
   WHEEL_NAME,
@@ -1435,6 +1439,14 @@ export class ReskinPlugin {
       padIslands(baseColor, islandMap, Math.max(1, Math.round(((opts.edgePadding ?? 12) * width) / 1024)));
     }
 
+    // See-through pixels of the original (cut-outs, hair cards, decals) stay see-through.
+    if (original && opts.keepAlpha !== false) {
+      const alpha = alphaOf(resizeCanvas(original, width, height));
+      if (alpha) {
+        applyAlpha(baseColor, alpha);
+        this.think('note', `"${slot.name}": kept the original transparency (alpha)`, { slotId: slot.id });
+      }
+    }
     report(0.8, 'apply', `Applying "${slot.name}"`);
     const baseTex = this.makeTexture(baseColor, slot.texture, THREE.SRGBColorSpace, slot.uvChannel, !atlasMode);
     for (const mat of slot.materials) {
@@ -1610,12 +1622,13 @@ export class ReskinPlugin {
       const source = input == null ? null : await this.toInputCanvas(input);
       signal.throwIfAborted();
       const maxSize = Math.min(opts.maxTextureSize ?? 2048, 4096);
-      const wrap = resolveWrap(opts.wrap, assetClass, source);
+      const transparent = !!opts.transparent;
+      const wrap = resolveWrap(opts.wrap ?? (transparent ? 'none' : undefined), assetClass, source);
       let width, height;
       if (source) ({ width, height } = fitSize(source.width, source.height, maxSize));
       else {
-        width = Math.min(opts.width ?? 1024, maxSize);
-        height = Math.min(opts.height ?? (wrap === 'equirect' ? Math.round(width / 2) : width), maxSize);
+        width = Math.min(opts.width ?? opts.size ?? 1024, maxSize);
+        height = Math.min(opts.height ?? opts.size ?? (wrap === 'equirect' ? Math.round(width / 2) : width), maxSize);
       }
       const classRules = assetClassRules(assetClass);
 
@@ -1625,17 +1638,36 @@ export class ReskinPlugin {
         `Painting "${name}" (${wrap === 'none' ? 'no wrap' : wrap === 'equirect' ? 'sky panorama' : `wraps ${wrap}`})`,
       );
       let raw;
+      // A see-through image (a background layer, a cut-out): Muse paints over a flat grey
+      // backdrop and the original alpha is put back on the result.
+      const sized = source ? resizeCanvas(source, width, height) : null;
+      // An input that already has transparency keeps exactly its own alpha (even with
+      // transparent: true): no key color, no ramp or threshold.
+      const alpha = sized && opts.keepAlpha !== false && opts.alpha !== 'none' ? alphaOf(sized) : null;
+      const key = transparent && !alpha ? pickKeyColor(opts.keyColor, `${theme} ${opts.context ?? ''}`, sized) : null;
+      // transparent: Muse paints on a flat key color, which becomes transparency afterwards.
+      const keyNote = key ? keyColorInstruction(key) : '';
+      const context = [
+        opts.context,
+        alpha
+          ? 'The flat grey areas of the image are transparent (see-through) and are cut away afterwards: keep the shapes and outlines exactly where they are, and put nothing important in the grey areas.'
+          : '',
+        keyNote,
+      ]
+        .filter(Boolean)
+        .join('\n');
       if (source) {
-        const image = resizeCanvas(source, width, height);
+        const image = key ? flattenOn(sized, key.hex) : alpha ? flattenOn(sized) : sized;
         raw = await this.withFilterRetry('paint texture', job, theme, (plain, t) =>
           this.provider.reskinTexture
             ? this.provider.reskinTexture({
                 theme: t,
                 image,
                 name,
-                context: opts.context,
+                context,
                 classRules,
                 wrap,
+                keyColor: key?.hex,
                 plain,
                 signal,
               })
@@ -1647,7 +1679,7 @@ export class ReskinPlugin {
                 width,
                 height,
                 plain,
-                extraInstructions: [opts.context, ...classRules].filter(Boolean).join('\n'),
+                extraInstructions: [context, ...classRules].filter(Boolean).join('\n'),
                 signal,
               }),
         );
@@ -1659,7 +1691,11 @@ export class ReskinPlugin {
             width,
             height,
             plain,
-            extraInstructions: [opts.context, ...classRules].filter(Boolean).join('\n'),
+            extraInstructions: [context, ...classRules].filter(Boolean).join('\n'),
+            cutout: keyNote || undefined,
+            keyColor: key?.hex,
+            context: opts.context,
+            classRules,
             signal,
           }),
         );
@@ -1684,12 +1720,25 @@ export class ReskinPlugin {
         seams = { before: r.before, after: r.after, blended: r.fixed };
       }
 
+      if (alpha) applyAlpha(canvas, alpha);
+      let keyed = null;
+      if (key) {
+        report(0.8, 'postprocess', `Cutting out "${name}"`);
+        keyed = keyOut(canvas, key);
+        if (keyed.share < 0.02)
+          this.emit('warning', {
+            message: `"${name}": almost nothing was see-through: Muse did not paint the ${key.name} backdrop.`,
+          });
+        if (opts.trim) canvas = trimTransparent(canvas);
+      }
+      if ((key || alpha) && opts.edge === 'hard') hardenAlpha(canvas);
+
       // ---- normal + roughness (sampled across the wrap so they tile as well)
       const sky = wrap === 'equirect';
       let normal = null;
       let roughness = null;
       const tidy = (c) => (wrap === 'none' ? c : makeSeamless(c, axes).canvas);
-      if (opts.normalMap ?? !sky) {
+      if (opts.normalMap ?? (!sky && !transparent)) {
         report(0.85, 'postprocess', `Normal map for "${name}"`);
         const orig = opts.normal ? resizeCanvas(await this.toInputCanvas(opts.normal), width, height) : null;
         normal = tidy(
@@ -1698,7 +1747,7 @@ export class ReskinPlugin {
           ),
         );
       }
-      if (opts.roughnessMap ?? !sky) {
+      if (opts.roughnessMap ?? (!sky && !transparent)) {
         report(0.92, 'postprocess', `Roughness map for "${name}"`);
         const orig = opts.roughness ? resizeCanvas(await this.toInputCanvas(opts.roughness), width, height) : null;
         roughness = tidy(
@@ -1717,10 +1766,13 @@ export class ReskinPlugin {
         normal,
         roughness,
         seams,
+        hasAlpha: !!(alpha || keyed),
+        keyColor: keyed?.keyColor,
+        alpha: keyed ? keyed.share : undefined,
         theme,
         context: opts.context ?? null,
-        width,
-        height,
+        width: canvas.width,
+        height: canvas.height,
         durationMs: performance.now() - started,
         usage: this.getUsage(),
       };

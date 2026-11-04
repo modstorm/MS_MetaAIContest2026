@@ -278,6 +278,40 @@ export const ASSET_CLASSES = [
       'This is a tiling surface material. Keep the scale of the pattern; no single objects, no perspective, no lighting baked in.',
     ],
   },
+  // Single images with transparency (postTexture with transparent: true); no keywords, so they
+  // are only used when asked for.
+  {
+    id: 'decal',
+    label: 'Decal',
+    cutout: true,
+    rules: [
+      'This is a decal: a flat graphic seen straight from the front, no perspective, no shadow, crisp clean edges.',
+    ],
+  },
+  {
+    id: 'icon',
+    label: 'Icon',
+    cutout: true,
+    rules: [
+      'This is an icon: one simple, bold shape centred in the frame with a little space around it, readable at a small size; strong silhouette, few details, no text.',
+    ],
+  },
+  {
+    id: 'sprite',
+    label: 'Sprite',
+    cutout: true,
+    rules: [
+      'This is a game sprite: one subject, whole and centred, clear silhouette, even lighting, no ground or shadow.',
+    ],
+  },
+  {
+    id: 'particle',
+    label: 'Particle',
+    cutout: true,
+    rules: [
+      'This is a particle texture (smoke puff, spark, flame, magic glow): soft, centred and roughly symmetric, fading out smoothly towards its edges, nothing touching the borders of the image.',
+    ],
+  },
   { id: 'generic', label: 'Other', rules: [] },
 ];
 

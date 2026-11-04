@@ -810,8 +810,7 @@ async function runReskin(text, suggestion) {
     showFailed(res.failed, text);
     // Every variation lands in History (newest first); the first one is shown.
     runDialog.close();
-    if ($('opt-review').checked && plugin.canReview) runReview();
-    else setCompare(true); // show before/after straight away
+    if ($('opt-review').checked && plugin.canReview) runReview(); // Compare stays off until the user clicks it
   } catch (err) {
     setRunButtons({});
     if (err.name === 'AbortError') {

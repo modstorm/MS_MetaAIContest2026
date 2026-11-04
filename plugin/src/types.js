@@ -160,7 +160,7 @@
  * @property {string} theme What to paint, e.g. "lava cracks", "sunset over the sea".
  * @property {string} [id] Your own id for this job (e.g. the editor's image id); echoed on every event and the result.
  * @property {string} [name] Name used in prompts and messages (default: the input's name or the id).
- * @property {string} [assetClass] 'sky', 'material' (tiling material / track), 'terrain', … or any registered class.
+ * @property {string} [assetClass] 'sky', 'material' (tiling material / track), 'terrain', 'decal', 'icon', 'sprite', 'particle', … or any registered class.
  *   Guessed from context, theme and name if left out.
  * @property {string} [context] What it is for, sent to Muse ("race track asphalt seen from above").
  * @property {boolean | 'both' | 'x' | 'y' | 'none' | 'equirect' | 'sky'} [wrap] Which edges must join.
@@ -177,6 +177,17 @@
  * @property {number} [maxTextureSize=2048] Output is the source size, scaled down to fit this.
  * @property {number} [width] Only when generating (input null): output size (default 1024, sky 1024×512).
  * @property {number} [height]
+ * @property {number} [size] Only when generating: width and height at once (e.g. an icon 256).
+ * @property {boolean} [transparent] Make an image with transparency (a decal, icon, sprite, particle or
+ *   cut-out): Muse paints the subject alone on a flat key color, which is turned into alpha (soft
+ *   anti-aliased edges, key tint taken out of the edges, specks removed). Default wrap 'none' and no
+ *   normal / roughness maps. Works when generating (input null) and when repainting an input.
+ * @property {'auto' | 'magenta' | 'green' | string} [keyColor='auto'] The backdrop color: magenta, or green
+ *   when the theme or the input image is pink / purple; or a hex color.
+ * @property {boolean} [trim] With transparent: crop to the subject plus a small margin.
+ * @property {'soft' | 'hard'} [edge='soft'] 'hard' makes alpha 0 or 255 (for alpha-test cut-outs).
+ * @property {boolean} [keepAlpha=true] An input with see-through pixels keeps its alpha on the result
+ *   (fences, foliage, grates). Also `alpha: 'none'` turns it off.
  * @property {AbortSignal} [signal]
  */
 
@@ -187,6 +198,9 @@
  * @property {string} assetClass
  * @property {'both' | 'x' | 'y' | 'none' | 'equirect'} wrap
  * @property {HTMLCanvasElement} canvas New base color (sRGB).
+ * @property {boolean} [hasAlpha] The canvas has transparency (kept from the input, or made with `transparent`).
+ * @property {string} [keyColor] transparent: the backdrop color that was turned into alpha ('#rrggbb').
+ * @property {number} [alpha] transparent: the see-through share of the image (0..1).
  * @property {HTMLCanvasElement | null} normal Tangent-space normal map (glTF convention, +Y up).
  * @property {HTMLCanvasElement | null} roughness glTF metallicRoughness layout: G = roughness, B = metalness.
  * @property {{ before: { x: number, y: number }, after: { x: number, y: number }, blended: { x: boolean, y: boolean, poles: boolean } } | null} seams
