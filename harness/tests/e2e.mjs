@@ -3278,8 +3278,8 @@ try {
     async () => {
       const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
       const prompts = [];
-      // "Muse": magenta sky above, mountains in the lower half.
-      const png = makePng(256, 128, (x, y) => (y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
+      // "Muse": magenta sky above, mountains in the lower half, and a purple column at both sides.
+      const png = makePng(256, 128, (x, y) => (x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
         'base64',
       );
       await page.route('https://api.meta.ai/v1/**', async (route) => {
@@ -3350,6 +3350,13 @@ try {
           joinSolid: [0, 170, 171, 341, 342].map((x) => a(x, 42)),
           base: Array.from({ length: 128 }, (_, i) => a(i * 4, 70)),
           log: (r.thinking ?? []).map((t) => t.text).filter((t) => /highest peak/.test(t)),
+          purple: (() => {
+            const d = c.getContext('2d').getImageData(0, 0, c.width, 340 * k).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4)
+              if (d[i + 3] > 0 && Math.min(d[i], d[i + 2]) - d[i + 1] > 25) n++;
+            return n;
+          })(),
           below: a(256, 450),
           mask: [mat.transparent, mat.alphaTest],
         };
@@ -3363,6 +3370,7 @@ try {
       assert.deepEqual(sec.joinSky, [0, 0, 0, 0, 0], 'piece ends come down to the join height: ' + sec.joinSky);
       assert.deepEqual(sec.joinSolid, [255, 255, 255, 255, 255], 'piece ends are solid below it: ' + sec.joinSolid);
       assert.ok(sec.base.every((v) => v === 255), 'the base is solid all the way across');
+      assert.equal(sec.purple, 0, 'no key-tinted columns at the piece joins');
       assert.equal(sec.log.length, 4, 'one stretch/join line per strip in thinking: ' + sec.log.join(' | '));
       assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
       assert.ok(/piece 1 of 3 of section 1 of 4/.test(prompts.join()), prompts[0]);

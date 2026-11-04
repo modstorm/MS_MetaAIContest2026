@@ -274,10 +274,12 @@ function skinPixels(canvas, x, y, w, h) {
 function silhouetteTop(canvas) {
   const W = canvas.width,
     H = canvas.height;
+  // The outer 3% of columns are left out (Muse's side borders; solidifyScenery replaces them).
+  const B = Math.min(Math.floor(W / 4), Math.max(1, Math.round(W * 0.03)));
   const d = ctx2d(canvas).getImageData(0, 0, W, H).data;
   for (let y = 0; y < H; y++) {
     let n = 0;
-    for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] > 128) n++;
+    for (let x = B; x < W - B; x++) if (d[(y * W + x) * 4 + 3] > 128) n++;
     // A few stray pixels are not a peak.
     if (n > Math.max(2, W * 0.004)) return y;
   }
@@ -4772,7 +4774,7 @@ export class ReskinPlugin {
           c = t;
         }
         // A solid base in every column, and both ends at the same join height.
-        solidifyScenery(c, { base: low ? 0.12 : 0.18, join: low ? 0.3 : 0.55 });
+        solidifyScenery(c, { base: low ? 0.12 : 0.18, join: low ? 0.3 : 0.55, key });
         if (layers.flip) c = flipVertical(c);
         g.drawImage(c, p.piece.x0, band.y0);
       }

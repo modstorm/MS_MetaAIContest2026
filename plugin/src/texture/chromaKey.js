@@ -186,12 +186,32 @@ export function hardenAlpha(canvas, threshold = 128) {
  * above, or the piece's base colour), at least `base` of the height is solid, and the columns
  * near both ends ease to the shared `join` height so neighbouring pieces meet without a cliff.
  */
-export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12 } = {}) {
+export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12, key = null, border = 0.03 } = {}) {
   const W = canvas.width,
     H = canvas.height;
   const g = ctx2d(canvas);
   const img = g.getImageData(0, 0, W, H);
   const d = img.data;
+  // Muse often leaves a key-tinted column at the image's sides: the outer `border` columns
+  // are replaced by the first column inside them.
+  const B = Math.min(Math.floor(W / 4), Math.max(1, Math.round(W * border)));
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < B; x++)
+      for (const [to, from] of [
+        [x, B],
+        [W - 1 - x, W - 1 - B],
+      ])
+        for (let c = 0; c < 4; c++) d[(y * W + to) * 4 + c] = d[(y * W + from) * 4 + c];
+  // Despill: take the key's tint out of every pixel (magenta: red and blue above green).
+  const k = key?.rgb ?? [255, 0, 255];
+  const on = [0, 1, 2].filter((c) => k[c] > 127),
+    off = [0, 1, 2].filter((c) => k[c] <= 127);
+  const spill = (i) =>
+    on.length && off.length ? Math.min(...on.map((c) => d[i + c])) - Math.max(...off.map((c) => d[i + c])) : 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const s = spill(i);
+    if (s > 0) for (const c of on) d[i + c] -= s;
+  }
   // The base colour: the median of the solid pixels in the bottom fifth.
   const rs = [],
     gs = [],
@@ -225,7 +245,7 @@ export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12 
     let last = baseCol;
     for (let y = Math.max(top, orig); y < H; y++) {
       const i = (y * W + x) * 4;
-      if (d[i + 3] > 128) {
+      if (d[i + 3] > 200) {
         last = [d[i], d[i + 1], d[i + 2]];
         break;
       }
@@ -238,7 +258,7 @@ export function solidifyScenery(canvas, { base = 0.18, join = 0.55, ramp = 0.12 
       }
       // Keep the soft outline where the column was not moved.
       if (top === orig && y < orig + 2 && d[i + 3] > 0) continue;
-      if (d[i + 3] > 128) last = [d[i], d[i + 1], d[i + 2]];
+      if (d[i + 3] > 200) last = [d[i], d[i + 1], d[i + 2]];
       else [d[i], d[i + 1], d[i + 2]] = last;
       d[i + 3] = 255;
     }
