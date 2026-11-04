@@ -286,6 +286,39 @@ function silhouetteTop(canvas) {
   return H;
 }
 
+/**
+ * Cross-fades the joins between the pieces of one ring strip on `canvas` (in place): within
+ * about 5% of a piece's width on each side, solid pixels in rows where both edge columns are
+ * solid move towards the mean of the two edge colours, most at the join. Alpha is not changed.
+ */
+function softenJoins(canvas, band) {
+  const W = canvas.width,
+    y0 = band.y0,
+    h = band.y1 - band.y0;
+  if (band.pieces.length < 2 || h < 2) return;
+  const g = ctx2d(canvas);
+  const img = g.getImageData(0, y0, W, h);
+  const d = img.data;
+  for (let j = 1; j < band.pieces.length; j++) {
+    const x = band.pieces[j].x0;
+    const w = Math.max(2, Math.round((band.pieces[j].x1 - band.pieces[j].x0) * 0.05));
+    if (x - w < 0 || x + w > W) continue;
+    for (let y = 0; y < h; y++) {
+      const L = (y * W + x - 1) * 4,
+        R = (y * W + x) * 4;
+      if (d[L + 3] < 255 || d[R + 3] < 255) continue;
+      const mean = [0, 1, 2].map((c) => (d[L + c] + d[R + c]) / 2);
+      for (let dx = -w; dx < w; dx++) {
+        const i = (y * W + x + dx) * 4;
+        if (d[i + 3] < 255) continue;
+        const t = 1 - Math.abs(dx + 0.5) / w;
+        for (let c = 0; c < 3; c++) d[i + c] = Math.round(d[i + c] + (mean[c] - d[i + c]) * t);
+      }
+    }
+  }
+  g.putImageData(img, 0, y0);
+}
+
 const WANTS_TRANSPARENCY = /\b(transparen\w*|see-?through|cut-?outs?)\b/i;
 
 const MATERIAL_PROPS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'roughness', 'transparent', 'alphaTest'];
@@ -4779,6 +4812,9 @@ export class ReskinPlugin {
         g.drawImage(c, p.piece.x0, band.y0);
       }
     }
+    // Soft joins: across each join inside a strip, the solid part (base and lower slopes,
+    // where both sides are solid) fades towards the two sides' mean colour. Alpha is kept.
+    for (const band of layers.bands) softenJoins(out, band);
     return out;
   }
 

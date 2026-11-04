@@ -3279,9 +3279,13 @@ try {
       const page = await newPage({ provider: 'muse', apiKey: 'k', useProxy: false });
       const prompts = [];
       // "Muse": magenta sky above, mountains in the lower half, and a purple column at both sides.
-      const png = makePng(256, 128, (x, y) => (x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255])).toString(
-        'base64',
-      );
+      const png = makePng(256, 128, (x, y) =>
+        x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [70, 85, 110] : [255, 0, 255],
+      ).toString('base64');
+      // Even pieces get a green forest instead of slate (the joins between them are softened).
+      const green = makePng(256, 128, (x, y) =>
+        x < 5 || x > 250 ? [120, 40, 135] : y > 60 + 20 * Math.sin(x / 9) ? [30, 110, 40] : [255, 0, 255],
+      ).toString('base64');
       await page.route('https://api.meta.ai/v1/**', async (route) => {
         const req = route.request();
         if (req.url().endsWith('/responses')) return route.fulfill(samNone());
@@ -3293,8 +3297,10 @@ try {
             body: JSON.stringify(json),
           });
         if (req.url().endsWith('/chat/completions')) return ok({ choices: [{ message: { content: '{}' } }] });
-        prompts.push(req.postDataJSON()?.prompt ?? '');
-        return ok({ data: [{ b64_json: png }] });
+        const prompt = req.postDataJSON()?.prompt ?? '';
+        prompts.push(prompt);
+        const even = /piece (\d+) of 3 of section/.exec(prompt)?.[1] % 2 === 0;
+        return ok({ data: [{ b64_json: even ? green : png }] });
       });
       const out = await page.evaluate(async () => {
         const mod = await import('/src/sampleModel.js');
@@ -3350,11 +3356,16 @@ try {
           joinSolid: [0, 170, 171, 341, 342].map((x) => a(x, 42)),
           base: Array.from({ length: 128 }, (_, i) => a(i * 4, 70)),
           log: (r.thinking ?? []).map((t) => t.text).filter((t) => /highest peak/.test(t)),
+          // Green (piece 2) next to slate (piece 1) at the join x 170/171, row 70 (base).
+          joinStep: (() => {
+            const px = (x) => c.getContext('2d').getImageData(x * k, 70 * k, 1, 1).data;
+            const diff = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+            return { join: diff(px(170), px(171)), across: diff(px(150), px(190)) };
+          })(),
           purple: (() => {
             const d = c.getContext('2d').getImageData(0, 0, c.width, 340 * k).data;
             let n = 0;
-            for (let i = 0; i < d.length; i += 4)
-              if (d[i + 3] > 0 && Math.min(d[i], d[i + 2]) - d[i + 1] > 25) n++;
+            for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 0 && Math.min(d[i], d[i + 2]) - d[i + 1] > 25) n++;
             return n;
           })(),
           below: a(256, 450),
@@ -3362,15 +3373,28 @@ try {
         };
       });
       // Peaks now reach ~92% of the strip, so the top rows are only almost all sky.
-      assert.ok(sec.top.every((a) => a < 64), 'sky above each quarter is see-through: ' + JSON.stringify(sec));
-      assert.ok(sec.high.some((a) => a > 200), 'the range is stretched up to fill the strip: ' + JSON.stringify(sec));
+      assert.ok(
+        sec.top.every((a) => a < 64),
+        'sky above each quarter is see-through: ' + JSON.stringify(sec),
+      );
+      assert.ok(
+        sec.high.some((a) => a > 200),
+        'the range is stretched up to fill the strip: ' + JSON.stringify(sec),
+      );
       assert.deepEqual(sec.bottom, [255, 255, 255, 255], 'each quarter stands on its bottom edge');
       assert.equal(sec.below, 0);
       assert.deepEqual(sec.mask, [false, 0.5], 'an alpha MASK material cuts at 0.5');
       assert.deepEqual(sec.joinSky, [0, 0, 0, 0, 0], 'piece ends come down to the join height: ' + sec.joinSky);
       assert.deepEqual(sec.joinSolid, [255, 255, 255, 255, 255], 'piece ends are solid below it: ' + sec.joinSolid);
-      assert.ok(sec.base.every((v) => v === 255), 'the base is solid all the way across');
+      assert.ok(
+        sec.base.every((v) => v === 255),
+        'the base is solid all the way across',
+      );
       assert.equal(sec.purple, 0, 'no key-tinted columns at the piece joins');
+      assert.ok(
+        sec.joinStep.across > 60 && sec.joinStep.join < 25,
+        'the base fades across joins: ' + JSON.stringify(sec.joinStep),
+      );
       assert.equal(sec.log.length, 4, 'one stretch/join line per strip in thinking: ' + sec.log.join(' | '));
       assert.equal(prompts.length, 12, `4 quarters × 3 pieces painted: ${prompts.length}`);
       assert.ok(/piece 1 of 3 of section 1 of 4/.test(prompts.join()), prompts[0]);
