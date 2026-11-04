@@ -4769,7 +4769,8 @@ export class ReskinPlugin {
         layers: layers.bands.map((b) => ({ rows: [b.y0, b.y1], pieces: b.pieces.length, arc: b.arc })),
       },
     );
-    let done = 0;
+    let done = 0,
+      failedPieces = 0;
     const painted = [];
     // Height words: "low hills", "dunes" keep a low ridge; everything else is a tall range.
     const low =
@@ -4837,7 +4838,26 @@ export class ReskinPlugin {
     const queue = [...jobs];
     await Promise.all(
       Array.from({ length: Math.min(6, queue.length) }, async () => {
-        while (queue.length) await paintOne(queue.shift());
+        while (queue.length) {
+          const job = queue.shift();
+          try {
+            await paintOne(job);
+          } catch (err) {
+            // One piece that Muse would not paint (it timed out twice, or failed) leaves that
+            // piece see-through; the rest of the ring is still painted.
+            if (signal?.aborted || err?.name === 'AbortError') throw err;
+            const message = `"${slot.name}" strip ${job.li + 1} piece ${job.pi + 1} could not be painted: ${err?.message ?? err}. That piece is left see-through; run the reskin again to retry it.`;
+            this.think('check', message, { slotId: slot.id, strip: job.li + 1, piece: job.pi + 1 });
+            this.emit('warning', { message, slotId: slot.id, pieceFailed: { strip: job.li + 1, piece: job.pi + 1 } });
+            failedPieces++;
+            done++;
+            report(
+              0.2 + (0.5 * done) / jobs.length,
+              'generate',
+              `Layer ${job.li + 1}, piece ${job.pi + 1} failed (${done}/${jobs.length})`,
+            );
+          }
+        }
       }),
     );
     // Muse often paints the range lower than asked: each strip is stretched up from its base
@@ -4867,6 +4887,7 @@ export class ReskinPlugin {
         g.drawImage(c, p.piece.x0, band.y0);
       }
     }
+    if (failedPieces === jobs.length) throw new Error(`"${slot.name}": Muse painted none of the ring's pieces`);
     // Soft joins: across each join inside a strip, the solid part (base and lower slopes,
     // where both sides are solid) fades towards the two sides' mean colour. Alpha is kept.
     for (const band of layers.bands) softenJoins(out, band);

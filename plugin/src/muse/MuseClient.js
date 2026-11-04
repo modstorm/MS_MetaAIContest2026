@@ -69,6 +69,9 @@ export class MuseClient {
       samModel: opts.samModel ?? SAM_MODEL,
       transcribeModel: opts.transcribeModel ?? MUSE_TRANSCRIBE_MODEL,
       timeoutMs: opts.timeoutMs ?? 180_000,
+      // Muse Image calls: a stuck one is given up after this long and asked again (once).
+      imageTimeoutMs: opts.imageTimeoutMs ?? 90_000,
+      timeoutRetries: opts.timeoutRetries ?? 1,
       maxRetries: opts.maxRetries ?? 2,
       user: opts.user,
     };
@@ -260,16 +263,63 @@ export class MuseClient {
         ms: performance.now() - t0,
         error,
       });
+    const limit = path.startsWith('/images') ? this.options.imageTimeoutMs : this.options.timeoutMs;
+    let timeouts = 0;
     for (;;) {
-      const timeout = AbortSignal.timeout(this.options.timeoutMs);
-      const combined = signal ? anySignal([signal, timeout]) : timeout;
-      const res = await this.fetchImpl(`${base}${path}`, {
-        method: 'POST',
-        headers,
-        body: multipart ? body : JSON.stringify(body),
-        signal: combined,
+      // Our own timer aborts the request, and the wait is given up even when a fetch
+      // implementation ignores the abort signal (a request that never returns must not hang).
+      const ctrl = new AbortController();
+      const combined = signal ? anySignal([signal, ctrl.signal]) : ctrl.signal;
+      let timer;
+      const timedOut = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const err = new MuseApiError(
+            `Muse did not answer within ${Math.round(limit / 1000)} s (${path})`,
+            408,
+            'timeout',
+          );
+          ctrl.abort(err);
+          reject(err);
+        }, limit);
       });
-      const text = await res.text();
+      const cancelled = signal
+        ? new Promise((_, reject) => {
+            const stop = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+            if (signal.aborted) stop();
+            else signal.addEventListener('abort', stop, { once: true });
+          })
+        : null;
+      let res, text;
+      try {
+        [res, text] = await Promise.race(
+          [
+            (async () => {
+              const r = await this.fetchImpl(`${base}${path}`, {
+                method: 'POST',
+                headers,
+                body: multipart ? body : JSON.stringify(body),
+                signal: combined,
+              });
+              return [r, await r.text()];
+            })(),
+            timedOut,
+            cancelled,
+          ].filter(Boolean),
+        );
+      } catch (err) {
+        clearTimeout(timer);
+        if (err instanceof MuseApiError && err.type === 'timeout' && !signal?.aborted) {
+          if (timeouts < this.options.timeoutRetries) {
+            timeouts++;
+            report(408, `${err.message}; asking again`);
+            continue;
+          }
+          report(408, err.message);
+        }
+        throw err;
+      }
+      clearTimeout(timer);
+      timedOut.catch(() => {});
       let json = null;
       try {
         json = text ? JSON.parse(text) : null;
